@@ -1,0 +1,86 @@
+Recursive-C4-Model-like + Mandelbrot-like zooming (Recursive-C4-Mandelbrot-Model or short RMM):
+- Zooming into a connection reveals just connection data like study URL references with the most significant citation for each referenced study that establishes this connection
+- Zooming into a node, expands it further and further. With its expansion, each time a certain expansion threshhold is passed, the view upgrades the C4-level into more granular levels, just like one would expect with a microscope. It all goes so far as the user added modells inside nodes recursively.
+- You can reverse the process by zooming out.
+- Zooming in and out works on PC and phone works just like in google maps. On PC if the mouse is not hovered over a node, then the zoom happens only for the closest connection to the screen center, otherwise it is the node that is zoomed in. On a touchscreen we do the same.
+- Initially, starting to zoom inside a node begins by scaling up the node (dragging other components further outside the view) and starting to render the next Model inside the node. (Note that therefore the zoom into a node is not a zoom inside the entire page grid). (Also note that nothing changes on the screen as long as the user doesn't keep scrolling/zooming, even if the model inside the node is not very visible just yet). (Also note that we can already interact with the model inside our host node, even if it is not our main view yet). At a certain size of the node (that became a frame itself), when the next model is now clearly visible inside, the zoom will jump to completion and the node's model is now the entire screen again (without its host node present). We can always zoom out again to do the process in reverse.
+
+Multi-Parallel-Dimension (MPD) nodes:
+- Besides recursive zooming into nodes, so far as specified by the user, a dial on the bottom of the screen can be rotated for the focussed node. Connections for this node will then rotate through alternate C4-like-Modells. The dial is enabled only if more models were specified for the focussed node. The dial is designed on the bottom of the screen like the circle part of a parking disc you touch to set the parking time.
+- Dialing will fade-animate alternate models of the node in and out. The transition auto-finishes to the closest alternate model if the dial button is released.
+- How should the fade look like?: All connections and nodes except for the selected node shade away
+- Each MPD of a node allows that node to substitute its RMM, if the user specifies a RMM of the same node in the current MPD. This means one node can has multiple further zoom-models across parallel models at this node. But it always zooms into the first RMM of this node for each MPD if no other Multi-Parallel-Dimension was defined.
+- Nodes are freely creatable and draggable at any time. They can be selected by the user so that the node lights up highlighted. The user can then scroll to traverse to the next RMM or he can switch beteen MPDs. This app is animated and interactive.
+
+Connection Animation:
+- Each time a node was selected, the connection flow of this model is animated once by briefly highlighting one connection and node after another: If I select node N1, then all connections c1, c2, c3 light up, then all connecting nodes connected to c1, c2, c3 light up after that (and so on). This continues even for circular connection until every non circular connection is finished. Each light-up moment takes a specified amount of time (default 0.5 seconds).
+
+Dial:
+- The dial of a selected node also displays the MPD list for this node on the top right side of the screen as a small GUI with the current one always marked correctly, from where alternatively the user can select an MPD directly.
+
+View:
+- The user can freely move around the graph just like in Miro, draw.io and google maps.
+
+Connections:
+- An arrow can be drawn from one node to another.
+- The arrow line does not cross other nodes. It dynamically draws around obstacles.
+- The arrow head is not fix to one point on a node but it keeps its head on it from any angle dynamically.
+- We start with a zoom to "unzip" a connection, just like we do with a node, but with the difference that it stops as soon as all granular details were expanded but also in an C4 inspired manner. First the connection expands a frame with a list of paper/study names that were added, with further zoom it will display the most interesting citation from each study and further zoom displays the URL. The container is animated as a custom dropdown (that expands from the arrow line of the closest connection during a selectionless zoom (as stated somewhere else)). This dropdown expands like nodes but it stops at some point so that the popup frame is still visible and recognized being a popup.
+
+Associations:
+- auto complete and associate same nodes
+- In the CLI or in the normal UI, node names are checked if they exist in this or referenced models. If no RMM zoom is available, the dial still appears if multiple occurrences of this node name exist, allowing free transitions through MPDs and RMMs that are not direct siblings, parents or children of the current one.
+
+Auto-Optimization:
+- The graph auto-optimizes to have the least amount of crossing lines.
+
+Snackbar:
+- We integrate an expandable taskbar (that is expanded on default on PC). There we have common functionality like saving or loading projects, redo and undo, or opening the CLI popup.
+
+CLI popup:
+- We integrate a CLI popup.
+- A button to open the cli is added to the snackbar.
+- The CLI will be able to create or modify everything, like creating connections, nodes, append RMMs or MPDs, etc.
+- We will introduce CLI syntax to describe the modifications to the JSON
+
+UI:
+- New nodes can be created by double tab/click. New nodes are deleted if no name was given. Otherwise the node creation is analogue to draw.io.
+- New connections are created by just right mouse clicking and dragging from one node to another. (On mobile, it is one long (held) tab)
+- Nodes can be pinned to not move. This is a Snackbar option that is not greyed out/disabled if a node was selected. (On mobile, a node is selected by one short tab and unselected by a tab outside).
+- Nodes can be dragged with left mouse click (despite it only making sense for pinned ones). (On mobile, the node must first be selected and then dragged).
+
+Platform:
+- I thought it to be a web app, similar to draw.io, that I can access through phone and PC in the browser.
+
+Framework/Plug-ins/APIs/etc...:
+- I would like you to decide what fits best, best would be royalty free or free to use commercially. Add a LICENSE.txt file and include all Framework/Plug-ins/APIs/etc... you picked and whether they can be used commercially for free or not.
+
+Database:
+- Each Project is a collection of JSON files that represents their own RMM or MPD.
+- Each RMM and MPD has its own ID. They reference to each other through this ID.
+- This allows us to dynamically load and unload diagrams in case it scales large.
+- (if you deem it not to be the best solution. Suggest a different strategy and request me to review it.)
+
+Managing memory:
+- At every point of time, only each sibling, children and direct parent is loaded at the same time.
+
+Mission 1:
+- analyse the specifications and then create a revised, improved version of this file with clearer language and instructions and less ambiguity so that you clearly know what to do later. For each ambiguity, mark clearly in the file that I need to clarify as the next step, but I appreciate if you add a suggestion for how you would solve it to each case (like details about the UI like design that I missed). After I worked through it, I will pass the file back to you so that our coding step can start.
+
+Mission 2:
+- Ask me to fix ambiguities
+
+Mission 3:
+- Create a detailed step by step and granular task list (and with milestones) in an architecture and module sensitive way to realize all tasks in a smart order.
+Note: Early on, we want to prototype (proof) the hardest / most interesting parts like the mandelbrot effect and animation for the nodes, the semi-mandelbrot effect and animation for the arrows popups and the same for the MPD transitions.
+
+Mission 4:
+- Ask me to review/revise your step by step task list
+
+Mission 5:
+- Start working through your task list.
+- For each task, add a unittest and test and debug the results yourself first. After each completed task, request me to manually review it to provide feedback.
+- After I confirmed that a task works, you can mark it as done in the task file.
+
+Last important Note for this Document:
+You are allowed to document your thoughts independently within an extra folder in this project if it helps to maintain coherence and provide fallbacks and organizing yourself for a long project and in respect to your own context window limit.
