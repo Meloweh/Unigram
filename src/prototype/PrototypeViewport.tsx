@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { CANVAS_MAX_HEIGHT } from './hybridZoom'
 import { useHybridZoomStore } from './useHybridZoomStore'
 
 export function PrototypeViewport() {
@@ -27,30 +28,24 @@ export function PrototypeViewport() {
     }
   }, [panOffset.x, panOffset.y, snapshot.cameraScale])
 
+  /** Node frame scales up to fill viewport, canvas reveals content inside */
   const hostNodeStyle = useMemo(() => {
     return {
-      transform: `translate(-50%, -50%) scale(${snapshot.nodeInflation})`,
+      transform: `translate(-50%, -50%) scale(${snapshot.nodeScale})`,
       opacity: snapshot.handoffMode === 'child' ? 0.14 : 1,
       transition: 'opacity 160ms linear',
     }
-  }, [snapshot.handoffMode, snapshot.nodeInflation])
+  }, [snapshot.handoffMode, snapshot.nodeScale])
 
-  const childGridStyle = useMemo(() => {
-    const scale = 0.78 + snapshot.progress * 0.44
-    return {
-      transform: `scale(${scale})`,
-      opacity: snapshot.progress,
-    }
-  }, [snapshot.progress])
+  /** Canvas height grows from 0 → CANVAS_MAX_HEIGHT, stretching the node frame */
+  const canvasHeight = snapshot.nodeInflation * CANVAS_MAX_HEIGHT
 
-  const miniNodes = useMemo(() => {
-    return [
-      { id: 'a', x: 22, y: 20 },
-      { id: 'b', x: 74, y: 28 },
-      { id: 'c', x: 34, y: 66 },
-      { id: 'd', x: 82, y: 72 },
-    ]
-  }, [])
+  const miniNodes = [
+    { id: 'a', x: 22, y: 20 },
+    { id: 'b', x: 74, y: 28 },
+    { id: 'c', x: 34, y: 66 },
+    { id: 'd', x: 82, y: 72 },
+  ]
 
   return (
     <div
@@ -139,36 +134,40 @@ export function PrototypeViewport() {
             }}
           >
             <div className="host-label">Node Alpha</div>
-            <div className="child-model">
-              <div className="child-grid" style={childGridStyle}>
-                <div
-                  className="mini-connection"
-                  style={{
-                    left: `${miniNodes[0].x}%`,
-                    top: `${miniNodes[0].y}%`,
-                    width: '48%',
-                    transform: 'rotate(8deg)',
-                  }}
-                />
-                <div
-                  className="mini-connection"
-                  style={{
-                    left: `${miniNodes[2].x}%`,
-                    top: `${miniNodes[2].y}%`,
-                    width: '42%',
-                    transform: 'rotate(-14deg)',
-                  }}
-                />
-                {miniNodes.map((node) => (
+            {canvasHeight > 0 && (
+              <div
+                className="child-model"
+                style={{ height: canvasHeight }}
+              >
+                <div className="child-grid">
                   <div
-                    key={node.id}
-                    className="mini-node"
-                    style={{ left: `${node.x}%`, top: `${node.y}%`, transform: 'translate(-50%, -50%)' }}
+                    className="mini-connection"
+                    style={{
+                      left: `${miniNodes[0].x}%`,
+                      top: `${miniNodes[0].y}%`,
+                      width: '48%',
+                      transform: 'rotate(8deg)',
+                    }}
                   />
-                ))}
-                <div className="child-caption">Nested model transition live</div>
+                  <div
+                    className="mini-connection"
+                    style={{
+                      left: `${miniNodes[2].x}%`,
+                      top: `${miniNodes[2].y}%`,
+                      width: '42%',
+                      transform: 'rotate(-14deg)',
+                    }}
+                  />
+                  {miniNodes.map((node) => (
+                    <div
+                      key={node.id}
+                      className="mini-node"
+                      style={{ left: `${node.x}%`, top: `${node.y}%` }}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </article>
         </div>
       </div>

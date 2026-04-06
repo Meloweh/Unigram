@@ -6,7 +6,7 @@ import {
 } from './hybridZoom'
 
 describe('hybrid zoom continuity', () => {
-  it('keeps camera and node growth monotonic during inward zoom', () => {
+  it('keeps camera and canvas reveal monotonic during inward zoom', () => {
     let current = createInitialSnapshot()
 
     for (let i = 0; i < 8; i += 1) {
@@ -14,8 +14,14 @@ describe('hybrid zoom continuity', () => {
       expect(next.progress).toBeGreaterThanOrEqual(current.progress)
       expect(next.cameraScale).toBeGreaterThanOrEqual(current.cameraScale)
       expect(next.nodeInflation).toBeGreaterThanOrEqual(current.nodeInflation)
+      expect(next.nodeScale).toBeGreaterThanOrEqual(current.nodeScale)
       current = next
     }
+
+    // nodeInflation is a canvas reveal factor (0→1), matching progress
+    expect(current.nodeInflation).toBeCloseTo(0.8)
+    // nodeScale grows from 1→2
+    expect(current.nodeScale).toBeCloseTo(1.8)
   })
 
   it('switches to child handoff exactly at full progress', () => {

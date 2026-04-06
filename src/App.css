@@ -76,12 +76,12 @@
   left: 50%;
   top: 50%;
   width: 320px;
-  height: 220px;
   transform: translate(-50%, -50%);
   border-radius: 18px;
   border: 2px solid #365f8f;
   background: linear-gradient(145deg, #f4f8fd, #dfe9f5);
   box-shadow: 0 10px 30px rgba(19, 41, 73, 0.2);
+  padding: 14px 16px;
   user-select: none;
 }
 
@@ -93,18 +93,14 @@
 .host-label {
   font-weight: 600;
   color: #17314f;
-  margin-bottom: 8px;
 }
 
 .child-model {
-  height: 72%;
+  margin-top: 10px;
   border-radius: 12px;
   border: 1px dashed #5f88b2;
   background: rgba(118, 175, 233, 0.15);
-  display: block;
   overflow: hidden;
-  color: #1b4d80;
-  font-size: 0.95rem;
   position: relative;
 }
 
@@ -127,17 +123,7 @@
   border-radius: 50%;
   background: #2e76b7;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65);
-}
-
-.child-caption {
-  position: absolute;
-  right: 10px;
-  bottom: 8px;
-  font-size: 0.8rem;
-  color: #1f4f7e;
-  background: rgba(255, 255, 255, 0.7);
-  padding: 2px 6px;
-  border-radius: 6px;
+  transform: translate(-50%, -50%);
 }
 
 .empty-hint {
