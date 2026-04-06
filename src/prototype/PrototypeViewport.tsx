@@ -82,16 +82,9 @@ export function PrototypeViewport() {
       : 'none',
     borderRadius: 18 * chromeFade,
     padding: chromeFade > 0.01 ? `${14 * chromeFade}px ${16 * chromeFade}px` : 0,
-    opacity: snapshot.handoffMode === 'child' ? 0.14 : 1,
-    transition: 'opacity 160ms linear',
   }
 
-  const miniNodes = [
-    { id: 'a', x: 22, y: 20 },
-    { id: 'b', x: 74, y: 28 },
-    { id: 'c', x: 34, y: 66 },
-    { id: 'd', x: 82, y: 72 },
-  ]
+  const isChild = snapshot.handoffMode === 'child'
 
   return (
     <div
@@ -168,10 +161,17 @@ export function PrototypeViewport() {
             </div>
           )}
         </div>
-        {!selectedNodeId && (
+        {!selectedNodeId && !isChild && (
           <div className="empty-hint">No selected node. Double-click to reselect prototype node.</div>
         )}
-        <div className="scene" style={sceneStyle}>
+        {isChild ? (
+          /* Child mode: the child model is now the root scene */
+          <div className="child-scene">
+            <ChildModelContent scale={1} />
+          </div>
+        ) : (
+          /* Parent mode: the host scene with zoom transition */
+          <div className="scene" style={sceneStyle}>
           <article
             className={`host-node ${selectedNodeId ? 'focused' : ''}`}
             style={hostNodeStyle}
@@ -185,37 +185,57 @@ export function PrototypeViewport() {
             )}
             {p > 0 && (
               <div className="child-model">
-                <div className="child-grid">
-                  <div
-                    className="mini-connection"
-                    style={{
-                      left: `${miniNodes[0].x}%`,
-                      top: `${miniNodes[0].y}%`,
-                      width: '48%',
-                      transform: 'rotate(8deg)',
-                    }}
-                  />
-                  <div
-                    className="mini-connection"
-                    style={{
-                      left: `${miniNodes[2].x}%`,
-                      top: `${miniNodes[2].y}%`,
-                      width: '42%',
-                      transform: 'rotate(-14deg)',
-                    }}
-                  />
-                  {miniNodes.map((node) => (
-                    <div
-                      key={node.id}
-                      className="mini-node"
-                      style={{ left: `${node.x}%`, top: `${node.y}%` }}
-                    />
-                  ))}
-                </div>
+                <ChildModelContent scale={nodeW / vpSize.w} />
               </div>
             )}
           </article>
         </div>
+        )}
       </div>
+  )
+}
+
+/* Child model data — shared between canvas preview and post-handoff root */
+const CHILD_NODES = [
+  { id: 'c-alpha', label: 'Service A', x: 20, y: 25 },
+  { id: 'c-beta', label: 'Service B', x: 70, y: 20 },
+  { id: 'c-gamma', label: 'Database', x: 30, y: 70 },
+  { id: 'c-delta', label: 'Gateway', x: 75, y: 65 },
+]
+
+const CHILD_CONNECTIONS = [
+  { from: 'c-alpha', to: 'c-beta', x1: 20, y1: 25, x2: 70, y2: 20 },
+  { from: 'c-alpha', to: 'c-gamma', x1: 20, y1: 25, x2: 30, y2: 70 },
+  { from: 'c-beta', to: 'c-delta', x1: 70, y1: 20, x2: 75, y2: 65 },
+  { from: 'c-gamma', to: 'c-delta', x1: 30, y1: 70, x2: 75, y2: 65 },
+]
+
+function ChildModelContent({ scale }: { scale: number }) {
+  return (
+    <>
+      <svg className="child-scene-connections">
+        {CHILD_CONNECTIONS.map((c) => (
+          <line
+            key={`${c.from}-${c.to}`}
+            x1={`${c.x1}%`} y1={`${c.y1}%`}
+            x2={`${c.x2}%`} y2={`${c.y2}%`}
+            strokeWidth={2 * scale}
+          />
+        ))}
+      </svg>
+      {CHILD_NODES.map((node) => (
+        <div
+          key={node.id}
+          className="child-scene-node"
+          style={{
+            left: `${node.x}%`,
+            top: `${node.y}%`,
+            transform: `translate(-50%, -50%) scale(${scale})`,
+          }}
+        >
+          {node.label}
+        </div>
+      ))}
+    </>
   )
 }

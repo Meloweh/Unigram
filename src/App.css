@@ -99,28 +99,42 @@
   min-height: 0;
   overflow: hidden;
   position: relative;
+  background: radial-gradient(circle at 40% 30%, #f5f9ff, #dfebf8);
 }
 
-.child-grid {
+/* ---- Shared child model content (used in canvas + post-handoff root) ---- */
+
+.child-scene {
   position: absolute;
   inset: 0;
 }
 
-.mini-connection {
+.child-scene-node {
   position: absolute;
-  height: 2px;
-  background: rgba(37, 96, 149, 0.45);
-  transform-origin: left center;
+  transform: translate(-50%, -50%);
+  padding: 10px 16px;
+  border-radius: 14px;
+  border: 2px solid #365f8f;
+  background: linear-gradient(145deg, #f4f8fd, #dfe9f5);
+  box-shadow: 0 6px 18px rgba(19, 41, 73, 0.18);
+  font-weight: 600;
+  color: #17314f;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  user-select: none;
 }
 
-.mini-node {
+.child-scene-connections {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #2e76b7;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65);
-  transform: translate(-50%, -50%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.child-scene-connections line {
+  stroke: rgba(37, 96, 149, 0.45);
+  stroke-width: 2;
 }
 
 .empty-hint {
