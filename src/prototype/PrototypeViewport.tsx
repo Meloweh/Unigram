@@ -2,14 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { useHybridZoomStore } from './useHybridZoomStore'
 
-/** Base node dimensions (label only, no canvas) */
-const NODE_BASE_W = 320
-const NODE_BASE_H = 48
+/** Minimum base dimensions fallback before label measured */
+const NODE_MIN_W = 80
+const NODE_MIN_H = 40
 
 export function PrototypeViewport() {
   const [debugOpen, setDebugOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const labelRef = useRef<HTMLDivElement>(null)
   const [vpSize, setVpSize] = useState({ w: 1400, h: 900 })
+  const [baseSize, setBaseSize] = useState({ w: NODE_MIN_W, h: NODE_MIN_H })
   const {
     selectedNodeId,
     snapshot,
@@ -38,6 +40,17 @@ export function PrototypeViewport() {
     return () => obs.disconnect()
   }, [])
 
+  useEffect(() => {
+    const el = labelRef.current
+    if (!el) return
+    const pad = 32 + 4 // horizontal padding + border
+    const vPad = 28 + 4 // vertical padding + border
+    setBaseSize({
+      w: Math.max(NODE_MIN_W, el.scrollWidth + pad),
+      h: Math.max(NODE_MIN_H, el.scrollHeight + vPad),
+    })
+  }, [])
+
   const sceneStyle = useMemo(() => {
     return {
       transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${snapshot.cameraScale})`,
@@ -50,8 +63,8 @@ export function PrototypeViewport() {
   const targetH = vpSize.h / CAMERA_SCALE_FINAL
 
   const p = snapshot.nodeInflation // 0→1
-  const nodeW = NODE_BASE_W + (targetW - NODE_BASE_W) * p
-  const nodeH = NODE_BASE_H + (targetH - NODE_BASE_H) * p
+  const nodeW = baseSize.w + (targetW - baseSize.w) * p
+  const nodeH = baseSize.h + (targetH - baseSize.h) * p
 
   // Chrome (label, border, padding, bg) fades in the last 30%
   const chromeFade = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1
@@ -168,7 +181,7 @@ export function PrototypeViewport() {
             }}
           >
             {chromeFade > 0.01 && (
-              <div className="host-label" style={{ opacity: chromeFade }}>Node Alpha</div>
+              <div ref={labelRef} className="host-label" style={{ opacity: chromeFade }}>Node Alpha</div>
             )}
             {p > 0 && (
               <div className="child-model">

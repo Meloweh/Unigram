@@ -90,6 +90,8 @@
 .host-label {
   font-weight: 600;
   color: #17314f;
+  white-space: nowrap;
+  width: fit-content;
 }
 
 .child-model {
