@@ -1,9 +1,15 @@
-import { useMemo, useRef, useState } from 'react'
-import { CANVAS_MAX_HEIGHT } from './hybridZoom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { useHybridZoomStore } from './useHybridZoomStore'
+
+/** Base node dimensions (label only, no canvas) */
+const NODE_BASE_W = 320
+const NODE_BASE_H = 48
 
 export function PrototypeViewport() {
   const [debugOpen, setDebugOpen] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [vpSize, setVpSize] = useState({ w: 1400, h: 900 })
   const {
     selectedNodeId,
     snapshot,
@@ -22,23 +28,50 @@ export function PrototypeViewport() {
 
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
 
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const obs = new ResizeObserver(([entry]) => {
+      setVpSize({ w: entry.contentRect.width, h: entry.contentRect.height })
+    })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
   const sceneStyle = useMemo(() => {
     return {
       transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${snapshot.cameraScale})`,
     }
   }, [panOffset.x, panOffset.y, snapshot.cameraScale])
 
-  /** Node frame scales up to fill viewport, canvas reveals content inside */
-  const hostNodeStyle = useMemo(() => {
-    return {
-      transform: `translate(-50%, -50%) scale(${snapshot.nodeScale})`,
-      opacity: snapshot.handoffMode === 'child' ? 0.14 : 1,
-      transition: 'opacity 160ms linear',
-    }
-  }, [snapshot.handoffMode, snapshot.nodeScale])
+  // At handoff: nodeActualSize * cameraScale = viewportSize
+  // So target actual size = vpSize / CAMERA_SCALE_FINAL
+  const targetW = vpSize.w / CAMERA_SCALE_FINAL
+  const targetH = vpSize.h / CAMERA_SCALE_FINAL
 
-  /** Canvas height grows from 0 → CANVAS_MAX_HEIGHT, stretching the node frame */
-  const canvasHeight = snapshot.nodeInflation * CANVAS_MAX_HEIGHT
+  const p = snapshot.nodeInflation // 0→1
+  const nodeW = NODE_BASE_W + (targetW - NODE_BASE_W) * p
+  const nodeH = NODE_BASE_H + (targetH - NODE_BASE_H) * p
+
+  // Chrome (label, border, padding, bg) fades in the last 30%
+  const chromeFade = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1
+
+  const hostNodeStyle: React.CSSProperties = {
+    width: nodeW,
+    height: nodeH,
+    transform: 'translate(-50%, -50%)',
+    borderColor: `rgba(54, 95, 143, ${chromeFade})`,
+    background: chromeFade > 0.01
+      ? `linear-gradient(145deg, rgba(244,248,253,${chromeFade}), rgba(223,233,245,${chromeFade}))`
+      : 'transparent',
+    boxShadow: chromeFade > 0.01
+      ? `0 10px 30px rgba(19, 41, 73, ${0.2 * chromeFade})`
+      : 'none',
+    borderRadius: 18 * chromeFade,
+    padding: chromeFade > 0.01 ? `${14 * chromeFade}px ${16 * chromeFade}px` : 0,
+    opacity: snapshot.handoffMode === 'child' ? 0.14 : 1,
+    transition: 'opacity 160ms linear',
+  }
 
   const miniNodes = [
     { id: 'a', x: 22, y: 20 },
@@ -49,6 +82,7 @@ export function PrototypeViewport() {
 
   return (
     <div
+      ref={viewportRef}
       className={`viewport ${isDragging ? 'dragging' : ''}`}
         onWheel={(event) => {
           event.preventDefault()
@@ -133,12 +167,11 @@ export function PrototypeViewport() {
               selectNode('node-alpha')
             }}
           >
-            <div className="host-label">Node Alpha</div>
-            {canvasHeight > 0 && (
-              <div
-                className="child-model"
-                style={{ height: canvasHeight }}
-              >
+            {chromeFade > 0.01 && (
+              <div className="host-label" style={{ opacity: chromeFade }}>Node Alpha</div>
+            )}
+            {p > 0 && (
+              <div className="child-model">
                 <div className="child-grid">
                   <div
                     className="mini-connection"

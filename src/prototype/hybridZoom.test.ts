@@ -14,14 +14,13 @@ describe('hybrid zoom continuity', () => {
       expect(next.progress).toBeGreaterThanOrEqual(current.progress)
       expect(next.cameraScale).toBeGreaterThanOrEqual(current.cameraScale)
       expect(next.nodeInflation).toBeGreaterThanOrEqual(current.nodeInflation)
-      expect(next.nodeScale).toBeGreaterThanOrEqual(current.nodeScale)
       current = next
     }
 
     // nodeInflation is a canvas reveal factor (0→1), matching progress
     expect(current.nodeInflation).toBeCloseTo(0.8)
-    // nodeScale grows from 1→2
-    expect(current.nodeScale).toBeCloseTo(1.8)
+    // cameraScale grows from 1→1.8
+    expect(current.cameraScale).toBeCloseTo(1.64)
   })
 
   it('switches to child handoff exactly at full progress', () => {
@@ -36,7 +35,7 @@ describe('hybrid zoom continuity', () => {
     const resumed = applyZoomStep(paused, 'in', 0.04)
 
     expect(resumed.progress).toBeGreaterThan(paused.progress)
-    expect(resumed.cameraScale - paused.cameraScale).toBeLessThan(0.1)
+    expect(resumed.cameraScale - paused.cameraScale).toBeLessThan(0.06)
     expect(resumed.nodeInflation - paused.nodeInflation).toBeLessThan(0.2)
   })
 
