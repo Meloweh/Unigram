@@ -400,83 +400,122 @@ function ConnectionLine({
   const midXPx = (fxPx + txPx) / 2
   const midYPx = (fyPx + tyPx) / 2
 
-  // Project popup rectangle onto connection's perpendicular and along axes
-  // to dynamically size both the bow width AND the zipper length.
-  const padding = 20 // px clearance beyond popup edge
-  let bowPx: number
-  let splitFracA = 0.30
-  let splitFracB = 0.70
-  let cornerR = 0
+  // Trace the actual popup rectangle edges rather than a rotated bounding box.
+  // For each track (+1 / -1), find the popup corners on that side of the
+  // connection line and route the path around them with rounded corners.
 
-  if (popupSize && popupSize.w > 0 && popupSize.h > 0) {
-    const cosA = Math.abs(Math.cos(connectionAngle))
-    const sinA = Math.abs(Math.sin(connectionAngle))
+  const padding = 16 // px clearance beyond popup edge
 
-    // Half-extent of popup projected onto connection's perpendicular axis
-    const perpExtent = (popupSize.w / 2) * sinA + (popupSize.h / 2) * cosA
-    bowPx = (perpExtent + padding) * gapProgress
+  function buildTrackForPopup(sign: number): string {
+    const hw = (popupSize!.w / 2 + padding) * gapProgress
+    const hh = (popupSize!.h / 2 + padding) * gapProgress
 
-    // Half-extent of popup projected onto connection's along axis
-    const alongExtent = (popupSize.w / 2) * cosA + (popupSize.h / 2) * sinA
-    // Corner radius for smooth rectangular turns (kappa ≈ 0.55)
-    cornerR = Math.min(bowPx * 0.55, 60)
-    // Split points must clear the popup + corners along the connection direction
-    const splitMargin = (alongExtent + padding + cornerR) / lenPx
-    splitFracA = Math.max(0.05, 0.5 - splitMargin)
-    splitFracB = Math.min(0.95, 0.5 + splitMargin)
-  } else {
-    bowPx = Math.min(lenPx * 0.18, 110) * gapProgress
-  }
+    // Ray from mid along the connection direction hits the popup boundary at parameter t
+    let t = Infinity
+    if (Math.abs(alongX) > 1e-9) t = Math.min(t, hw / Math.abs(alongX))
+    if (Math.abs(alongY) > 1e-9) t = Math.min(t, hh / Math.abs(alongY))
+    // Don't let entry/exit overshoot connection endpoints
+    t = Math.min(t, lenPx / 2 - 1)
+    if (t <= 0) return `M ${fxPx} ${fyPx} L ${txPx} ${tyPx}`
 
-  // Split points: where the line departs from / rejoins the connection
-  const splitAx = fxPx + alongX * lenPx * splitFracA
-  const splitAy = fyPx + alongY * lenPx * splitFracA
-  const splitBx = fxPx + alongX * lenPx * splitFracB
-  const splitBy = fyPx + alongY * lenPx * splitFracB
+    // Entry (toward 'from') and exit (toward 'to') on the popup boundary
+    const entAbs = { x: midXPx - alongX * t, y: midYPx - alongY * t }
+    const extAbs = { x: midXPx + alongX * t, y: midYPx + alongY * t }
 
-  // Build a track that wraps around one side of the popup.
-  // sign = +1 or -1 for the two sides of the connection.
-  function buildTrack(sign: number): string {
-    const offX = perpX * bowPx * sign
-    const offY = perpY * bowPx * sign
+    // Which edge is the exit point on?
+    // 0=top(y=-hh), 1=right(x=+hw), 2=bottom(y=+hh), 3=left(x=-hw)
+    const extRx = alongX * t, extRy = alongY * t
+    const eps = 0.5
+    let exitEdge: number
+    if (Math.abs(extRx - hw) < eps) exitEdge = 1
+    else if (Math.abs(extRx + hw) < eps) exitEdge = 3
+    else if (Math.abs(extRy - hh) < eps) exitEdge = 2
+    else exitEdge = 0
+    const entryEdge = (exitEdge + 2) % 4
 
-    if (cornerR < 1) {
-      // Fallback: single quadratic bezier (small bow / no popup size)
-      const cpx = midXPx + offX
-      const cpy = midYPx + offY
-      return `M ${fxPx} ${fyPx} L ${splitAx} ${splitAy} Q ${cpx} ${cpy} ${splitBx} ${splitBy} L ${txPx} ${tyPx}`
+    // Corners in CW order: TL(0), TR(1), BR(2), BL(3)
+    const cornerPos: [number, number][] = [
+      [midXPx - hw, midYPx - hh],
+      [midXPx + hw, midYPx - hh],
+      [midXPx + hw, midYPx + hh],
+      [midXPx - hw, midYPx + hh],
+    ]
+
+    // Edge e runs CW from corner e to corner (e+1)%4.
+    // Collect corners going CW from entry edge to exit edge.
+    const cwIdx: number[] = []
+    let e = entryEdge
+    while (true) {
+      cwIdx.push((e + 1) % 4)
+      e = (e + 1) % 4
+      if (e === exitEdge) break
+    }
+    // CCW corners
+    const ccwIdx: number[] = []
+    e = entryEdge
+    while (true) {
+      ccwIdx.push(e)
+      e = (e - 1 + 4) % 4
+      if (e === exitEdge) break
     }
 
-    // Side points: offset perpendicular + shifted along by cornerR
-    const sideAx = splitAx + offX + alongX * cornerR
-    const sideAy = splitAy + offY + alongY * cornerR
-    const sideBx = splitBx + offX - alongX * cornerR
-    const sideBy = splitBy + offY - alongY * cornerR
+    // Determine which direction corresponds to +perp side
+    const cwPerp = cwIdx.reduce((s, ci) =>
+      s + (cornerPos[ci][0] - midXPx) * perpX + (cornerPos[ci][1] - midYPx) * perpY, 0)
+    const myIdx = (cwPerp * sign > 0) ? cwIdx : ccwIdx
+    const myCorners = myIdx.map(ci => ({ x: cornerPos[ci][0], y: cornerPos[ci][1] }))
 
-    // Corner A: cubic bezier turning from connection line to parallel offset
-    const cpA1x = splitAx + alongX * cornerR
-    const cpA1y = splitAy + alongY * cornerR
-    const cpA2x = splitAx + offX
-    const cpA2y = splitAy + offY
+    if (myCorners.length === 0) {
+      return `M ${fxPx} ${fyPx} L ${txPx} ${tyPx}`
+    }
 
-    // Corner B: cubic bezier turning from parallel offset back to connection line
-    const cpB1x = splitBx + offX
-    const cpB1y = splitBy + offY
-    const cpB2x = splitBx - alongX * cornerR
-    const cpB2y = splitBy - alongY * cornerR
+    // Waypoints: from, entry, popup-corners..., exit, to
+    const wp = [
+      { x: fxPx, y: fyPx },
+      entAbs,
+      ...myCorners,
+      extAbs,
+      { x: txPx, y: tyPx },
+    ]
 
-    return [
-      `M ${fxPx} ${fyPx}`,
-      `L ${splitAx} ${splitAy}`,
-      `C ${cpA1x} ${cpA1y} ${cpA2x} ${cpA2y} ${sideAx} ${sideAy}`,
-      `L ${sideBx} ${sideBy}`,
-      `C ${cpB1x} ${cpB1y} ${cpB2x} ${cpB2y} ${splitBx} ${splitBy}`,
-      `L ${txPx} ${tyPx}`,
-    ].join(' ')
+    // Build path with quadratic-bezier rounded corners at indices 1..length-2
+    const cr = Math.min(hw, hh, 28)
+    let path = `M ${wp[0].x} ${wp[0].y}`
+    for (let i = 1; i < wp.length; i++) {
+      if (i < wp.length - 1) {
+        const prev = wp[i - 1], curr = wp[i], next = wp[i + 1]
+        let dx1 = curr.x - prev.x, dy1 = curr.y - prev.y
+        const len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1)
+        let dx2 = next.x - curr.x, dy2 = next.y - curr.y
+        const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2)
+        if (len1 < 0.5 || len2 < 0.5) { path += ` L ${curr.x} ${curr.y}`; continue }
+        dx1 /= len1; dy1 /= len1
+        dx2 /= len2; dy2 /= len2
+        const r = Math.min(cr, len1 / 2, len2 / 2)
+        path += ` L ${curr.x - dx1 * r} ${curr.y - dy1 * r}`
+        path += ` Q ${curr.x} ${curr.y} ${curr.x + dx2 * r} ${curr.y + dy2 * r}`
+      } else {
+        path += ` L ${wp[i].x} ${wp[i].y}`
+      }
+    }
+    return path
   }
 
-  const d1 = buildTrack(+1)
-  const d2 = buildTrack(-1)
+  // Fallback track for when popup size isn't known yet
+  function buildFallbackTrack(sign: number): string {
+    const bow = Math.min(lenPx * 0.18, 110) * gapProgress
+    const cpx = midXPx + perpX * bow * sign
+    const cpy = midYPx + perpY * bow * sign
+    const sAx = fxPx + alongX * lenPx * 0.30
+    const sAy = fyPx + alongY * lenPx * 0.30
+    const sBx = fxPx + alongX * lenPx * 0.70
+    const sBy = fyPx + alongY * lenPx * 0.70
+    return `M ${fxPx} ${fyPx} L ${sAx} ${sAy} Q ${cpx} ${cpy} ${sBx} ${sBy} L ${txPx} ${tyPx}`
+  }
+
+  const hasPopup = popupSize && popupSize.w > 0 && popupSize.h > 0
+  const d1 = hasPopup ? buildTrackForPopup(+1) : buildFallbackTrack(+1)
+  const d2 = hasPopup ? buildTrackForPopup(-1) : buildFallbackTrack(-1)
 
   return (
     <>
