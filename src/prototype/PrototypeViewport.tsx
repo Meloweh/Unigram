@@ -106,6 +106,10 @@ export function PrototypeViewport() {
   if (unzipPopup) lastUnzipRef.current = unzipPopup
   const activeUnzipPopup = unzipDisplayKey ? (unzipPopup ?? lastUnzipRef.current) : null
 
+  // Track popup measured size for ConnectionLine bow computation
+  const [popupSize, setPopupSize] = useState<{ w: number; h: number } | null>(null)
+  const handlePopupSizeChange = useMemo(() => (w: number, h: number) => setPopupSize({ w, h }), [])
+
   const p = frame.snapshot.nodeInflation // 0→1
   const isChild = frame.snapshot.handoffMode === 'child'
 
@@ -229,7 +233,22 @@ export function PrototypeViewport() {
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
           onClickConnection={openUnzip}
-          unzipGap={unzipDisplayKey ? { connectionKey: unzipDisplayKey, progress: unzipAnimProgress } : null}
+          unzipGap={unzipDisplayKey ? {
+            connectionKey: unzipDisplayKey,
+            progress: unzipAnimProgress,
+            popupSize,
+            connectionAngle: (() => {
+              if (!activeUnzipPopup) return 0
+              const conn = model.connections.find(
+                (c) => `${c.from}->${c.to}` === activeUnzipPopup.connectionKey,
+              )
+              if (!conn) return 0
+              const fn = model.nodes.find((n) => n.id === conn.from)
+              const tn = model.nodes.find((n) => n.id === conn.to)
+              if (!fn || !tn) return 0
+              return Math.atan2((tn.y - fn.y) * vpSize.h, (tn.x - fn.x) * vpSize.w)
+            })()
+          } : null}
         />
         {activeUnzipPopup && (() => {
           const conn = model.connections.find(
@@ -253,6 +272,7 @@ export function PrototypeViewport() {
               anchorY={activeUnzipPopup.anchorY}
               animProgress={unzipAnimProgress}
               connectionAngle={angle}
+              onSizeChange={handlePopupSizeChange}
             />
           )
         })()}
@@ -279,7 +299,7 @@ function ModelSceneContent({
   vpSize: { w: number; h: number }
   onSelectNode: (id: string) => void
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
-  unzipGap: { connectionKey: string; progress: number } | null
+  unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
 }) {
   return (
     <>
@@ -296,12 +316,6 @@ function ModelSceneContent({
           const gapT = isUnzipping ? unzipGap.progress : 0
           return (
             <g key={key}>
-              <ConnectionLine
-                fromX={from.x} fromY={from.y}
-                toX={to.x} toY={to.y}
-                hasEvidence={hasEvidence}
-                gapProgress={gapT}
-              />
               {hasEvidence && (
                 <line
                   x1={`${from.x}%`} y1={`${from.y}%`}
@@ -313,6 +327,15 @@ function ModelSceneContent({
                   }}
                 />
               )}
+              <ConnectionLine
+                fromX={from.x} fromY={from.y}
+                toX={to.x} toY={to.y}
+                hasEvidence={hasEvidence}
+                gapProgress={gapT}
+                vpSize={vpSize}
+                popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
+                connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
+              />
             </g>
           )
         })}
@@ -333,14 +356,17 @@ function ModelSceneContent({
   )
 }
 
-/** Connection line with optional animated unzip gap */
+/** Connection line that bows outward into a zipper-bag shape during unzip */
 function ConnectionLine({
-  fromX, fromY, toX, toY, hasEvidence, gapProgress,
+  fromX, fromY, toX, toY, hasEvidence, gapProgress, vpSize, popupSize, connectionAngle,
 }: {
   fromX: number; fromY: number
   toX: number; toY: number
   hasEvidence: boolean
   gapProgress: number
+  vpSize: { w: number; h: number }
+  popupSize: { w: number; h: number } | null
+  connectionAngle: number
 }) {
   const lineClass = hasEvidence ? 'connection-line has-evidence' : 'connection-line'
 
@@ -354,31 +380,108 @@ function ConnectionLine({
     )
   }
 
-  const dx = toX - fromX
-  const dy = toY - fromY
-  const len = Math.sqrt(dx * dx + dy * dy)
-  if (len < 0.001) return null
+  // Compute in screen-pixel space for correct aspect-ratio perpendicular
+  const fxPx = fromX * vpSize.w / 100
+  const fyPx = fromY * vpSize.h / 100
+  const txPx = toX * vpSize.w / 100
+  const tyPx = toY * vpSize.h / 100
 
-  const dirX = dx / len
-  const dirY = dy / len
-  const midX = (fromX + toX) / 2
-  const midY = (fromY + toY) / 2
+  const dxPx = txPx - fxPx
+  const dyPx = tyPx - fyPx
+  const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
+  if (lenPx < 1) return null
 
-  // Gap half-size: 25% of connection length, max 12% of scene
-  const gapHalf = Math.min(len * 0.25, 12) * gapProgress
+  // Unit vectors in pixel space
+  const alongX = dxPx / lenPx
+  const alongY = dyPx / lenPx
+  const perpX = -alongY
+  const perpY = alongX
+
+  const midXPx = (fxPx + txPx) / 2
+  const midYPx = (fyPx + tyPx) / 2
+
+  // Project popup rectangle onto connection's perpendicular and along axes
+  // to dynamically size both the bow width AND the zipper length.
+  const padding = 20 // px clearance beyond popup edge
+  let bowPx: number
+  let splitFracA = 0.30
+  let splitFracB = 0.70
+  let cornerR = 0
+
+  if (popupSize && popupSize.w > 0 && popupSize.h > 0) {
+    const cosA = Math.abs(Math.cos(connectionAngle))
+    const sinA = Math.abs(Math.sin(connectionAngle))
+
+    // Half-extent of popup projected onto connection's perpendicular axis
+    const perpExtent = (popupSize.w / 2) * sinA + (popupSize.h / 2) * cosA
+    bowPx = (perpExtent + padding) * gapProgress
+
+    // Half-extent of popup projected onto connection's along axis
+    const alongExtent = (popupSize.w / 2) * cosA + (popupSize.h / 2) * sinA
+    // Corner radius for smooth rectangular turns (kappa ≈ 0.55)
+    cornerR = Math.min(bowPx * 0.55, 60)
+    // Split points must clear the popup + corners along the connection direction
+    const splitMargin = (alongExtent + padding + cornerR) / lenPx
+    splitFracA = Math.max(0.05, 0.5 - splitMargin)
+    splitFracB = Math.min(0.95, 0.5 + splitMargin)
+  } else {
+    bowPx = Math.min(lenPx * 0.18, 110) * gapProgress
+  }
+
+  // Split points: where the line departs from / rejoins the connection
+  const splitAx = fxPx + alongX * lenPx * splitFracA
+  const splitAy = fyPx + alongY * lenPx * splitFracA
+  const splitBx = fxPx + alongX * lenPx * splitFracB
+  const splitBy = fyPx + alongY * lenPx * splitFracB
+
+  // Build a track that wraps around one side of the popup.
+  // sign = +1 or -1 for the two sides of the connection.
+  function buildTrack(sign: number): string {
+    const offX = perpX * bowPx * sign
+    const offY = perpY * bowPx * sign
+
+    if (cornerR < 1) {
+      // Fallback: single quadratic bezier (small bow / no popup size)
+      const cpx = midXPx + offX
+      const cpy = midYPx + offY
+      return `M ${fxPx} ${fyPx} L ${splitAx} ${splitAy} Q ${cpx} ${cpy} ${splitBx} ${splitBy} L ${txPx} ${tyPx}`
+    }
+
+    // Side points: offset perpendicular + shifted along by cornerR
+    const sideAx = splitAx + offX + alongX * cornerR
+    const sideAy = splitAy + offY + alongY * cornerR
+    const sideBx = splitBx + offX - alongX * cornerR
+    const sideBy = splitBy + offY - alongY * cornerR
+
+    // Corner A: cubic bezier turning from connection line to parallel offset
+    const cpA1x = splitAx + alongX * cornerR
+    const cpA1y = splitAy + alongY * cornerR
+    const cpA2x = splitAx + offX
+    const cpA2y = splitAy + offY
+
+    // Corner B: cubic bezier turning from parallel offset back to connection line
+    const cpB1x = splitBx + offX
+    const cpB1y = splitBy + offY
+    const cpB2x = splitBx - alongX * cornerR
+    const cpB2y = splitBy - alongY * cornerR
+
+    return [
+      `M ${fxPx} ${fyPx}`,
+      `L ${splitAx} ${splitAy}`,
+      `C ${cpA1x} ${cpA1y} ${cpA2x} ${cpA2y} ${sideAx} ${sideAy}`,
+      `L ${sideBx} ${sideBy}`,
+      `C ${cpB1x} ${cpB1y} ${cpB2x} ${cpB2y} ${splitBx} ${splitBy}`,
+      `L ${txPx} ${tyPx}`,
+    ].join(' ')
+  }
+
+  const d1 = buildTrack(+1)
+  const d2 = buildTrack(-1)
 
   return (
     <>
-      <line
-        x1={`${fromX}%`} y1={`${fromY}%`}
-        x2={`${midX - dirX * gapHalf}%`} y2={`${midY - dirY * gapHalf}%`}
-        className={lineClass}
-      />
-      <line
-        x1={`${midX + dirX * gapHalf}%`} y1={`${midY + dirY * gapHalf}%`}
-        x2={`${toX}%`} y2={`${toY}%`}
-        className={lineClass}
-      />
+      <path d={d1} className={lineClass} fill="none" />
+      <path d={d2} className={lineClass} fill="none" />
     </>
   )
 }

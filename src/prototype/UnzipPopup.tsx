@@ -11,6 +11,7 @@ interface UnzipPopupProps {
   animProgress: number
   /** Screen-space angle of the connection line (radians) */
   connectionAngle: number
+  onSizeChange?: (w: number, h: number) => void
 }
 
 /**
@@ -47,7 +48,7 @@ function buildRevealClip(w: number, h: number, angle: number, progress: number):
 }
 
 export function UnzipPopup({
-  connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle,
+  connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle, onSizeChange,
 }: UnzipPopupProps) {
   const { closeUnzip, unzipDeeper, unzipShallower } = useHybridZoomStore()
   const popupRef = useRef<HTMLDivElement>(null)
@@ -57,12 +58,17 @@ export function UnzipPopup({
   useEffect(() => {
     const el = popupRef.current
     if (!el) return
-    const update = () => setSize({ w: el.offsetWidth, h: el.offsetHeight })
+    const update = () => {
+      const w = el.offsetWidth
+      const h = el.offsetHeight
+      setSize({ w, h })
+      onSizeChange?.(w, h)
+    }
     update()
     const obs = new ResizeObserver(update)
     obs.observe(el)
     return () => obs.disconnect()
-  }, [])
+  }, [onSizeChange])
 
   // Close on Escape
   useEffect(() => {

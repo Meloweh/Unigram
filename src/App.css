@@ -136,7 +136,8 @@
   pointer-events: stroke;
 }
 
-.child-scene-connections line {
+.child-scene-connections line,
+.child-scene-connections path {
   stroke: rgba(37, 96, 149, 0.45);
   stroke-width: 2;
 }
@@ -152,7 +153,6 @@
   cursor: pointer;
 }
 
-.child-scene-connections .connection-hit-area:hover + .connection-line,
 .child-scene-connections .connection-hit-area:hover ~ .connection-line {
   stroke: rgba(14, 79, 143, 0.9);
 }
