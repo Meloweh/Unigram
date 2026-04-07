@@ -44,4 +44,23 @@ describe('hybrid zoom continuity', () => {
     expect(pan.x).toBeCloseTo(82)
     expect(pan.y).toBeCloseTo(-41)
   })
+
+  it('node catches up to camera when nodeProgress lags behind', () => {
+    // Simulate a mid-zoom node switch: camera at 0.5 but nodeProgress at 0
+    const afterSwitch = buildSnapshot(0.5, 0)
+    expect(afterSwitch.cameraScale).toBeGreaterThan(1) // camera zoomed
+    expect(afterSwitch.nodeInflation).toBe(0) // node not inflated
+
+    // Zoom in — should only advance nodeProgress
+    const step1 = applyZoomStep(afterSwitch, 'in')
+    expect(step1.progress).toBeCloseTo(0.5) // camera holds
+    expect(step1.nodeProgress).toBeCloseTo(0.08) // node catching up
+    expect(step1.nodeInflation).toBeCloseTo(0.08)
+
+    // Keep zooming until caught up, then both advance
+    let s = afterSwitch
+    for (let i = 0; i < 10; i++) s = applyZoomStep(s, 'in')
+    expect(s.nodeProgress).toBeCloseTo(s.progress)
+    expect(s.progress).toBeGreaterThan(0.5) // camera resumed
+  })
 })

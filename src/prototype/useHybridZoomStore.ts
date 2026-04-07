@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import {
   applyZoomStep,
+  buildSnapshot,
   createInitialSnapshot,
   realignPanOffset,
   type HybridZoomSnapshot,
@@ -11,54 +12,141 @@ interface PanOffset {
   y: number
 }
 
-interface HybridZoomState {
-  selectedNodeId: string | null
+/** One level of the recursive zoom stack */
+export interface ZoomStackFrame {
+  modelId: string
+  /** The node that was zoomed into to reach this level (null for root) */
+  entryNodeId: string | null
   snapshot: HybridZoomSnapshot
+  selectedNodeId: string | null
+  panOffset: PanOffset
+}
+
+interface HybridZoomState {
+  stack: ZoomStackFrame[]
   isDragging: boolean
   isPaused: boolean
-  panOffset: PanOffset
-  selectNode: (nodeId: string) => void
+
+  // Derived convenience (always reflects top of stack)
+  currentFrame: () => ZoomStackFrame
+
+  selectNode: (nodeId: string, centeringResidual?: { x: number; y: number }) => void
   clearSelection: () => void
   zoomIn: () => void
   zoomOut: () => void
+  /** Push into a child model when handoff completes */
+  pushModel: (childModelId: string, entryNodeId: string) => void
   pause: () => void
   beginDrag: () => void
   endDrag: () => void
   panBy: (dx: number, dy: number) => void
 }
 
-const initialSnapshot = createInitialSnapshot()
+function makeRootFrame(): ZoomStackFrame {
+  return {
+    modelId: 'root',
+    entryNodeId: null,
+    snapshot: createInitialSnapshot(),
+    selectedNodeId: null,
+    panOffset: { x: 0, y: 0 },
+  }
+}
 
-export const useHybridZoomStore = create<HybridZoomState>((set) => ({
-  selectedNodeId: 'node-alpha',
-  snapshot: initialSnapshot,
+function updateTopFrame(
+  stack: ZoomStackFrame[],
+  updater: (frame: ZoomStackFrame) => Partial<ZoomStackFrame>,
+): ZoomStackFrame[] {
+  const newStack = [...stack]
+  const top = { ...newStack[newStack.length - 1] }
+  Object.assign(top, updater(top))
+  newStack[newStack.length - 1] = top
+  return newStack
+}
+
+export const useHybridZoomStore = create<HybridZoomState>((set, get) => ({
+  stack: [makeRootFrame()],
   isDragging: false,
   isPaused: false,
-  panOffset: { x: 0, y: 0 },
-  selectNode: (nodeId) => {
-    set({ selectedNodeId: nodeId })
+
+  currentFrame: () => {
+    const { stack } = get()
+    return stack[stack.length - 1]
   },
+
+  selectNode: (nodeId, centeringResidual) => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, (frame) => ({
+        selectedNodeId: nodeId,
+        snapshot: buildSnapshot(frame.snapshot.progress, 0),
+        panOffset: centeringResidual
+          ? { x: frame.panOffset.x + centeringResidual.x, y: frame.panOffset.y + centeringResidual.y }
+          : frame.panOffset,
+      })),
+    }))
+  },
+
   clearSelection: () => {
-    set({ selectedNodeId: null, isPaused: true })
+    set((state) => ({
+      stack: updateTopFrame(state.stack, () => ({ selectedNodeId: null })),
+      isPaused: true,
+    }))
   },
+
   zoomIn: () => {
     set((state) => {
-      if (!state.selectedNodeId) {
-        return state
-      }
+      const top = state.stack[state.stack.length - 1]
+      if (!top.selectedNodeId) return state
       return {
-        snapshot: applyZoomStep(state.snapshot, 'in'),
-        panOffset: realignPanOffset(state.panOffset),
+        stack: updateTopFrame(state.stack, (frame) => ({
+          snapshot: applyZoomStep(frame.snapshot, 'in'),
+          panOffset: realignPanOffset(frame.panOffset),
+        })),
         isPaused: false,
       }
     })
   },
+
   zoomOut: () => {
+    set((state) => {
+      const top = state.stack[state.stack.length - 1]
+      // If at bottom of current level and there's a parent, pop the stack
+      if (top.snapshot.progress <= 0 && state.stack.length > 1) {
+        const newStack = [...state.stack]
+        newStack.pop()
+        // Set parent frame to progress=1 (just came back from child)
+        // then apply one zoom-out step so it starts animating back
+        return {
+          stack: updateTopFrame(newStack, (frame) => ({
+            snapshot: applyZoomStep(frame.snapshot, 'out'),
+          })),
+          isPaused: false,
+        }
+      }
+      return {
+        stack: updateTopFrame(state.stack, (frame) => ({
+          snapshot: applyZoomStep(frame.snapshot, 'out'),
+        })),
+        isPaused: false,
+      }
+    })
+  },
+
+  pushModel: (childModelId, entryNodeId) => {
     set((state) => ({
-      snapshot: applyZoomStep(state.snapshot, 'out'),
-      isPaused: false,
+      stack: [
+        ...state.stack,
+        {
+          modelId: childModelId,
+          entryNodeId,
+          snapshot: createInitialSnapshot(),
+          selectedNodeId: null,
+          panOffset: { x: 0, y: 0 },
+        },
+      ],
+      isPaused: true,
     }))
   },
+
   pause: () => {
     set({ isPaused: true })
   },
@@ -70,14 +158,14 @@ export const useHybridZoomStore = create<HybridZoomState>((set) => ({
   },
   panBy: (dx, dy) => {
     set((state) => {
-      if (!state.isDragging) {
-        return state
-      }
+      if (!state.isDragging) return state
       return {
-        panOffset: {
-          x: state.panOffset.x + dx,
-          y: state.panOffset.y + dy,
-        },
+        stack: updateTopFrame(state.stack, (frame) => ({
+          panOffset: {
+            x: frame.panOffset.x + dx,
+            y: frame.panOffset.y + dy,
+          },
+        })),
       }
     })
   },

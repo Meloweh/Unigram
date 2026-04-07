@@ -2,6 +2,8 @@ export type HandoffMode = 'host' | 'child'
 
 export interface HybridZoomSnapshot {
   progress: number
+  /** Node-specific zoom progress; may lag behind progress after a mid-zoom node switch */
+  nodeProgress: number
   cameraScale: number
   /** Canvas reveal factor (0→1): drives actual pixel growth of the node canvas */
   nodeInflation: number
@@ -23,17 +25,19 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t
 }
 
-export function buildSnapshot(progress: number): HybridZoomSnapshot {
-  const normalized = clamp(progress, MIN_PROGRESS, MAX_PROGRESS)
+/**
+ * Build a snapshot from overall progress and (optionally separate) node progress.
+ * When nodeProgress is omitted it defaults to progress (in-sync).
+ */
+export function buildSnapshot(progress: number, nodeProgress?: number): HybridZoomSnapshot {
+  const p = clamp(progress, MIN_PROGRESS, MAX_PROGRESS)
+  const np = clamp(nodeProgress ?? p, MIN_PROGRESS, MAX_PROGRESS)
   return {
-    progress: normalized,
-    cameraScale: lerp(1, CAMERA_SCALE_FINAL, normalized),
-    // Canvas reveal factor: 0 = hidden, 1 = fully expanded.
-    // The viewport uses this to grow node dimensions from base → (vpSize / cameraScale).
-    // At handoff: actualNodeSize * cameraScale = viewportSize → canvas fills page.
-    // Child model content at percentage positions = 100% canonical view.
-    nodeInflation: normalized,
-    handoffMode: normalized >= 1 ? 'child' : 'host',
+    progress: p,
+    nodeProgress: np,
+    cameraScale: lerp(1, CAMERA_SCALE_FINAL, p),
+    nodeInflation: np,
+    handoffMode: np >= 1 ? 'child' : 'host',
   }
 }
 
@@ -42,8 +46,16 @@ export function applyZoomStep(
   direction: 'in' | 'out',
   step = DEFAULT_ZOOM_STEP,
 ): HybridZoomSnapshot {
-  const delta = direction === 'in' ? step : -step
-  return buildSnapshot(snapshot.progress + delta)
+  if (direction === 'in') {
+    if (snapshot.nodeProgress < snapshot.progress) {
+      // Node catching up after a mid-zoom switch — only inflate, camera holds
+      return buildSnapshot(snapshot.progress, snapshot.nodeProgress + step)
+    }
+    const next = snapshot.progress + step
+    return buildSnapshot(next, next)
+  }
+  // Zoom out: reduce both together
+  return buildSnapshot(snapshot.progress - step, snapshot.nodeProgress - step)
 }
 
 export function realignPanOffset(offset: { x: number; y: number }): { x: number; y: number } {
@@ -54,5 +66,5 @@ export function realignPanOffset(offset: { x: number; y: number }): { x: number;
 }
 
 export function createInitialSnapshot(): HybridZoomSnapshot {
-  return buildSnapshot(0)
+  return buildSnapshot(0, 0)
 }
