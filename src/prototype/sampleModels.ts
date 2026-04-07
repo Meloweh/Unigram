@@ -8,6 +8,10 @@ export interface ModelNode {
   y: number
   /** ID of the child model this node opens on zoom (if any) */
   childModelId?: string
+  /** Available MPD (Multi-Parallel-Dimension) model IDs for this node.
+   *  The dial appears when this array has more than one entry.
+   *  childModelId should always be one of these. */
+  mpdIds?: string[]
 }
 
 export interface StudyEvidence {
@@ -41,7 +45,7 @@ register({
   id: 'root',
   label: 'System Overview',
   nodes: [
-    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals' },
+    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals', mpdIds: ['alpha-internals', 'alpha-performance'] },
   ],
   connections: [],
 })
@@ -51,7 +55,7 @@ register({
   id: 'alpha-internals',
   label: 'Alpha Internals',
   nodes: [
-    { id: 'svc-a', label: 'Service A', x: 20, y: 25, childModelId: 'svc-a-internals' },
+    { id: 'svc-a', label: 'Service A', x: 20, y: 25, childModelId: 'svc-a-internals', mpdIds: ['svc-a-internals', 'svc-a-security'] },
     { id: 'svc-b', label: 'Service B', x: 70, y: 20 },
     { id: 'db', label: 'Database', x: 30, y: 70 },
     { id: 'gw', label: 'Gateway', x: 75, y: 65 },
@@ -155,3 +159,39 @@ export function getInitialModels(): Record<string, Model> {
 export function getRootModel(): Model {
   return models['root']
 }
+
+// ---- MPD: Service A security audit dimension ----
+register({
+  id: 'svc-a-security',
+  label: 'Service A — Security Audit',
+  nodes: [
+    { id: 'auth', label: 'Auth Module', x: 25, y: 25 },
+    { id: 'tls', label: 'TLS Termination', x: 70, y: 20 },
+    { id: 'vault', label: 'Secret Vault', x: 45, y: 65 },
+    { id: 'audit-log', label: 'Audit Log', x: 75, y: 70 },
+  ],
+  connections: [
+    { from: 'auth', to: 'tls' },
+    { from: 'auth', to: 'vault' },
+    { from: 'tls', to: 'audit-log' },
+    { from: 'vault', to: 'audit-log' },
+  ],
+})
+
+// ---- MPD: Alpha performance monitoring dimension ----
+register({
+  id: 'alpha-performance',
+  label: 'Alpha — Performance',
+  nodes: [
+    { id: 'lb', label: 'Load Balancer', x: 50, y: 15 },
+    { id: 'cache-pool', label: 'Cache Pool', x: 25, y: 45 },
+    { id: 'workers', label: 'Worker Pool', x: 75, y: 45 },
+    { id: 'metrics', label: 'Metrics Collector', x: 50, y: 75 },
+  ],
+  connections: [
+    { from: 'lb', to: 'cache-pool' },
+    { from: 'lb', to: 'workers' },
+    { from: 'cache-pool', to: 'metrics' },
+    { from: 'workers', to: 'metrics' },
+  ],
+})

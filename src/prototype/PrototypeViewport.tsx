@@ -3,6 +3,7 @@ import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { type Model, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
+import { MpdBar } from './MpdDial'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -93,6 +94,7 @@ export function PrototypeViewport() {
     redo,
     undoStacks,
     redoStacks,
+    switchFrameMpd,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
@@ -127,6 +129,18 @@ export function PrototypeViewport() {
   // Find the selected node and its child model
   const selectedNode = model.nodes.find((n) => n.id === frame.selectedNodeId)
   const childModel = selectedNode?.childModelId ? storeGetModel(selectedNode.childModelId) : undefined
+
+  // MPD options: derived from the current frame's mpdIds (inherited from entry node)
+  const mpdOptions = useMemo(() => {
+    if (!frame.mpdIds || frame.mpdIds.length <= 1) return null
+    return frame.mpdIds.map((id) => {
+      const m = storeGetModel(id)
+      return { id, label: m?.label ?? id }
+    })
+  }, [frame.mpdIds, storeGetModel])
+  const mpdActiveIndex = mpdOptions
+    ? Math.max(0, frame.mpdIds!.indexOf(frame.modelId))
+    : 0
 
   const sceneStyle = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
@@ -170,6 +184,14 @@ export function PrototypeViewport() {
   // ---- Node dragging ----
   const draggingNodeRef = useRef<string | null>(null)
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+
+  // MPD curtain transition state
+  const [mpdCurtain, setMpdCurtain] = useState<{
+    oldModel: Model
+    oldSceneStyle: React.CSSProperties
+    progress: number
+  } | null>(null)
+  const curtainRaf = useRef<number>(0)
 
   /** Convert a client (screen) position to scene-percentage coords */
   const clientToScene = useCallback((clientX: number, clientY: number) => {
@@ -406,6 +428,37 @@ export function PrototypeViewport() {
         <div className="empty-hint">Click a node to select, then scroll to zoom in.</div>
       )}
 
+      {mpdOptions && mpdOptions.length > 1 && (
+        <MpdBar
+          options={mpdOptions}
+          activeIndex={mpdActiveIndex}
+          onSelect={(idx) => {
+            const newModelId = mpdOptions[idx].id
+            if (newModelId === frame.modelId) return
+            // Capture current state for curtain
+            const oldModel = model
+            const oldStyle = { ...sceneStyle }
+            cancelAnimationFrame(curtainRaf.current)
+            setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0 })
+            switchFrameMpd(newModelId)
+            // Animate curtain from 0 → 1
+            const startTime = performance.now()
+            const animate = () => {
+              const elapsed = performance.now() - startTime
+              const t = Math.min(elapsed / 500, 1)
+              const eased = t * t * (3 - 2 * t) // smoothstep
+              setMpdCurtain((prev) => prev ? { ...prev, progress: eased } : null)
+              if (t < 1) {
+                curtainRaf.current = requestAnimationFrame(animate)
+              } else {
+                setMpdCurtain(null)
+              }
+            }
+            curtainRaf.current = requestAnimationFrame(animate)
+          }}
+        />
+      )}
+
       <div className="editor-toolbar">
         <button
           type="button"
@@ -443,7 +496,44 @@ export function PrototypeViewport() {
         >&#x2795; Add Node</button>
       </div>
 
-      <div className="scene" style={sceneStyle}>
+      {/* During MPD curtain: render old model clipped to right, new model clipped to left */}
+      {mpdCurtain && (
+        <>
+          <div
+            className="scene"
+            style={{
+              ...mpdCurtain.oldSceneStyle,
+              clipPath: `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
+            }}
+          >
+            <ModelSceneContent
+              model={mpdCurtain.oldModel}
+              selectedNodeId={null}
+              childModel={undefined}
+              progress={0}
+              vpSize={vpSize}
+              onSelectNode={() => {}}
+              onClickConnection={() => {}}
+              onNodeDragStart={() => {}}
+              onConnectionDragStart={() => {}}
+              draggingNodeId={null}
+              editingNodeId={null}
+              onFinishEditing={() => {}}
+              connectionDraft={null}
+              unzipGap={null}
+            />
+          </div>
+          <div className="mpd-curtain-line" style={{ left: `${mpdCurtain.progress * 100}%` }} />
+        </>
+      )}
+
+      <div
+        className="scene"
+        style={{
+          ...sceneStyle,
+          ...(mpdCurtain ? { clipPath: `inset(0 ${(1 - mpdCurtain.progress) * 100}% 0 0)` } : {}),
+        }}
+      >
         <ModelSceneContent
           model={model}
           selectedNodeId={frame.selectedNodeId}

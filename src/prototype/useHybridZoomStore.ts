@@ -26,6 +26,8 @@ export interface ZoomStackFrame {
   modelId: string
   /** The node that was zoomed into to reach this level (null for root) */
   entryNodeId: string | null
+  /** MPD options inherited from the entry node (if any) */
+  mpdIds?: string[]
   snapshot: HybridZoomSnapshot
   selectedNodeId: string | null
   panOffset: PanOffset
@@ -83,6 +85,8 @@ interface HybridZoomState {
   removeConnection: (modelId: string, from: string, to: string) => void
   undo: (modelId: string) => void
   redo: (modelId: string) => void
+  /** Switch the current frame's model to an alternative MPD dimension */
+  switchFrameMpd: (newModelId: string) => void
 }
 
 const MAX_UNDO = 50
@@ -200,19 +204,24 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   },
 
   pushModel: (childModelId, entryNodeId) => {
-    set((state) => ({
-      stack: [
-        ...state.stack,
-        {
-          modelId: childModelId,
-          entryNodeId,
-          snapshot: createInitialSnapshot(),
-          selectedNodeId: null,
-          panOffset: { x: 0, y: 0 },
-        },
-      ],
-      isPaused: true,
-    }))
+    set((state) => {
+      const currentModel = state.models[state.stack[state.stack.length - 1].modelId]
+      const entryNode = currentModel?.nodes.find((n) => n.id === entryNodeId)
+      return {
+        stack: [
+          ...state.stack,
+          {
+            modelId: childModelId,
+            entryNodeId,
+            mpdIds: entryNode?.mpdIds,
+            snapshot: createInitialSnapshot(),
+            selectedNodeId: null,
+            panOffset: { x: 0, y: 0 },
+          },
+        ],
+        isPaused: true,
+      }
+    })
   },
 
   pause: () => {
@@ -419,6 +428,23 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
           ...state.undoStacks,
           [modelId]: [...(state.undoStacks[modelId] ?? []), JSON.parse(JSON.stringify(current))],
         },
+      }
+    })
+  },
+
+  switchFrameMpd: (newModelId) => {
+    set((state) => {
+      const frame = state.stack[state.stack.length - 1]
+      if (!frame.mpdIds?.includes(newModelId)) return state
+      if (frame.modelId === newModelId) return state
+      return {
+        stack: updateTopFrame(state.stack, () => ({
+          modelId: newModelId,
+          selectedNodeId: null,
+          panOffset: { x: 0, y: 0 },
+          snapshot: createInitialSnapshot(),
+        })),
+        unzipPopup: null,
       }
     })
   },

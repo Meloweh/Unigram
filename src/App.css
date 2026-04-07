@@ -106,6 +106,55 @@
   margin: 0 4px;
 }
 
+.mpd-bar {
+  position: absolute;
+  bottom: 52px;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid #c8d8ea;
+}
+
+.mpd-bar-option {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #c8d8ea;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #64748b;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.mpd-bar-option:hover:not(.active) {
+  background: #f0f6ff;
+  color: #334155;
+}
+
+.mpd-bar-option.active {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+
+.mpd-curtain-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #2563eb;
+  z-index: 5;
+  box-shadow: 0 0 8px rgba(37, 99, 235, 0.4);
+  pointer-events: none;
+}
+
 .viewport.dragging {
   cursor: grabbing;
 }
