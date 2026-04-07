@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { getModel, type Model, type ModelNode } from './sampleModels'
+import { type Model, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
-import { useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
+import { GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -82,10 +82,21 @@ export function PrototypeViewport() {
     beginDrag,
     endDrag,
     panBy,
+    getModel: storeGetModel,
+    moveNode,
+    beginMoveNode,
+    addNode,
+    updateNodeLabel,
+    removeNode,
+    addConnection,
+    undo,
+    redo,
+    undoStacks,
+    redoStacks,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
-  const model = getModel(frame.modelId)!
+  const model = storeGetModel(frame.modelId)!
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
@@ -115,7 +126,7 @@ export function PrototypeViewport() {
 
   // Find the selected node and its child model
   const selectedNode = model.nodes.find((n) => n.id === frame.selectedNodeId)
-  const childModel = selectedNode?.childModelId ? getModel(selectedNode.childModelId) : undefined
+  const childModel = selectedNode?.childModelId ? storeGetModel(selectedNode.childModelId) : undefined
 
   const sceneStyle = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
@@ -156,6 +167,155 @@ export function PrototypeViewport() {
     }
   }
 
+  // ---- Node dragging ----
+  const draggingNodeRef = useRef<string | null>(null)
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+
+  /** Convert a client (screen) position to scene-percentage coords */
+  const clientToScene = useCallback((clientX: number, clientY: number) => {
+    const el = viewportRef.current
+    if (!el) return { x: 50, y: 50 }
+    const rect = el.getBoundingClientRect()
+    // Account for scene transform: translate + scale
+    const cs = frame.snapshot.cameraScale
+    let cx = 0, cy = 0
+    if (selectedNode) {
+      const np = frame.snapshot.nodeProgress
+      cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
+      cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+    }
+    const ox = frame.panOffset.x + cx
+    const oy = frame.panOffset.y + cy
+    // Scene local pixel coords
+    const localX = (clientX - rect.left - rect.width / 2 - ox) / cs + rect.width / 2
+    const localY = (clientY - rect.top - rect.height / 2 - oy) / cs + rect.height / 2
+    return {
+      x: (localX / rect.width) * 100,
+      y: (localY / rect.height) * 100,
+    }
+  }, [frame.snapshot.cameraScale, frame.snapshot.nodeProgress, frame.panOffset.x, frame.panOffset.y, selectedNode, vpSize.w, vpSize.h])
+
+  const handleNodeDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    draggingNodeRef.current = nodeId
+    setDraggingNodeId(nodeId)
+    beginMoveNode(frame.modelId)
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+  }, [beginMoveNode, frame.modelId])
+
+  const handleNodeDragMove = useCallback((e: React.PointerEvent) => {
+    if (!draggingNodeRef.current) return
+    const pos = clientToScene(e.clientX, e.clientY)
+    moveNode(frame.modelId, draggingNodeRef.current, pos.x, pos.y)
+  }, [clientToScene, frame.modelId, moveNode])
+
+  const handleNodeDragEnd = useCallback(() => {
+    draggingNodeRef.current = null
+    setDraggingNodeId(null)
+  }, [])
+
+  // ---- Connection creation (right-click drag) ----
+  const [connectionDraft, setConnectionDraft] = useState<{
+    fromId: string
+    fromX: number
+    fromY: number
+    toX: number
+    toY: number
+  } | null>(null)
+
+  const handleConnectionDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const node = model.nodes.find((n) => n.id === nodeId)
+    if (!node) return
+    setConnectionDraft({
+      fromId: nodeId,
+      fromX: node.x,
+      fromY: node.y,
+      toX: node.x,
+      toY: node.y,
+    })
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+  }, [model.nodes])
+
+  const handleConnectionDragMove = useCallback((e: React.PointerEvent) => {
+    if (!connectionDraft) return
+    const pos = clientToScene(e.clientX, e.clientY)
+    setConnectionDraft((d) => d ? { ...d, toX: pos.x, toY: pos.y } : null)
+  }, [connectionDraft, clientToScene])
+
+  const handleConnectionDragEnd = useCallback((e: React.PointerEvent) => {
+    if (!connectionDraft) return
+    // Find if pointer is over a target node
+    const pos = clientToScene(e.clientX, e.clientY)
+    const target = model.nodes.find((n) => {
+      const dx = n.x - pos.x
+      const dy = n.y - pos.y
+      return Math.sqrt(dx * dx + dy * dy) < 5 // hit radius ~5% of scene
+    })
+    if (target && target.id !== connectionDraft.fromId) {
+      addConnection(frame.modelId, { from: connectionDraft.fromId, to: target.id })
+    }
+    setConnectionDraft(null)
+  }, [connectionDraft, clientToScene, model.nodes, frame.modelId, addConnection])
+
+  // ---- Node creation (double-click on empty space) ----
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    // Only on empty space (the viewport itself)
+    if (e.target !== e.currentTarget) return
+    const pos = clientToScene(e.clientX, e.clientY)
+    const snappedX = snapToGrid(pos.x)
+    const snappedY = snapToGrid(pos.y)
+    const newId = `node-${Date.now()}`
+    addNode(frame.modelId, { id: newId, label: '', x: snappedX, y: snappedY })
+    selectNode(newId)
+    setEditingNodeId(newId)
+  }, [clientToScene, frame.modelId, addNode, selectNode])
+
+  // ---- Node deletion (Delete key) + Undo/Redo ----
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Undo: Ctrl+Z / Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
+        e.preventDefault()
+        undo(frame.modelId)
+        return
+      }
+      // Redo: Ctrl+Shift+Z / Cmd+Shift+Z or Ctrl+Y
+      if ((e.ctrlKey || e.metaKey) && (e.shiftKey && e.key === 'Z' || e.key === 'y')) {
+        e.preventDefault()
+        redo(frame.modelId)
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Don't delete while typing in a node label
+        if (editingNodeId) return
+        if (frame.selectedNodeId) {
+          removeNode(frame.modelId, frame.selectedNodeId)
+        }
+      }
+      // Escape to deselect or cancel editing
+      if (e.key === 'Escape') {
+        if (editingNodeId) {
+          // If label is still empty, remove the node
+          const node = model.nodes.find((n) => n.id === editingNodeId)
+          if (node && !node.label.trim()) {
+            removeNode(frame.modelId, editingNodeId)
+          }
+          setEditingNodeId(null)
+        } else {
+          clearSelection()
+          closeUnzip()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, removeNode, clearSelection, closeUnzip, undo, redo])
+
   return (
     <div
       ref={viewportRef}
@@ -174,18 +334,38 @@ export function PrototypeViewport() {
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerMove={(event) => {
+        // Node dragging takes priority
+        if (draggingNodeRef.current) {
+          handleNodeDragMove(event)
+          return
+        }
+        // Connection dragging
+        if (connectionDraft) {
+          handleConnectionDragMove(event)
+          return
+        }
         if (!isDragging || !lastPointer.current) return
         const dx = event.clientX - lastPointer.current.x
         const dy = event.clientY - lastPointer.current.y
         panBy(dx, dy)
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
-      onPointerUp={() => {
+      onPointerUp={(event) => {
+        if (draggingNodeRef.current) {
+          handleNodeDragEnd()
+          return
+        }
+        if (connectionDraft) {
+          handleConnectionDragEnd(event)
+          return
+        }
         endDrag()
         lastPointer.current = null
         pause()
       }}
       onPointerLeave={() => {
+        handleNodeDragEnd()
+        setConnectionDraft(null)
         endDrag()
         lastPointer.current = null
       }}
@@ -195,6 +375,8 @@ export function PrototypeViewport() {
           closeUnzip()
         }
       }}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div className="debug-overlay">
         <div className="prototype-stats compact">
@@ -224,6 +406,43 @@ export function PrototypeViewport() {
         <div className="empty-hint">Click a node to select, then scroll to zoom in.</div>
       )}
 
+      <div className="editor-toolbar">
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={!(undoStacks[frame.modelId]?.length)}
+          onClick={() => undo(frame.modelId)}
+          title="Undo (Ctrl+Z)"
+        >&#x21A9; Undo</button>
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={!(redoStacks[frame.modelId]?.length)}
+          onClick={() => redo(frame.modelId)}
+          title="Redo (Ctrl+Shift+Z)"
+        >&#x21AA; Redo</button>
+        <span className="toolbar-sep" />
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={!frame.selectedNodeId}
+          onClick={() => { if (frame.selectedNodeId) { removeNode(frame.modelId, frame.selectedNodeId); clearSelection() } }}
+          title="Delete selected node (Del)"
+        >&#x2715; Delete</button>
+        <span className="toolbar-sep" />
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => {
+            const newId = `node-${Date.now()}`
+            addNode(frame.modelId, { id: newId, label: '', x: snapToGrid(50), y: snapToGrid(50) })
+            selectNode(newId)
+            setEditingNodeId(newId)
+          }}
+          title="Add new node"
+        >&#x2795; Add Node</button>
+      </div>
+
       <div className="scene" style={sceneStyle}>
         <ModelSceneContent
           model={model}
@@ -233,6 +452,19 @@ export function PrototypeViewport() {
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
           onClickConnection={openUnzip}
+          onNodeDragStart={handleNodeDragStart}
+          onConnectionDragStart={handleConnectionDragStart}
+          draggingNodeId={draggingNodeId}
+          editingNodeId={editingNodeId}
+          onFinishEditing={(nodeId, label) => {
+            if (label.trim()) {
+              updateNodeLabel(frame.modelId, nodeId, label.trim())
+            } else {
+              removeNode(frame.modelId, nodeId)
+            }
+            setEditingNodeId(null)
+          }}
+          connectionDraft={connectionDraft}
           unzipGap={unzipDisplayKey ? {
             connectionKey: unzipDisplayKey,
             progress: unzipAnimProgress,
@@ -290,6 +522,12 @@ function ModelSceneContent({
   vpSize,
   onSelectNode,
   onClickConnection,
+  onNodeDragStart,
+  onConnectionDragStart,
+  draggingNodeId,
+  editingNodeId,
+  onFinishEditing,
+  connectionDraft,
   unzipGap,
 }: {
   model: Model
@@ -299,6 +537,12 @@ function ModelSceneContent({
   vpSize: { w: number; h: number }
   onSelectNode: (id: string) => void
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
+  onNodeDragStart: (nodeId: string, e: React.PointerEvent) => void
+  onConnectionDragStart: (nodeId: string, e: React.PointerEvent) => void
+  draggingNodeId: string | null
+  editingNodeId: string | null
+  onFinishEditing: (nodeId: string, label: string) => void
+  connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number } | null
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
 }) {
   // Compute per-node spread offsets: when a popup needs more room than the
@@ -398,6 +642,13 @@ function ModelSceneContent({
             </g>
           )
         })}
+        {connectionDraft && (
+          <line
+            x1={`${connectionDraft.fromX}%`} y1={`${connectionDraft.fromY}%`}
+            x2={`${connectionDraft.toX}%`} y2={`${connectionDraft.toY}%`}
+            className="connection-draft"
+          />
+        )}
       </svg>
       {model.nodes.map((node) => {
         const p = pos(node)
@@ -413,6 +664,11 @@ function ModelSceneContent({
             childModel={node.id === selectedNodeId ? childModel : undefined}
             vpSize={vpSize}
             onSelect={() => onSelectNode(node.id)}
+            onDragStart={(e) => onNodeDragStart(node.id, e)}
+            onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
+            isDragging={node.id === draggingNodeId}
+            isEditing={node.id === editingNodeId}
+            onFinishEditing={(label) => onFinishEditing(node.id, label)}
           />
         )
       })}
@@ -600,6 +856,11 @@ function SceneNode({
   childModel,
   vpSize,
   onSelect,
+  onDragStart,
+  onConnectionDragStart,
+  isDragging,
+  isEditing,
+  onFinishEditing,
 }: {
   node: ModelNode
   posX: number
@@ -610,6 +871,11 @@ function SceneNode({
   childModel: Model | undefined
   vpSize: { w: number; h: number }
   onSelect: () => void
+  onDragStart: (e: React.PointerEvent) => void
+  onConnectionDragStart: (e: React.PointerEvent) => void
+  isDragging: boolean
+  isEditing: boolean
+  onFinishEditing: (label: string) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const [baseSize, setBaseSize] = useState({ w: NODE_MIN_W, h: NODE_MIN_H })
@@ -636,7 +902,7 @@ function SceneNode({
   const style: React.CSSProperties = {
     left: `${posX}%`,
     top: `${posY}%`,
-    transition: 'left 0.35s cubic-bezier(0.25,0.1,0.25,1), top 0.35s cubic-bezier(0.25,0.1,0.25,1)',
+    transition: isDragging ? 'none' : 'left 0.35s cubic-bezier(0.25,0.1,0.25,1), top 0.35s cubic-bezier(0.25,0.1,0.25,1)',
     width: nodeW,
     minWidth: baseSize.w,
     height: nodeH,
@@ -654,6 +920,16 @@ function SceneNode({
     zIndex: isZooming ? 10 : 1,
   }
 
+  const [editLabel, setEditLabel] = useState(node.label)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      setEditLabel(node.label)
+      inputRef.current.focus()
+    }
+  }, [isEditing, node.label])
+
   return (
     <article
       className={`host-node ${isSelected ? 'focused' : ''}`}
@@ -662,14 +938,36 @@ function SceneNode({
         event.stopPropagation()
         onSelect()
       }}
+      onPointerDown={(e) => {
+        if (e.button === 0 && !isEditing) {
+          onDragStart(e)
+        } else if (e.button === 2) {
+          onConnectionDragStart(e)
+        }
+      }}
     >
-      <div
-        ref={labelRef}
-        className="host-label"
-        style={{ opacity: chromeFade, visibility: chromeFade > 0.01 ? 'visible' : 'hidden' }}
-      >
-        {node.label}
-      </div>
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          className="host-label-input"
+          value={editLabel}
+          onChange={(e) => setEditLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onFinishEditing(editLabel)
+            if (e.key === 'Escape') onFinishEditing('')
+          }}
+          onBlur={() => onFinishEditing(editLabel)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div
+          ref={labelRef}
+          className="host-label"
+          style={{ opacity: chromeFade, visibility: chromeFade > 0.01 ? 'visible' : 'hidden' }}
+        >
+          {node.label || '\u00A0'}
+        </div>
+      )}
       {isZooming && childModel && (
         <div className="child-model">
           <ChildModelPreview

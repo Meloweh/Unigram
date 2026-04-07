@@ -61,6 +61,51 @@
   pointer-events: auto;
 }
 
+.editor-toolbar {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid #c8d8ea;
+  border-radius: 12px;
+  padding: 4px 8px;
+  box-shadow: 0 2px 12px rgba(19, 41, 73, 0.10);
+}
+
+.toolbar-btn {
+  border: none;
+  background: transparent;
+  color: #21486f;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background: #edf6ff;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: #c8d8ea;
+  margin: 0 4px;
+}
+
 .viewport.dragging {
   cursor: grabbing;
 }
@@ -69,6 +114,10 @@
   position: absolute;
   inset: 0;
   transform-origin: center;
+  /* Dot grid — moves with pan/zoom since it's on the scene layer */
+  background-image:
+    radial-gradient(circle, rgba(37, 96, 149, 0.18) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 .host-node {
@@ -155,6 +204,28 @@
 
 .child-scene-connections .connection-hit-area:hover ~ .connection-line {
   stroke: rgba(14, 79, 143, 0.9);
+}
+
+.child-scene-connections .connection-draft {
+  stroke: rgba(14, 79, 143, 0.5);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+  pointer-events: none;
+}
+
+/* ---- Node label inline editing ---- */
+
+.host-label-input {
+  font-weight: 600;
+  color: #17314f;
+  font-size: inherit;
+  border: 1px solid #365f8f;
+  border-radius: 6px;
+  padding: 2px 6px;
+  outline: none;
+  background: #fff;
+  width: 100%;
+  min-width: 60px;
 }
 
 /* ---- Unzip Popup ---- */

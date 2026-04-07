@@ -147,6 +147,11 @@ export function getModel(id: string): Model | undefined {
   return models[id]
 }
 
+/** Returns a deep clone of all registered models for mutable store initialization */
+export function getInitialModels(): Record<string, Model> {
+  return JSON.parse(JSON.stringify(models))
+}
+
 export function getRootModel(): Model {
   return models['root']
 }
