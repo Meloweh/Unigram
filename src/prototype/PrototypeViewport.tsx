@@ -429,7 +429,7 @@ export function PrototypeViewport() {
         <div className="empty-hint">Click a node to select, then scroll to zoom in.</div>
       )}
 
-      {mpdOptions && mpdOptions.length > 1 && (
+      {mpdOptions && mpdOptions.length > 1 && frame.selectedNodeId && (
         <MpdDial
           options={mpdOptions}
           activeIndex={mpdActiveIndex}
@@ -523,17 +523,17 @@ export function PrototypeViewport() {
         >&#x2795; Add Node</button>
       </div>
 
-      {/* During MPD curtain: render old model clipped, new model clipped opposite */}
+      {/* During MPD curtain: render old model in a clip wrapper (no transform → viewport coords) */}
       {mpdCurtain && (
-        <>
+        <div style={{
+          position: 'absolute', inset: 0,
+          clipPath: mpdCurtain.direction === 'left'
+            ? `inset(0 ${mpdCurtain.progress * 100}% 0 0)`
+            : `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
+        }}>
           <div
             className="scene"
-            style={{
-              ...mpdCurtain.oldSceneStyle,
-              clipPath: mpdCurtain.direction === 'left'
-                ? `inset(0 ${mpdCurtain.progress * 100}% 0 0)`
-                : `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
-            }}
+            style={mpdCurtain.oldSceneStyle}
           >
             <ModelSceneContent
               model={mpdCurtain.oldModel}
@@ -552,27 +552,21 @@ export function PrototypeViewport() {
               unzipGap={null}
             />
           </div>
-          <div
-            className="mpd-curtain-line"
-            style={{
-              left: mpdCurtain.direction === 'left'
-                ? `${(1 - mpdCurtain.progress) * 100}%`
-                : `${mpdCurtain.progress * 100}%`,
-            }}
-          />
-        </>
+        </div>
       )}
 
+      {/* New/live scene – clip wrapper sits outside the transform so clip is in viewport coords */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        ...(mpdCurtain ? {
+          clipPath: mpdCurtain.direction === 'left'
+            ? `inset(0 0 0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px))`
+            : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`,
+        } : {}),
+      }}>
       <div
         className="scene"
-        style={{
-          ...sceneStyle,
-          ...(mpdCurtain ? {
-            clipPath: mpdCurtain.direction === 'left'
-              ? `inset(0 0 0 ${(1 - mpdCurtain.progress) * 100}%)`
-              : `inset(0 ${(1 - mpdCurtain.progress) * 100}% 0 0)`,
-          } : {}),
-        }}
+        style={sceneStyle}
       >
         <ModelSceneContent
           model={model}
@@ -586,6 +580,7 @@ export function PrototypeViewport() {
           onConnectionDragStart={handleConnectionDragStart}
           draggingNodeId={draggingNodeId}
           editingNodeId={editingNodeId}
+          noTransition={!!mpdCurtain}
           onFinishEditing={(nodeId, label) => {
             if (label.trim()) {
               updateNodeLabel(frame.modelId, nodeId, label.trim())
@@ -639,6 +634,18 @@ export function PrototypeViewport() {
           )
         })()}
       </div>
+      </div>
+
+      {mpdCurtain && (
+        <div
+          className="mpd-curtain-line"
+          style={{
+            left: mpdCurtain.direction === 'left'
+              ? `${(1 - mpdCurtain.progress) * 100}%`
+              : `${mpdCurtain.progress * 100}%`,
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -659,6 +666,7 @@ function ModelSceneContent({
   onFinishEditing,
   connectionDraft,
   unzipGap,
+  noTransition,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -674,6 +682,7 @@ function ModelSceneContent({
   onFinishEditing: (nodeId: string, label: string) => void
   connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number } | null
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
+  noTransition?: boolean
 }) {
   // Compute per-node spread offsets: when a popup needs more room than the
   // connection length provides, push both endpoint nodes apart symmetrically.
@@ -796,7 +805,7 @@ function ModelSceneContent({
             onSelect={() => onSelectNode(node.id)}
             onDragStart={(e) => onNodeDragStart(node.id, e)}
             onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
-            isDragging={node.id === draggingNodeId}
+            isDragging={node.id === draggingNodeId || !!noTransition}
             isEditing={node.id === editingNodeId}
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
           />

@@ -41,15 +41,24 @@ describe('switchFrameMpd', () => {
     expect(store.getState().currentFrame().modelId).toBe('alpha-internals')
   })
 
-  it('resets selection and pan on switch', () => {
+  it('clears selection for non-twin nodes on switch', () => {
     enterNodeAlpha()
     store.getState().selectNode('svc-a')
     store.getState().panBy(100, 50)
     expect(store.getState().currentFrame().selectedNodeId).toBe('svc-a')
 
     store.getState().switchFrameMpd('alpha-performance')
+    // svc-a does not exist in alpha-performance, so selection is cleared
     expect(store.getState().currentFrame().selectedNodeId).toBeNull()
     expect(store.getState().currentFrame().panOffset).toEqual({ x: 0, y: 0 })
+  })
+
+  it('preserves selection for twin nodes on switch', () => {
+    enterNodeAlpha()
+    // 'gw' exists in both alpha-internals and alpha-performance
+    store.getState().selectNode('gw')
+    store.getState().switchFrameMpd('alpha-performance')
+    expect(store.getState().currentFrame().selectedNodeId).toBe('gw')
   })
 
   it('clears unzip popup on switch', () => {

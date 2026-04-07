@@ -437,10 +437,15 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       const frame = state.stack[state.stack.length - 1]
       if (!frame.mpdIds?.includes(newModelId)) return state
       if (frame.modelId === newModelId) return state
+      // Preserve selection if a twin node exists in the new model
+      const newModel = state.models[newModelId]
+      const keepSelection = frame.selectedNodeId && newModel?.nodes.some((n) => n.id === frame.selectedNodeId)
+        ? frame.selectedNodeId
+        : null
       return {
         stack: updateTopFrame(state.stack, () => ({
           modelId: newModelId,
-          selectedNodeId: null,
+          selectedNodeId: keepSelection,
           panOffset: initialPanOffset ?? { x: 0, y: 0 },
           snapshot: createInitialSnapshot(),
         })),

@@ -40,12 +40,14 @@ export function MpdDial({ options, activeIndex, onSelect }: MpdDialProps) {
   }
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    e.stopPropagation()
     if (!dragStartRef.current || !trackRef.current) return
     const w = trackRef.current.getBoundingClientRect().width
     setDragDelta((e.clientX - dragStartRef.current.clientX) / w)
   }
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent) => {
+    e.stopPropagation()
     if (!dragStartRef.current) return
     const savedDelta = dragDelta
     dragStartRef.current = null
@@ -87,6 +89,7 @@ export function MpdDial({ options, activeIndex, onSelect }: MpdDialProps) {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Option labels */}
       {options.map((opt, i) => (
