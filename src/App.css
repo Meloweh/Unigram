@@ -161,7 +161,6 @@
 
 .unzip-popup {
   position: absolute;
-  transform: translate(-50%, -120%);
   z-index: 20;
   min-width: 220px;
   max-width: 380px;
@@ -172,12 +171,7 @@
   padding: 0;
   overflow: hidden;
   pointer-events: auto;
-  animation: unzip-appear 0.18s ease-out;
-}
-
-@keyframes unzip-appear {
-  from { opacity: 0; transform: translate(-50%, -110%) scale(0.92); }
-  to { opacity: 1; transform: translate(-50%, -120%) scale(1); }
+  will-change: clip-path;
 }
 
 .unzip-header {

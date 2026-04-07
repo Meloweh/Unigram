@@ -2,7 +2,60 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { getModel, type Model, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
-import { useHybridZoomStore } from './useHybridZoomStore'
+import { useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
+
+/** Drives unzip open/close animation (0→1 open, 1→0 close) */
+function useUnzipAnim(popupKey: string | null) {
+  const [progress, setProgress] = useState(0)
+  const currentRef = useRef(0)
+  const lastKeyRef = useRef<string | null>(null)
+
+  if (popupKey) lastKeyRef.current = popupKey
+
+  useEffect(() => {
+    if (popupKey) {
+      currentRef.current = 0
+      setProgress(0)
+      const startTime = performance.now()
+      let rafId: number
+      const tick = () => {
+        const elapsed = performance.now() - startTime
+        const t = Math.min(elapsed / 400, 1)
+        const eased = 1 - (1 - t) ** 3
+        currentRef.current = eased
+        setProgress(eased)
+        if (t < 1) rafId = requestAnimationFrame(tick)
+      }
+      rafId = requestAnimationFrame(tick)
+      return () => cancelAnimationFrame(rafId)
+    } else {
+      const from = currentRef.current
+      if (from < 0.001) return
+      const startTime = performance.now()
+      let rafId: number
+      const tick = () => {
+        const elapsed = performance.now() - startTime
+        const t = Math.min(elapsed / 250, 1)
+        const eased = 1 - (1 - t) ** 3
+        const v = from * (1 - eased)
+        currentRef.current = v
+        setProgress(v)
+        if (t < 1) {
+          rafId = requestAnimationFrame(tick)
+        } else {
+          lastKeyRef.current = null
+          currentRef.current = 0
+          setProgress(0)
+        }
+      }
+      rafId = requestAnimationFrame(tick)
+      return () => cancelAnimationFrame(rafId)
+    }
+  }, [popupKey])
+
+  const displayKey = (popupKey || progress > 0.001) ? (popupKey ?? lastKeyRef.current) : null
+  return { progress, displayKey }
+}
 
 /** Minimum base dimensions fallback before label measured */
 const NODE_MIN_W = 80
@@ -44,6 +97,14 @@ export function PrototypeViewport() {
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
+
+  // Unzip open/close animation
+  const { progress: unzipAnimProgress, displayKey: unzipDisplayKey } = useUnzipAnim(
+    unzipPopup?.connectionKey ?? null,
+  )
+  const lastUnzipRef = useRef<UnzipPopupState | null>(null)
+  if (unzipPopup) lastUnzipRef.current = unzipPopup
+  const activeUnzipPopup = unzipDisplayKey ? (unzipPopup ?? lastUnzipRef.current) : null
 
   const p = frame.snapshot.nodeInflation // 0→1
   const isChild = frame.snapshot.handoffMode === 'child'
@@ -168,19 +229,30 @@ export function PrototypeViewport() {
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
           onClickConnection={openUnzip}
+          unzipGap={unzipDisplayKey ? { connectionKey: unzipDisplayKey, progress: unzipAnimProgress } : null}
         />
-        {unzipPopup && (() => {
+        {activeUnzipPopup && (() => {
           const conn = model.connections.find(
-            (c) => `${c.from}->${c.to}` === unzipPopup.connectionKey,
+            (c) => `${c.from}->${c.to}` === activeUnzipPopup.connectionKey,
           )
           if (!conn?.evidence?.length) return null
+          const fromNode = model.nodes.find((n) => n.id === conn.from)
+          const toNode = model.nodes.find((n) => n.id === conn.to)
+          const angle = fromNode && toNode
+            ? Math.atan2(
+                (toNode.y - fromNode.y) * vpSize.h,
+                (toNode.x - fromNode.x) * vpSize.w,
+              )
+            : 0
           return (
             <UnzipPopup
-              connectionKey={unzipPopup.connectionKey}
-              level={unzipPopup.level}
+              connectionKey={activeUnzipPopup.connectionKey}
+              level={activeUnzipPopup.level}
               evidence={conn.evidence}
-              anchorX={unzipPopup.anchorX}
-              anchorY={unzipPopup.anchorY}
+              anchorX={activeUnzipPopup.anchorX}
+              anchorY={activeUnzipPopup.anchorY}
+              animProgress={unzipAnimProgress}
+              connectionAngle={angle}
             />
           )
         })()}
@@ -198,6 +270,7 @@ function ModelSceneContent({
   vpSize,
   onSelectNode,
   onClickConnection,
+  unzipGap,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -206,6 +279,7 @@ function ModelSceneContent({
   vpSize: { w: number; h: number }
   onSelectNode: (id: string) => void
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
+  unzipGap: { connectionKey: string; progress: number } | null
 }) {
   return (
     <>
@@ -218,12 +292,15 @@ function ModelSceneContent({
           const hasEvidence = !!c.evidence?.length
           const midX = (from.x + to.x) / 2
           const midY = (from.y + to.y) / 2
+          const isUnzipping = unzipGap?.connectionKey === key
+          const gapT = isUnzipping ? unzipGap.progress : 0
           return (
             <g key={key}>
-              <line
-                x1={`${from.x}%`} y1={`${from.y}%`}
-                x2={`${to.x}%`} y2={`${to.y}%`}
-                className={hasEvidence ? 'connection-line has-evidence' : 'connection-line'}
+              <ConnectionLine
+                fromX={from.x} fromY={from.y}
+                toX={to.x} toY={to.y}
+                hasEvidence={hasEvidence}
+                gapProgress={gapT}
               />
               {hasEvidence && (
                 <line
@@ -252,6 +329,56 @@ function ModelSceneContent({
           onSelect={() => onSelectNode(node.id)}
         />
       ))}
+    </>
+  )
+}
+
+/** Connection line with optional animated unzip gap */
+function ConnectionLine({
+  fromX, fromY, toX, toY, hasEvidence, gapProgress,
+}: {
+  fromX: number; fromY: number
+  toX: number; toY: number
+  hasEvidence: boolean
+  gapProgress: number
+}) {
+  const lineClass = hasEvidence ? 'connection-line has-evidence' : 'connection-line'
+
+  if (gapProgress < 0.001) {
+    return (
+      <line
+        x1={`${fromX}%`} y1={`${fromY}%`}
+        x2={`${toX}%`} y2={`${toY}%`}
+        className={lineClass}
+      />
+    )
+  }
+
+  const dx = toX - fromX
+  const dy = toY - fromY
+  const len = Math.sqrt(dx * dx + dy * dy)
+  if (len < 0.001) return null
+
+  const dirX = dx / len
+  const dirY = dy / len
+  const midX = (fromX + toX) / 2
+  const midY = (fromY + toY) / 2
+
+  // Gap half-size: 25% of connection length, max 12% of scene
+  const gapHalf = Math.min(len * 0.25, 12) * gapProgress
+
+  return (
+    <>
+      <line
+        x1={`${fromX}%`} y1={`${fromY}%`}
+        x2={`${midX - dirX * gapHalf}%`} y2={`${midY - dirY * gapHalf}%`}
+        className={lineClass}
+      />
+      <line
+        x1={`${midX + dirX * gapHalf}%`} y1={`${midY + dirY * gapHalf}%`}
+        x2={`${toX}%`} y2={`${toY}%`}
+        className={lineClass}
+      />
     </>
   )
 }

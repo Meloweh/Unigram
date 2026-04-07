@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { StudyEvidence } from './sampleModels'
 import { useHybridZoomStore, type UnzipLevel } from './useHybridZoomStore'
 
@@ -8,11 +8,61 @@ interface UnzipPopupProps {
   evidence: StudyEvidence[]
   anchorX: number
   anchorY: number
+  animProgress: number
+  /** Screen-space angle of the connection line (radians) */
+  connectionAngle: number
 }
 
-export function UnzipPopup({ connectionKey, level, evidence, anchorX, anchorY }: UnzipPopupProps) {
+/**
+ * Build a clip-path polygon that reveals the popup perpendicular to the connection line.
+ * At progress=0 the polygon collapses into a thin slit along the connection direction (invisible).
+ * At progress=1 it opens fully perpendicular (the "scroll unfurling from the stick").
+ */
+function buildRevealClip(w: number, h: number, angle: number, progress: number): string {
+  const cx = w / 2
+  const cy = h / 2
+  // Half-diagonal + padding: ensures the along-axis always covers the entire popup
+  const diag = Math.sqrt(w * w + h * h) / 2 + 24
+
+  // Along the connection direction (the "stick")
+  const cosA = Math.cos(angle)
+  const sinA = Math.sin(angle)
+
+  // Perpendicular to the connection (the unfurl direction)
+  const px = -sinA
+  const py = cosA
+
+  const halfAlong = diag
+  const halfPerp = diag * progress
+
+  // Four corners of the rotated reveal rectangle
+  const points = [
+    [cx + cosA * halfAlong + px * halfPerp, cy + sinA * halfAlong + py * halfPerp],
+    [cx + cosA * halfAlong - px * halfPerp, cy + sinA * halfAlong - py * halfPerp],
+    [cx - cosA * halfAlong - px * halfPerp, cy - sinA * halfAlong - py * halfPerp],
+    [cx - cosA * halfAlong + px * halfPerp, cy - sinA * halfAlong + py * halfPerp],
+  ]
+
+  return `polygon(${points.map(([x, y]) => `${x}px ${y}px`).join(', ')})`
+}
+
+export function UnzipPopup({
+  connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle,
+}: UnzipPopupProps) {
   const { closeUnzip, unzipDeeper, unzipShallower } = useHybridZoomStore()
   const popupRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ w: 300, h: 200 })
+
+  // Measure popup border-box for accurate clip-path
+  useEffect(() => {
+    const el = popupRef.current
+    if (!el) return
+    const update = () => setSize({ w: el.offsetWidth, h: el.offsetHeight })
+    update()
+    const obs = new ResizeObserver(update)
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
 
   // Close on Escape
   useEffect(() => {
@@ -25,6 +75,8 @@ export function UnzipPopup({ connectionKey, level, evidence, anchorX, anchorY }:
 
   if (evidence.length === 0) return null
 
+  const clipPath = buildRevealClip(size.w, size.h, connectionAngle, animProgress)
+
   return (
     <div
       ref={popupRef}
@@ -32,6 +84,8 @@ export function UnzipPopup({ connectionKey, level, evidence, anchorX, anchorY }:
       style={{
         left: `${anchorX}%`,
         top: `${anchorY}%`,
+        transform: 'translate(-50%, -50%)',
+        clipPath,
       }}
       data-connection={connectionKey}
       onWheel={(e) => {
