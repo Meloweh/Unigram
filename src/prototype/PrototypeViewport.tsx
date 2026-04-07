@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { type Model, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
@@ -466,7 +467,12 @@ export function PrototypeViewport() {
             const oldModel = model
             const oldStyle = { ...sceneStyle }
             cancelAnimationFrame(curtainRaf.current)
-            setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+            // flushSync guarantees the clip-path wrapper is in the DOM
+            // before switchFrameMpd changes the model, preventing a
+            // single unclipped frame where all nodes would visibly jump.
+            flushSync(() => {
+              setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+            })
             switchFrameMpd(newModelId, alignPan)
             // Animate curtain from 0 → 1
             const startTime = performance.now()
