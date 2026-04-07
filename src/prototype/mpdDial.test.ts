@@ -73,6 +73,12 @@ describe('switchFrameMpd', () => {
     // mpdIds should still be available for switching back
     expect(store.getState().currentFrame().mpdIds).toEqual(['alpha-internals', 'alpha-performance'])
   })
+
+  it('applies initialPanOffset when provided', () => {
+    enterNodeAlpha()
+    store.getState().switchFrameMpd('alpha-performance', { x: 42, y: -17 })
+    expect(store.getState().currentFrame().panOffset).toEqual({ x: 42, y: -17 })
+  })
 })
 
 describe('pushModel captures mpdIds from entry node', () => {

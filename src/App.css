@@ -106,42 +106,81 @@
   margin: 0 4px;
 }
 
-.mpd-bar {
+.mpd-dial {
   position: absolute;
   bottom: 52px;
   left: 0;
   right: 0;
+  height: 56px;
   z-index: 10;
-  display: flex;
-  gap: 2px;
-  padding: 6px 16px;
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(8px);
   border-top: 1px solid #c8d8ea;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
 }
 
-.mpd-bar-option {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid #c8d8ea;
-  border-radius: 8px;
-  background: transparent;
+.mpd-dial.dragging {
+  cursor: grabbing;
+}
+
+.mpd-dial-label {
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
   font-size: 0.82rem;
   font-weight: 600;
+  color: #8596a8;
   cursor: pointer;
-  color: #64748b;
-  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: color 0.2s;
 }
 
-.mpd-bar-option:hover:not(.active) {
-  background: #f0f6ff;
+.mpd-dial-label:hover {
   color: #334155;
 }
 
-.mpd-bar-option.active {
+.mpd-dial-label.active {
+  color: #1e40af;
+  font-weight: 700;
+}
+
+.mpd-dial-ticks {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 14px;
+}
+
+.mpd-dial-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 8px;
+  background: #d0dae6;
+  transform: translateX(-0.5px);
+}
+
+.mpd-dial-tick.major {
+  height: 14px;
+  width: 2px;
+  background: #94a3b8;
+  transform: translateX(-1px);
+}
+
+.mpd-dial-knob {
+  position: absolute;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
   background: #2563eb;
-  color: white;
-  border-color: #2563eb;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 2px 6px rgba(37, 99, 235, 0.3);
 }
 
 .mpd-curtain-line {

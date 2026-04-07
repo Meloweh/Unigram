@@ -86,7 +86,7 @@ interface HybridZoomState {
   undo: (modelId: string) => void
   redo: (modelId: string) => void
   /** Switch the current frame's model to an alternative MPD dimension */
-  switchFrameMpd: (newModelId: string) => void
+  switchFrameMpd: (newModelId: string, initialPanOffset?: { x: number; y: number }) => void
 }
 
 const MAX_UNDO = 50
@@ -432,7 +432,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     })
   },
 
-  switchFrameMpd: (newModelId) => {
+  switchFrameMpd: (newModelId, initialPanOffset) => {
     set((state) => {
       const frame = state.stack[state.stack.length - 1]
       if (!frame.mpdIds?.includes(newModelId)) return state
@@ -441,7 +441,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         stack: updateTopFrame(state.stack, () => ({
           modelId: newModelId,
           selectedNodeId: null,
-          panOffset: { x: 0, y: 0 },
+          panOffset: initialPanOffset ?? { x: 0, y: 0 },
           snapshot: createInitialSnapshot(),
         })),
         unzipPopup: null,

@@ -3,7 +3,7 @@ import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { type Model, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
-import { MpdBar } from './MpdDial'
+import { MpdDial } from './MpdDial'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -190,6 +190,7 @@ export function PrototypeViewport() {
     oldModel: Model
     oldSceneStyle: React.CSSProperties
     progress: number
+    direction: 'left' | 'right'
   } | null>(null)
   const curtainRaf = useRef<number>(0)
 
@@ -429,18 +430,44 @@ export function PrototypeViewport() {
       )}
 
       {mpdOptions && mpdOptions.length > 1 && (
-        <MpdBar
+        <MpdDial
           options={mpdOptions}
           activeIndex={mpdActiveIndex}
-          onSelect={(idx) => {
+          onSelect={(idx, direction) => {
             const newModelId = mpdOptions[idx].id
             if (newModelId === frame.modelId) return
+
+            // Compute pan offset to align twin nodes across dimensions
+            let alignPan: { x: number; y: number } = { x: 0, y: 0 }
+            if (frame.selectedNodeId) {
+              const oldNode = model.nodes.find((n) => n.id === frame.selectedNodeId)
+              const newModel = storeGetModel(newModelId)
+              const twinNode = newModel?.nodes.find((n) => n.id === frame.selectedNodeId)
+              if (oldNode && twinNode) {
+                const cs = frame.snapshot.cameraScale
+                const np = frame.snapshot.nodeProgress
+                let cx = 0, cy = 0
+                if (selectedNode) {
+                  cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
+                  cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+                }
+                // Old node screen position (relative to viewport center)
+                const oldScreenX = cx + frame.panOffset.x + cs * (oldNode.x / 100 - 0.5) * vpSize.w
+                const oldScreenY = cy + frame.panOffset.y + cs * (oldNode.y / 100 - 0.5) * vpSize.h
+                // New frame: scale=1, no centering → solve for panOffset
+                alignPan = {
+                  x: oldScreenX - (twinNode.x / 100 - 0.5) * vpSize.w,
+                  y: oldScreenY - (twinNode.y / 100 - 0.5) * vpSize.h,
+                }
+              }
+            }
+
             // Capture current state for curtain
             const oldModel = model
             const oldStyle = { ...sceneStyle }
             cancelAnimationFrame(curtainRaf.current)
-            setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0 })
-            switchFrameMpd(newModelId)
+            setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+            switchFrameMpd(newModelId, alignPan)
             // Animate curtain from 0 → 1
             const startTime = performance.now()
             const animate = () => {
@@ -496,14 +523,16 @@ export function PrototypeViewport() {
         >&#x2795; Add Node</button>
       </div>
 
-      {/* During MPD curtain: render old model clipped to right, new model clipped to left */}
+      {/* During MPD curtain: render old model clipped, new model clipped opposite */}
       {mpdCurtain && (
         <>
           <div
             className="scene"
             style={{
               ...mpdCurtain.oldSceneStyle,
-              clipPath: `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
+              clipPath: mpdCurtain.direction === 'left'
+                ? `inset(0 ${mpdCurtain.progress * 100}% 0 0)`
+                : `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
             }}
           >
             <ModelSceneContent
@@ -523,7 +552,14 @@ export function PrototypeViewport() {
               unzipGap={null}
             />
           </div>
-          <div className="mpd-curtain-line" style={{ left: `${mpdCurtain.progress * 100}%` }} />
+          <div
+            className="mpd-curtain-line"
+            style={{
+              left: mpdCurtain.direction === 'left'
+                ? `${(1 - mpdCurtain.progress) * 100}%`
+                : `${mpdCurtain.progress * 100}%`,
+            }}
+          />
         </>
       )}
 
@@ -531,7 +567,11 @@ export function PrototypeViewport() {
         className="scene"
         style={{
           ...sceneStyle,
-          ...(mpdCurtain ? { clipPath: `inset(0 ${(1 - mpdCurtain.progress) * 100}% 0 0)` } : {}),
+          ...(mpdCurtain ? {
+            clipPath: mpdCurtain.direction === 'left'
+              ? `inset(0 0 0 ${(1 - mpdCurtain.progress) * 100}%)`
+              : `inset(0 ${(1 - mpdCurtain.progress) * 100}% 0 0)`,
+          } : {}),
         }}
       >
         <ModelSceneContent
