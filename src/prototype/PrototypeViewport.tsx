@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { getModel, type Model, type ModelNode } from './sampleModels'
+import { UnzipPopup } from './UnzipPopup'
 import { useHybridZoomStore } from './useHybridZoomStore'
 
 /** Minimum base dimensions fallback before label measured */
@@ -16,11 +17,14 @@ export function PrototypeViewport() {
     currentFrame,
     isDragging,
     isPaused,
+    unzipPopup,
     selectNode,
     clearSelection,
     zoomIn,
     zoomOut,
     pushModel,
+    openUnzip,
+    closeUnzip,
     pause,
     beginDrag,
     endDrag,
@@ -123,6 +127,7 @@ export function PrototypeViewport() {
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           clearSelection()
+          closeUnzip()
         }
       }}
     >
@@ -162,7 +167,23 @@ export function PrototypeViewport() {
           progress={p}
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
+          onClickConnection={openUnzip}
         />
+        {unzipPopup && (() => {
+          const conn = model.connections.find(
+            (c) => `${c.from}->${c.to}` === unzipPopup.connectionKey,
+          )
+          if (!conn?.evidence?.length) return null
+          return (
+            <UnzipPopup
+              connectionKey={unzipPopup.connectionKey}
+              level={unzipPopup.level}
+              evidence={conn.evidence}
+              anchorX={unzipPopup.anchorX}
+              anchorY={unzipPopup.anchorY}
+            />
+          )
+        })()}
       </div>
     </div>
   )
@@ -176,6 +197,7 @@ function ModelSceneContent({
   progress,
   vpSize,
   onSelectNode,
+  onClickConnection,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -183,6 +205,7 @@ function ModelSceneContent({
   progress: number
   vpSize: { w: number; h: number }
   onSelectNode: (id: string) => void
+  onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
 }) {
   return (
     <>
@@ -191,12 +214,29 @@ function ModelSceneContent({
           const from = model.nodes.find((n) => n.id === c.from)
           const to = model.nodes.find((n) => n.id === c.to)
           if (!from || !to) return null
+          const key = `${c.from}->${c.to}`
+          const hasEvidence = !!c.evidence?.length
+          const midX = (from.x + to.x) / 2
+          const midY = (from.y + to.y) / 2
           return (
-            <line
-              key={`${c.from}-${c.to}`}
-              x1={`${from.x}%`} y1={`${from.y}%`}
-              x2={`${to.x}%`} y2={`${to.y}%`}
-            />
+            <g key={key}>
+              <line
+                x1={`${from.x}%`} y1={`${from.y}%`}
+                x2={`${to.x}%`} y2={`${to.y}%`}
+                className={hasEvidence ? 'connection-line has-evidence' : 'connection-line'}
+              />
+              {hasEvidence && (
+                <line
+                  x1={`${from.x}%`} y1={`${from.y}%`}
+                  x2={`${to.x}%`} y2={`${to.y}%`}
+                  className="connection-hit-area"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onClickConnection(key, midX, midY)
+                  }}
+                />
+              )}
+            </g>
           )
         })}
       </svg>

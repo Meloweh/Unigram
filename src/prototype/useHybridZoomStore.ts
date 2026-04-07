@@ -22,10 +22,22 @@ export interface ZoomStackFrame {
   panOffset: PanOffset
 }
 
+export type UnzipLevel = 1 | 2 | 3
+
+export interface UnzipPopupState {
+  /** Connection key "from->to" */
+  connectionKey: string
+  level: UnzipLevel
+  /** Anchor position in scene-percentage coords */
+  anchorX: number
+  anchorY: number
+}
+
 interface HybridZoomState {
   stack: ZoomStackFrame[]
   isDragging: boolean
   isPaused: boolean
+  unzipPopup: UnzipPopupState | null
 
   // Derived convenience (always reflects top of stack)
   currentFrame: () => ZoomStackFrame
@@ -40,6 +52,11 @@ interface HybridZoomState {
   beginDrag: () => void
   endDrag: () => void
   panBy: (dx: number, dy: number) => void
+
+  openUnzip: (connectionKey: string, anchorX: number, anchorY: number) => void
+  closeUnzip: () => void
+  unzipDeeper: () => void
+  unzipShallower: () => void
 }
 
 function makeRootFrame(): ZoomStackFrame {
@@ -67,6 +84,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => ({
   stack: [makeRootFrame()],
   isDragging: false,
   isPaused: false,
+  unzipPopup: null,
 
   currentFrame: () => {
     const { stack } = get()
@@ -75,6 +93,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => ({
 
   selectNode: (nodeId, centeringResidual) => {
     set((state) => ({
+      unzipPopup: null,
       stack: updateTopFrame(state.stack, (frame) => ({
         selectedNodeId: nodeId,
         snapshot: buildSnapshot(frame.snapshot.progress, 0),
@@ -97,6 +116,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => ({
       const top = state.stack[state.stack.length - 1]
       if (!top.selectedNodeId) return state
       return {
+        unzipPopup: null,
         stack: updateTopFrame(state.stack, (frame) => ({
           snapshot: applyZoomStep(frame.snapshot, 'in'),
           panOffset: realignPanOffset(frame.panOffset),
@@ -166,6 +186,33 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => ({
             y: frame.panOffset.y + dy,
           },
         })),
+      }
+    })
+  },
+
+  openUnzip: (connectionKey, anchorX, anchorY) => {
+    set({ unzipPopup: { connectionKey, level: 1, anchorX, anchorY } })
+  },
+
+  closeUnzip: () => {
+    set({ unzipPopup: null })
+  },
+
+  unzipDeeper: () => {
+    set((state) => {
+      if (!state.unzipPopup || state.unzipPopup.level >= 3) return state
+      return {
+        unzipPopup: { ...state.unzipPopup, level: (state.unzipPopup.level + 1) as UnzipLevel },
+      }
+    })
+  },
+
+  unzipShallower: () => {
+    set((state) => {
+      if (!state.unzipPopup) return state
+      if (state.unzipPopup.level <= 1) return { unzipPopup: null }
+      return {
+        unzipPopup: { ...state.unzipPopup, level: (state.unzipPopup.level - 1) as UnzipLevel },
       }
     })
   },

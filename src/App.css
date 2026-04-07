@@ -132,9 +132,136 @@
   pointer-events: none;
 }
 
+.child-scene-connections .connection-hit-area {
+  pointer-events: stroke;
+}
+
 .child-scene-connections line {
   stroke: rgba(37, 96, 149, 0.45);
   stroke-width: 2;
+}
+
+.child-scene-connections .connection-line.has-evidence {
+  stroke: rgba(37, 96, 149, 0.65);
+  stroke-dasharray: 6 3;
+}
+
+.child-scene-connections .connection-hit-area {
+  stroke: transparent;
+  stroke-width: 16;
+  cursor: pointer;
+}
+
+.child-scene-connections .connection-hit-area:hover + .connection-line,
+.child-scene-connections .connection-hit-area:hover ~ .connection-line {
+  stroke: rgba(14, 79, 143, 0.9);
+}
+
+/* ---- Unzip Popup ---- */
+
+.unzip-popup {
+  position: absolute;
+  transform: translate(-50%, -120%);
+  z-index: 20;
+  min-width: 220px;
+  max-width: 380px;
+  background: #fff;
+  border: 2px solid #365f8f;
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(19, 41, 73, 0.25);
+  padding: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  animation: unzip-appear 0.18s ease-out;
+}
+
+@keyframes unzip-appear {
+  from { opacity: 0; transform: translate(-50%, -110%) scale(0.92); }
+  to { opacity: 1; transform: translate(-50%, -120%) scale(1); }
+}
+
+.unzip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: linear-gradient(145deg, #edf4fc, #dde8f4);
+  border-bottom: 1px solid #d0dce9;
+}
+
+.unzip-level-badge {
+  background: #365f8f;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+}
+
+.unzip-title {
+  flex: 1;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #1a3656;
+}
+
+.unzip-close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: #5a7b9a;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.unzip-close:hover {
+  color: #1a3656;
+}
+
+.unzip-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.unzip-study {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.unzip-study-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #1a3656;
+}
+
+.unzip-study-citation {
+  font-size: 0.78rem;
+  color: #456;
+  line-height: 1.35;
+}
+
+.unzip-study-url {
+  font-size: 0.75rem;
+  color: #2a6db5;
+  word-break: break-all;
+}
+
+.unzip-study-url:hover {
+  text-decoration: underline;
+}
+
+.unzip-hint {
+  padding: 5px 12px 8px;
+  font-size: 0.72rem;
+  color: #8a9fb8;
+  text-align: center;
+  border-top: 1px solid #e8eff6;
 }
 
 .empty-hint {

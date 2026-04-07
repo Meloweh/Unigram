@@ -10,9 +10,16 @@ export interface ModelNode {
   childModelId?: string
 }
 
+export interface StudyEvidence {
+  title: string
+  citation: string
+  url: string
+}
+
 export interface ModelConnection {
   from: string
   to: string
+  evidence?: StudyEvidence[]
 }
 
 export interface Model {
@@ -50,10 +57,55 @@ register({
     { id: 'gw', label: 'Gateway', x: 75, y: 65 },
   ],
   connections: [
-    { from: 'svc-a', to: 'svc-b' },
-    { from: 'svc-a', to: 'db' },
+    {
+      from: 'svc-a',
+      to: 'svc-b',
+      evidence: [
+        {
+          title: 'Microservice Communication Patterns',
+          citation: 'Newman, S. (2021). Building Microservices, 2nd ed., O\'Reilly, Ch. 4',
+          url: 'https://example.com/newman-microservices',
+        },
+        {
+          title: 'Async Messaging in Distributed Systems',
+          citation: 'Hohpe, G. & Woolf, B. (2003). Enterprise Integration Patterns, Addison-Wesley',
+          url: 'https://example.com/eip-hohpe',
+        },
+      ],
+    },
+    {
+      from: 'svc-a',
+      to: 'db',
+      evidence: [
+        {
+          title: 'Database Per Service Pattern',
+          citation: 'Richardson, C. (2018). Microservices Patterns, Manning, Ch. 2',
+          url: 'https://example.com/richardson-db',
+        },
+      ],
+    },
     { from: 'svc-b', to: 'gw' },
-    { from: 'db', to: 'gw' },
+    {
+      from: 'db',
+      to: 'gw',
+      evidence: [
+        {
+          title: 'API Gateway Aggregation',
+          citation: 'Richardson, C. (2018). Microservices Patterns, Manning, Ch. 8',
+          url: 'https://example.com/richardson-gateway',
+        },
+        {
+          title: 'Gateway Routing Strategies',
+          citation: 'Burns, B. (2018). Designing Distributed Systems, O\'Reilly, Ch. 5',
+          url: 'https://example.com/burns-gateway',
+        },
+        {
+          title: 'Low-Latency Data Access at the Edge',
+          citation: 'Kleppmann, M. (2017). Designing Data-Intensive Applications, O\'Reilly, Ch. 11',
+          url: 'https://example.com/kleppmann-edge',
+        },
+      ],
+    },
   ],
 })
 
