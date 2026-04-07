@@ -301,25 +301,84 @@ function ModelSceneContent({
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
 }) {
+  // Compute per-node spread offsets: when a popup needs more room than the
+  // connection length provides, push both endpoint nodes apart symmetrically.
+  const spreadOffsets = useMemo(() => {
+    const offsets: Record<string, { dx: number; dy: number }> = {}
+    if (!unzipGap || !unzipGap.popupSize || unzipGap.progress < 0.001) return offsets
+
+    const conn = model.connections.find(
+      (c) => `${c.from}->${c.to}` === unzipGap.connectionKey,
+    )
+    if (!conn) return offsets
+    const fromN = model.nodes.find((n) => n.id === conn.from)
+    const toN = model.nodes.find((n) => n.id === conn.to)
+    if (!fromN || !toN) return offsets
+
+    // Connection length in pixels
+    const dxPx = (toN.x - fromN.x) * vpSize.w / 100
+    const dyPx = (toN.y - fromN.y) * vpSize.h / 100
+    const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
+    if (lenPx < 1) return offsets
+
+    const angle = unzipGap.connectionAngle
+    const cosA = Math.abs(Math.cos(angle))
+    const sinA = Math.abs(Math.sin(angle))
+
+    // Popup's extent along the connection axis + padding for zipper corners
+    const alongExtent =
+      (unzipGap.popupSize.w / 2) * cosA +
+      (unzipGap.popupSize.h / 2) * sinA +
+      40 // padding for zipper entry/exit + corner radius
+
+    // How much total room is needed vs available
+    const needed = alongExtent * 2
+    const deficit = needed - lenPx
+    if (deficit <= 0) return offsets
+
+    // Each node moves outward by half the deficit (in percentage coordinates)
+    const halfDeficit = (deficit / 2 + 8) * unzipGap.progress // +8 for breathing room
+    const ux = dxPx / lenPx // unit along connection
+    const uy = dyPx / lenPx
+    offsets[conn.from] = {
+      dx: -ux * halfDeficit * 100 / vpSize.w,
+      dy: -uy * halfDeficit * 100 / vpSize.h,
+    }
+    offsets[conn.to] = {
+      dx: ux * halfDeficit * 100 / vpSize.w,
+      dy: uy * halfDeficit * 100 / vpSize.h,
+    }
+    return offsets
+  }, [model, unzipGap, vpSize])
+
+  // Helper: get spread-adjusted position for a node
+  const pos = (node: ModelNode) => {
+    const off = spreadOffsets[node.id]
+    return off
+      ? { x: node.x + off.dx, y: node.y + off.dy }
+      : { x: node.x, y: node.y }
+  }
+
   return (
     <>
       <svg className="child-scene-connections">
         {model.connections.map((c) => {
-          const from = model.nodes.find((n) => n.id === c.from)
-          const to = model.nodes.find((n) => n.id === c.to)
-          if (!from || !to) return null
+          const fromN = model.nodes.find((n) => n.id === c.from)
+          const toN = model.nodes.find((n) => n.id === c.to)
+          if (!fromN || !toN) return null
           const key = `${c.from}->${c.to}`
           const hasEvidence = !!c.evidence?.length
-          const midX = (from.x + to.x) / 2
-          const midY = (from.y + to.y) / 2
+          const fp = pos(fromN), tp = pos(toN)
+          const midX = (fp.x + tp.x) / 2
+          const midY = (fp.y + tp.y) / 2
           const isUnzipping = unzipGap?.connectionKey === key
           const gapT = isUnzipping ? unzipGap.progress : 0
           return (
             <g key={key}>
               {hasEvidence && (
                 <line
-                  x1={`${from.x}%`} y1={`${from.y}%`}
-                  x2={`${to.x}%`} y2={`${to.y}%`}
+                  x1={`${fp.x}%`} y1={`${fp.y}%`}
+                  x2={`${tp.x}%`} y2={`${tp.y}%`}
                   className="connection-hit-area"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -328,8 +387,8 @@ function ModelSceneContent({
                 />
               )}
               <ConnectionLine
-                fromX={from.x} fromY={from.y}
-                toX={to.x} toY={to.y}
+                fromX={fp.x} fromY={fp.y}
+                toX={tp.x} toY={tp.y}
                 hasEvidence={hasEvidence}
                 gapProgress={gapT}
                 vpSize={vpSize}
@@ -340,18 +399,23 @@ function ModelSceneContent({
           )
         })}
       </svg>
-      {model.nodes.map((node) => (
-        <SceneNode
-          key={node.id}
-          node={node}
-          isSelected={node.id === selectedNodeId}
-          isZooming={node.id === selectedNodeId && progress > 0}
-          progress={node.id === selectedNodeId ? progress : 0}
-          childModel={node.id === selectedNodeId ? childModel : undefined}
-          vpSize={vpSize}
-          onSelect={() => onSelectNode(node.id)}
-        />
-      ))}
+      {model.nodes.map((node) => {
+        const p = pos(node)
+        return (
+          <SceneNode
+            key={node.id}
+            node={node}
+            posX={p.x}
+            posY={p.y}
+            isSelected={node.id === selectedNodeId}
+            isZooming={node.id === selectedNodeId && progress > 0}
+            progress={node.id === selectedNodeId ? progress : 0}
+            childModel={node.id === selectedNodeId ? childModel : undefined}
+            vpSize={vpSize}
+            onSelect={() => onSelectNode(node.id)}
+          />
+        )
+      })}
     </>
   )
 }
@@ -528,6 +592,8 @@ function ConnectionLine({
 /** A single node that can expand its canvas when zooming */
 function SceneNode({
   node,
+  posX,
+  posY,
   isSelected,
   isZooming,
   progress,
@@ -536,6 +602,8 @@ function SceneNode({
   onSelect,
 }: {
   node: ModelNode
+  posX: number
+  posY: number
   isSelected: boolean
   isZooming: boolean
   progress: number
@@ -566,8 +634,9 @@ function SceneNode({
   const chromeFade = progress > 0.7 ? 1 - (progress - 0.7) / 0.3 : 1
 
   const style: React.CSSProperties = {
-    left: `${node.x}%`,
-    top: `${node.y}%`,
+    left: `${posX}%`,
+    top: `${posY}%`,
+    transition: 'left 0.35s cubic-bezier(0.25,0.1,0.25,1), top 0.35s cubic-bezier(0.25,0.1,0.25,1)',
     width: nodeW,
     minWidth: baseSize.w,
     height: nodeH,

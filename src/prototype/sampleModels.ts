@@ -55,6 +55,8 @@ register({
     { id: 'svc-b', label: 'Service B', x: 70, y: 20 },
     { id: 'db', label: 'Database', x: 30, y: 70 },
     { id: 'gw', label: 'Gateway', x: 75, y: 65 },
+    { id: 'monitor', label: 'Monitor', x: 52, y: 46 },
+    { id: 'logger', label: 'Logger', x: 60, y: 52 },
   ],
   connections: [
     {
@@ -103,6 +105,22 @@ register({
           title: 'Low-Latency Data Access at the Edge',
           citation: 'Kleppmann, M. (2017). Designing Data-Intensive Applications, O\'Reilly, Ch. 11',
           url: 'https://example.com/kleppmann-edge',
+        },
+      ],
+    },
+    {
+      from: 'monitor',
+      to: 'logger',
+      evidence: [
+        {
+          title: 'Structured Logging in Observability Pipelines',
+          citation: 'Majors, C. et al. (2022). Observability Engineering, O\'Reilly, Ch. 7',
+          url: 'https://example.com/majors-observability',
+        },
+        {
+          title: 'Correlation IDs for Distributed Tracing',
+          citation: 'Sridharan, C. (2018). Distributed Systems Observability, O\'Reilly, Ch. 4',
+          url: 'https://example.com/sridharan-tracing',
         },
       ],
     },
