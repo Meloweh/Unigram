@@ -165,18 +165,20 @@ export function modelToFile(model: Model): ModelFile {
         if (childUrl && myUrl) {
           // Compute relative path
           fileNode.childModel = toRelativePath(childUrl, myUrl)
+        } else {
+          // Fallback: use conventional filename
+          fileNode.childModel = './' + n.childModelId + '.json'
         }
       }
       if (n.mpdIds && n.mpdIds.length > 0) {
         const myUrl = modelIdToUrl.get(model.id)
-        if (myUrl) {
-          fileNode.mpdModels = n.mpdIds
-            .map((id) => {
-              const url = modelIdToUrl.get(id)
-              return url ? toRelativePath(url, myUrl) : undefined
-            })
-            .filter(Boolean) as string[]
-        }
+        fileNode.mpdModels = n.mpdIds
+          .map((id) => {
+            const url = modelIdToUrl.get(id)
+            if (url && myUrl) return toRelativePath(url, myUrl)
+            return './' + id + '.json'
+          })
+          .filter(Boolean) as string[]
       }
       return fileNode
     }),

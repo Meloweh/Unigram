@@ -156,30 +156,334 @@ function computeEdgeAnchors(
 
     const horiz = edge === 'top' || edge === 'bottom'
 
-    // Sort by the perpendicular coordinate of the other node so lines don't cross
-    eps.sort((a, b) => horiz
-      ? a.otherCenter.x - b.otherCenter.x
-      : a.otherCenter.y - b.otherCenter.y)
+    // Initial sort by tangent projection (a reasonable starting order)
+    const tangentX = horiz ? 1 : 0
+    const tangentY = horiz ? 0 : 1
+    eps.sort((a, b) => {
+      const adx = (a.otherCenter.x - np.x) * vpW / 100
+      const ady = (a.otherCenter.y - np.y) * vpH / 100
+      const bdx = (b.otherCenter.x - np.x) * vpW / 100
+      const bdy = (b.otherCenter.y - np.y) * vpH / 100
+      return (adx * tangentX + ady * tangentY) - (bdx * tangentX + bdy * tangentY)
+    })
 
+    // Assign slot positions
     const n = eps.length
-    for (let i = 0; i < n; i++) {
-      const t = (i + 1) / (n + 1) // evenly spaced within (0, 1)
-      const ep = eps[i]
-      let ax: number, ay: number
+    function slotPos(idx: number): { x: number; y: number } {
+      const t = (idx + 1) / (n + 1)
       if (horiz) {
-        ax = np.x - hw + t * 2 * hw
-        ay = edge === 'top' ? np.y - hh : np.y + hh
+        return { x: np.x - hw + t * 2 * hw, y: edge === 'top' ? np.y - hh : np.y + hh }
       } else {
-        ax = edge === 'left' ? np.x - hw : np.x + hw
-        ay = np.y - hh + t * 2 * hh
+        return { x: edge === 'left' ? np.x - hw : np.x + hw, y: np.y - hh + t * 2 * hh }
       }
+    }
+
+    // Bubble-sort pass: swap adjacent slots when their connection lines cross.
+    // Uses the actual "from" endpoints to determine if the assigned lines intersect.
+    let swapped = true
+    let maxPasses = n * n + 10 // safety guard against infinite loops
+    while (swapped && maxPasses-- > 0) {
+      swapped = false
+      for (let i = 0; i < n - 1; i++) {
+        const sA = slotPos(i), sB = slotPos(i + 1)
+        const pA = eps[i].otherCenter, pB = eps[i + 1].otherCenter
+        if (segmentsIntersect(sA.x, sA.y, pA.x, pA.y, sB.x, sB.y, pB.x, pB.y)) {
+          const tmp = eps[i]
+          eps[i] = eps[i + 1]
+          eps[i + 1] = tmp
+          swapped = true
+        }
+      }
+    }
+
+    // Write final anchor positions
+    for (let i = 0; i < n; i++) {
+      const sp = slotPos(i)
+      const ep = eps[i]
       const a = result[ep.connKey]
       if (!a) continue
-      if (ep.isFrom) { a.fx = ax; a.fy = ay }
-      else            { a.tx = ax; a.ty = ay }
+      if (ep.isFrom) { a.fx = sp.x; a.fy = sp.y }
+      else            { a.tx = sp.x; a.ty = sp.y }
     }
   }
 
+  return result
+}
+
+/* ---- Auto-untangle helpers ---- */
+
+/** Standard 2D cross product of vectors (b-a) × (c-a) */
+function cross2d(
+  ax: number, ay: number,
+  bx: number, by: number,
+  cx: number, cy: number,
+): number {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+}
+
+/** Do the open segments (a→b) and (c→d) properly intersect? (ignores shared endpoints & collinear) */
+function segmentsIntersect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number,
+): boolean {
+  const d1 = cross2d(cx, cy, dx, dy, ax, ay)
+  const d2 = cross2d(cx, cy, dx, dy, bx, by)
+  const d3 = cross2d(ax, ay, bx, by, cx, cy)
+  const d4 = cross2d(ax, ay, bx, by, dx, dy)
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true
+  return false
+}
+
+/** Count the number of segment crossings among connections. */
+function countCrossings(
+  nodes: ModelNode[],
+  connections: ModelConnection[],
+  posOf: (id: string) => { x: number; y: number },
+): number {
+  let count = 0
+  for (let i = 0; i < connections.length; i++) {
+    const c1 = connections[i]
+    const a = posOf(c1.from), b = posOf(c1.to)
+    for (let j = i + 1; j < connections.length; j++) {
+      const c2 = connections[j]
+      if (c1.from === c2.from || c1.from === c2.to ||
+          c1.to === c2.from || c1.to === c2.to) continue
+      const c = posOf(c2.from), d = posOf(c2.to)
+      if (segmentsIntersect(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y)) count++
+    }
+  }
+  return count
+}
+
+/**
+ * Compute untangled target positions.
+ * Phase 1: targeted endpoint displacement — for each crossing, try nudging
+ *          each of the 4 involved endpoints across the opposing edge.
+ * Phase 2: greedy node-pair swaps as fallback for crossings Phase 1 can't resolve.
+ * Phase 3: force refinement to clean up spacing.
+ * Returns a map from nodeId to {x, y} in percentage coords, or null if already untangled.
+ */
+function computeUntangledPositions(
+  nodes: ModelNode[],
+  connections: ModelConnection[],
+  vpW: number,
+  vpH: number,
+): Record<string, { x: number; y: number }> | null {
+  // Work in pixel space for aspect-correct geometry
+  const pos = new Map<string, { x: number; y: number }>()
+  for (const n of nodes) {
+    pos.set(n.id, { x: n.x * vpW / 100, y: n.y * vpH / 100 })
+  }
+
+  const posOf = (id: string) => pos.get(id)!
+  const MARGIN_PX = 15
+  const BOUNDARY = 4
+  const minX = BOUNDARY * vpW / 100, maxX = (100 - BOUNDARY) * vpW / 100
+  const minY = BOUNDARY * vpH / 100, maxY = (100 - BOUNDARY) * vpH / 100
+
+  function clampedPos(x: number, y: number) {
+    return {
+      x: Math.max(minX, Math.min(maxX, x)),
+      y: Math.max(minY, Math.min(maxY, y)),
+    }
+  }
+
+  function totalCrossings(): number {
+    return countCrossings(nodes, connections, posOf)
+  }
+
+  function findCrossingPairs(): [number, number][] {
+    const result: [number, number][] = []
+    for (let i = 0; i < connections.length; i++) {
+      const c1 = connections[i]
+      const a = posOf(c1.from), b = posOf(c1.to)
+      for (let j = i + 1; j < connections.length; j++) {
+        const c2 = connections[j]
+        if (c1.from === c2.from || c1.from === c2.to ||
+            c1.to === c2.from || c1.to === c2.to) continue
+        const c = posOf(c2.from), d = posOf(c2.to)
+        if (segmentsIntersect(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y))
+          result.push([i, j])
+      }
+    }
+    return result
+  }
+
+  const initialCrossings = totalCrossings()
+  if (initialCrossings === 0) return null
+
+  // --- Phase 1: Targeted endpoint displacement ---
+  // For each crossing (A→B) × (C→D), try moving each of the 4 endpoints
+  // perpendicular to the opposing edge so it lands on its partner's side.
+  for (let round = 0; round < 80; round++) {
+    const crossings = findCrossingPairs()
+    if (crossings.length === 0) break
+    const curCount = crossings.length
+
+    let bestId = '', bestX = 0, bestY = 0, bestReduction = 0
+
+    for (const [ci, cj] of crossings) {
+      const c1 = connections[ci], c2 = connections[cj]
+      // 4 candidate moves: nudge each endpoint across the opposing edge
+      const candidates = [
+        { id: c1.from, partnerId: c1.to, lineFrom: c2.from, lineTo: c2.to },
+        { id: c1.to, partnerId: c1.from, lineFrom: c2.from, lineTo: c2.to },
+        { id: c2.from, partnerId: c2.to, lineFrom: c1.from, lineTo: c1.to },
+        { id: c2.to, partnerId: c2.from, lineFrom: c1.from, lineTo: c1.to },
+      ]
+
+      for (const cand of candidates) {
+        const p = posOf(cand.id)
+        const partner = posOf(cand.partnerId)
+        const lf = posOf(cand.lineFrom), lt = posOf(cand.lineTo)
+
+        // Normal to the opposing edge
+        const ldx = lt.x - lf.x, ldy = lt.y - lf.y
+        const len = Math.sqrt(ldx * ldx + ldy * ldy)
+        if (len < 0.01) continue
+        const nx = -ldy / len, ny = ldx / len
+
+        // Signed distances from the opposing edge's line
+        const distP = (p.x - lf.x) * nx + (p.y - lf.y) * ny
+        const distPartner = (partner.x - lf.x) * nx + (partner.y - lf.y) * ny
+
+        // Move P to partner's side (they're currently on opposite sides)
+        const targetDist = Math.sign(distPartner) * MARGIN_PX
+        const displacement = targetDist - distP
+        const newPos = clampedPos(p.x + nx * displacement, p.y + ny * displacement)
+
+        // Tentatively apply
+        const origX = p.x, origY = p.y
+        p.x = newPos.x; p.y = newPos.y
+
+        const newCount = findCrossingPairs().length
+        const reduction = curCount - newCount
+
+        // Restore
+        p.x = origX; p.y = origY
+
+        if (reduction > bestReduction) {
+          bestReduction = reduction
+          bestId = cand.id
+          bestX = newPos.x; bestY = newPos.y
+        }
+      }
+    }
+
+    if (bestReduction <= 0) break
+    const p = posOf(bestId)
+    p.x = bestX; p.y = bestY
+  }
+
+  // --- Phase 2: Greedy swaps as fallback ---
+  for (let round = 0; round < 50; round++) {
+    const curCrossings = totalCrossings()
+    if (curCrossings === 0) break
+
+    let bestI = -1, bestJ = -1, bestReduction = 0
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const pi = posOf(nodes[i].id), pj = posOf(nodes[j].id)
+        const tmpX = pi.x, tmpY = pi.y
+        pi.x = pj.x; pi.y = pj.y; pj.x = tmpX; pj.y = tmpY
+
+        const newCrossings = totalCrossings()
+        const reduction = curCrossings - newCrossings
+
+        pj.x = pi.x; pj.y = pi.y; pi.x = tmpX; pi.y = tmpY
+
+        if (reduction > bestReduction) {
+          bestReduction = reduction; bestI = i; bestJ = j
+        }
+      }
+    }
+
+    if (bestReduction <= 0) break
+    const pi = posOf(nodes[bestI].id), pj = posOf(nodes[bestJ].id)
+    const tmpX = pi.x, tmpY = pi.y
+    pi.x = pj.x; pi.y = pj.y; pj.x = tmpX; pj.y = tmpY
+  }
+
+  // --- Phase 3: Force refinement for spacing ---
+  const ITERS = 120
+  const anchor = new Map<string, { x: number; y: number }>()
+  for (const n of nodes) {
+    const p = posOf(n.id)
+    anchor.set(n.id, { x: p.x, y: p.y })
+  }
+
+  for (let iter = 0; iter < ITERS; iter++) {
+    const t = 1 - iter / ITERS
+    const step = 6.0 * t
+
+    const forces = new Map<string, { fx: number; fy: number }>()
+    for (const n of nodes) forces.set(n.id, { fx: 0, fy: 0 })
+
+    // Node repulsion
+    for (let i = 0; i < nodes.length; i++) {
+      const pi = posOf(nodes[i].id)
+      for (let j = i + 1; j < nodes.length; j++) {
+        const pj = posOf(nodes[j].id)
+        let dx = pi.x - pj.x, dy = pi.y - pj.y
+        const d2 = dx * dx + dy * dy
+        const minDist = 70
+        if (d2 < minDist * minDist && d2 > 0.01) {
+          const d = Math.sqrt(d2)
+          const f = (minDist - d) * 0.4
+          dx /= d; dy /= d
+          const fi = forces.get(nodes[i].id)!, fj = forces.get(nodes[j].id)!
+          fi.fx += dx * f; fi.fy += dy * f
+          fj.fx -= dx * f; fj.fy -= dy * f
+        }
+      }
+    }
+
+    // Pull toward post-untangle anchor
+    for (const n of nodes) {
+      const p = posOf(n.id)
+      const a = anchor.get(n.id)!
+      const f = forces.get(n.id)!
+      f.fx += (a.x - p.x) * 0.05
+      f.fy += (a.y - p.y) * 0.05
+    }
+
+    // Apply with step limit; reject moves that increase crossings
+    const prevCrossings = totalCrossings()
+    const saved = new Map<string, { x: number; y: number }>()
+    for (const n of nodes) {
+      const p = posOf(n.id)
+      saved.set(n.id, { x: p.x, y: p.y })
+    }
+
+    for (const n of nodes) {
+      const p = posOf(n.id)
+      const f = forces.get(n.id)!
+      let dx = f.fx, dy = f.fy
+      const mag = Math.sqrt(dx * dx + dy * dy)
+      if (mag > step) { dx = dx / mag * step; dy = dy / mag * step }
+      p.x = Math.max(minX, Math.min(maxX, p.x + dx))
+      p.y = Math.max(minY, Math.min(maxY, p.y + dy))
+    }
+
+    if (totalCrossings() > prevCrossings) {
+      for (const n of nodes) {
+        const p = posOf(n.id)
+        const s = saved.get(n.id)!
+        p.x = s.x; p.y = s.y
+      }
+    }
+  }
+
+  // Convert back to percentage and snap to grid
+  const result: Record<string, { x: number; y: number }> = {}
+  for (const n of nodes) {
+    const p = posOf(n.id)
+    result[n.id] = {
+      x: snapToGrid(p.x * 100 / vpW),
+      y: snapToGrid(p.y * 100 / vpH),
+    }
+  }
   return result
 }
 
@@ -206,6 +510,7 @@ export function PrototypeViewport() {
     panBy,
     getModel: storeGetModel,
     moveNode,
+    moveNodes,
     beginMoveNode,
     addNode,
     updateNodeLabel,
@@ -217,6 +522,7 @@ export function PrototypeViewport() {
     redoStacks,
     switchFrameMpd,
     registerModel,
+    resetToRoot,
     models: storeModels,
   } = useHybridZoomStore()
 
@@ -526,24 +832,85 @@ export function PrototypeViewport() {
             idLookup.set('./' + fn, m.id)
             idLookup.set(fn, m.id)
           }
+          // Preserve childModelId/mpdIds from existing store when save file lacks them
+          const existingModel = storeGetModel(mf.id)
+          const existingNodeMap = new Map(existingModel?.nodes.map(n => [n.id, n]) ?? [])
           registerModel({
             id: mf.id,
             label: mf.label,
-            nodes: mf.nodes.map((n) => ({
-              id: n.id, label: n.label, x: n.x, y: n.y,
-              childModelId: n.childModel ? idLookup.get(n.childModel) : undefined,
-              mpdIds: n.mpdModels?.map((p) => idLookup.get(p)).filter(Boolean) as string[] | undefined,
-            })),
+            nodes: mf.nodes.map((n) => {
+              const existing = existingNodeMap.get(n.id)
+              return {
+                id: n.id, label: n.label, x: n.x, y: n.y,
+                childModelId: n.childModel ? idLookup.get(n.childModel) : existing?.childModelId,
+                mpdIds: n.mpdModels?.length
+                  ? n.mpdModels.map((p) => idLookup.get(p)).filter(Boolean) as string[]
+                  : existing?.mpdIds,
+              }
+            }),
             connections: mf.connections,
           })
         }
+        // Reset zoom stack to root so stale frames don't reference old state
+        resetToRoot()
       } catch (err) {
         console.error('Failed to load project file:', err)
       }
     }
     reader.readAsText(file)
     e.target.value = '' // reset so the same file can be re-loaded
-  }, [registerModel])
+  }, [registerModel, resetToRoot])
+
+  // ---- Auto-untangle animation ----
+  const [isUntangling, setIsUntangling] = useState(false)
+  const untangleRaf = useRef<number>(0)
+
+  const handleUntangle = useCallback(() => {
+    if (isUntangling) return
+    const targets = computeUntangledPositions(model.nodes, model.connections, vpSize.w, vpSize.h)
+    if (!targets) return // already untangled
+
+    beginMoveNode(frame.modelId) // snapshot for undo
+    setIsUntangling(true)
+
+    // Capture stable data for the animation closure
+    const nodeIds = model.nodes.map(n => n.id)
+    const starts: Record<string, { x: number; y: number }> = {}
+    for (const n of model.nodes) starts[n.id] = { x: n.x, y: n.y }
+    const modelId = frame.modelId
+
+    const duration = 800 // ms
+    const t0 = performance.now()
+
+    const animate = (now: number) => {
+      const elapsed = now - t0
+      const raw = Math.min(elapsed / duration, 1)
+      // Ease-out cubic
+      const p = 1 - Math.pow(1 - raw, 3)
+
+      const moves: { nodeId: string; x: number; y: number }[] = []
+      for (const id of nodeIds) {
+        const s = starts[id], e = targets[id]
+        if (!s || !e) continue
+        moves.push({
+          nodeId: id,
+          x: s.x + (e.x - s.x) * p,
+          y: s.y + (e.y - s.y) * p,
+        })
+      }
+      moveNodes(modelId, moves)
+
+      if (raw < 1) {
+        untangleRaf.current = requestAnimationFrame(animate)
+      } else {
+        setIsUntangling(false)
+      }
+    }
+    untangleRaf.current = requestAnimationFrame(animate)
+  }, [isUntangling, model, vpSize, frame.modelId, beginMoveNode, moveNodes])
+
+  // Cleanup raf on unmount
+  useEffect(() => () => cancelAnimationFrame(untangleRaf.current), [])
 
   return (
     <div
@@ -551,6 +918,11 @@ export function PrototypeViewport() {
       className={`viewport ${isDragging ? 'dragging' : ''}`}
       onWheel={(event) => {
         event.preventDefault()
+        // Cancel any running untangle animation before zooming
+        if (isUntangling) {
+          cancelAnimationFrame(untangleRaf.current)
+          setIsUntangling(false)
+        }
         if (event.deltaY < 0) {
           zoomIn()
         } else {
@@ -720,6 +1092,14 @@ export function PrototypeViewport() {
           onClick={() => { if (frame.selectedNodeId) { removeNode(frame.modelId, frame.selectedNodeId); clearSelection() } }}
           title="Delete selected node (Del)"
         >&#x2715; Delete</button>
+        <span className="toolbar-sep" />
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={isUntangling}
+          onClick={handleUntangle}
+          title="Auto-untangle crossed connections"
+        >{isUntangling ? '⟳ Untangling…' : '⟳ Untangle'}</button>
         <span className="toolbar-sep" />
         <button
           type="button"

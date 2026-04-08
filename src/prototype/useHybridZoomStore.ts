@@ -76,6 +76,8 @@ interface HybridZoomState {
 
   // Editing actions
   moveNode: (modelId: string, nodeId: string, x: number, y: number) => void
+  /** Move multiple nodes in a single state update (for animation batching) */
+  moveNodes: (modelId: string, moves: { nodeId: string; x: number; y: number }[]) => void
   /** Snapshot current state for undo before a drag sequence */
   beginMoveNode: (modelId: string) => void
   addNode: (modelId: string, node: ModelNode) => void
@@ -89,6 +91,8 @@ interface HybridZoomState {
   switchFrameMpd: (newModelId: string, initialPanOffset?: { x: number; y: number }) => void
   /** Register a dynamically loaded model into the store */
   registerModel: (model: Model) => void
+  /** Reset zoom stack to root (e.g. after loading a project file) */
+  resetToRoot: () => void
 }
 
 const MAX_UNDO = 50
@@ -207,7 +211,11 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
 
   pushModel: (childModelId, entryNodeId) => {
     set((state) => {
-      const currentModel = state.models[state.stack[state.stack.length - 1].modelId]
+      // Guard: don't push if the top frame already targets this child (e.g. StrictMode double-fire)
+      const top = state.stack[state.stack.length - 1]
+      if (top.modelId === childModelId && top.entryNodeId === entryNodeId) return state
+
+      const currentModel = state.models[top.modelId]
       const entryNode = currentModel?.nodes.find((n) => n.id === entryNodeId)
       return {
         stack: [
@@ -291,6 +299,26 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             nodes: model.nodes.map((n) =>
               n.id === nodeId ? { ...n, x: snapToGrid(x), y: snapToGrid(y) } : n,
             ),
+          },
+        },
+      }
+    })
+  },
+
+  moveNodes: (modelId, moves) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      const lookup = new Map(moves.map(m => [m.nodeId, m]))
+      return {
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) => {
+              const m = lookup.get(n.id)
+              return m ? { ...n, x: snapToGrid(m.x), y: snapToGrid(m.y) } : n
+            }),
           },
         },
       }
@@ -460,6 +488,16 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => ({
       models: { ...state.models, [model.id]: model },
     }))
+  },
+
+  resetToRoot: () => {
+    set({
+      stack: [makeRootFrame()],
+      undoStacks: {},
+      redoStacks: {},
+      unzipPopup: null,
+      isPaused: true,
+    })
   },
 }
 })
