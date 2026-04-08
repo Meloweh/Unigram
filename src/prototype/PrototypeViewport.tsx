@@ -256,6 +256,28 @@ function countCrossings(
   return count
 }
 
+/** Does the segment (a→b) intersect the axis-aligned rectangle
+ *  centered at (cx,cy) with half-dims (hw,hh)? Uses Liang-Barsky clipping. */
+function segmentIntersectsRect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, hw: number, hh: number,
+): boolean {
+  const dx = bx - ax, dy = by - ay
+  const px = [-dx, dx, -dy, dy]
+  const qx = [ax - (cx - hw), (cx + hw) - ax, ay - (cy - hh), (cy + hh) - ay]
+  let tMin = 0, tMax = 1
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(px[i]) < 1e-9) {
+      if (qx[i] < 0) return false
+    } else {
+      const t = qx[i] / px[i]
+      if (px[i] < 0) { if (t > tMax) return false; if (t > tMin) tMin = t }
+      else            { if (t < tMin) return false; if (t < tMax) tMax = t }
+    }
+  }
+  return tMin < tMax
+}
+
 /**
  * Compute untangled target positions.
  * Phase 1: targeted endpoint displacement — for each crossing, try nudging
@@ -310,8 +332,24 @@ function computeUntangledPositions(
     return result
   }
 
+  // Count connections passing through non-endpoint nodes
+  function countNodeOverlaps(): number {
+    let count = 0
+    for (const c of connections) {
+      const a = posOf(c.from), b = posOf(c.to)
+      for (const n of nodes) {
+        if (n.id === c.from || n.id === c.to) continue
+        const np = posOf(n.id)
+        const px = estimateNodePx(n.label)
+        if (segmentIntersectsRect(a.x, a.y, b.x, b.y, np.x, np.y, px.w / 2, px.h / 2)) count++
+      }
+    }
+    return count
+  }
+
   const initialCrossings = totalCrossings()
-  if (initialCrossings === 0) return null
+  const initialOverlaps = countNodeOverlaps()
+  if (initialCrossings === 0 && initialOverlaps === 0) return null
 
   // --- Phase 1: Targeted endpoint displacement ---
   // For each crossing (A→B) × (C→D), try moving each of the 4 endpoints
@@ -413,6 +451,13 @@ function computeUntangledPositions(
     anchor.set(n.id, { x: p.x, y: p.y })
   }
 
+  // Pre-compute node pixel sizes for overlap-aware forces
+  const nodeSizes = new Map<string, { hw: number; hh: number }>()
+  for (const n of nodes) {
+    const px = estimateNodePx(n.label)
+    nodeSizes.set(n.id, { hw: px.w / 2, hh: px.h / 2 })
+  }
+
   for (let iter = 0; iter < ITERS; iter++) {
     const t = 1 - iter / ITERS
     const step = 6.0 * t
@@ -420,22 +465,73 @@ function computeUntangledPositions(
     const forces = new Map<string, { fx: number; fy: number }>()
     for (const n of nodes) forces.set(n.id, { fx: 0, fy: 0 })
 
-    // Node repulsion
+    // Node-node repulsion: use actual bounding box overlap instead of fixed distance
     for (let i = 0; i < nodes.length; i++) {
       const pi = posOf(nodes[i].id)
+      const si = nodeSizes.get(nodes[i].id)!
       for (let j = i + 1; j < nodes.length; j++) {
         const pj = posOf(nodes[j].id)
-        let dx = pi.x - pj.x, dy = pi.y - pj.y
-        const d2 = dx * dx + dy * dy
-        const minDist = 70
-        if (d2 < minDist * minDist && d2 > 0.01) {
-          const d = Math.sqrt(d2)
-          const f = (minDist - d) * 0.4
-          dx /= d; dy /= d
+        const sj = nodeSizes.get(nodes[j].id)!
+
+        // Required separation: sum of half-dims + padding
+        const reqX = si.hw + sj.hw + 20
+        const reqY = si.hh + sj.hh + 12
+
+        const dx = pi.x - pj.x, dy = pi.y - pj.y
+        const overlapX = reqX - Math.abs(dx)
+        const overlapY = reqY - Math.abs(dy)
+
+        if (overlapX > 0 && overlapY > 0) {
+          // Boxes overlap — push apart along the axis with less overlap
           const fi = forces.get(nodes[i].id)!, fj = forces.get(nodes[j].id)!
-          fi.fx += dx * f; fi.fy += dy * f
-          fj.fx -= dx * f; fj.fy -= dy * f
+          if (overlapX < overlapY) {
+            const push = overlapX * 0.4 * (dx >= 0 ? 1 : -1)
+            fi.fx += push; fj.fx -= push
+          } else {
+            const push = overlapY * 0.4 * (dy >= 0 ? 1 : -1)
+            fi.fy += push; fj.fy -= push
+          }
+        } else {
+          // No box overlap but maybe too close center-to-center
+          const d2 = dx * dx + dy * dy
+          const minDist = 70
+          if (d2 < minDist * minDist && d2 > 0.01) {
+            const d = Math.sqrt(d2)
+            const f = (minDist - d) * 0.3
+            const ux = dx / d, uy = dy / d
+            const fi = forces.get(nodes[i].id)!, fj = forces.get(nodes[j].id)!
+            fi.fx += ux * f; fi.fy += uy * f
+            fj.fx -= ux * f; fj.fy -= uy * f
+          }
         }
+      }
+    }
+
+    // Node-connection overlap avoidance: push nodes away from connections that
+    // pass through them (only for nodes that are not endpoints of that connection)
+    for (const c of connections) {
+      const a = posOf(c.from), b = posOf(c.to)
+      for (const n of nodes) {
+        if (n.id === c.from || n.id === c.to) continue
+        const np = posOf(n.id)
+        const ns = nodeSizes.get(n.id)!
+        const pad = 10 // extra clearance around the node box
+        if (!segmentIntersectsRect(a.x, a.y, b.x, b.y, np.x, np.y, ns.hw + pad, ns.hh + pad)) continue
+
+        // Push this node perpendicular to the connection line
+        const ldx = b.x - a.x, ldy = b.y - a.y
+        const len2 = ldx * ldx + ldy * ldy
+        if (len2 < 1) continue
+        const len = Math.sqrt(len2)
+        // Normal direction (pick the side the node center is already on)
+        let nx = -ldy / len, ny = ldx / len
+        const side = (np.x - a.x) * nx + (np.y - a.y) * ny
+        if (side < 0) { nx = -nx; ny = -ny }
+
+        const pushForce = 8.0
+        const fn = forces.get(n.id)!
+        fn.fx += nx * pushForce
+        fn.fy += ny * pushForce
       }
     }
 
