@@ -1,0 +1,16 @@
+{
+  "id": "svc-a-security",
+  "label": "Service A — Security Audit",
+  "nodes": [
+    { "id": "auth", "label": "Auth Module", "x": 25, "y": 25 },
+    { "id": "tls", "label": "TLS Termination", "x": 70, "y": 20 },
+    { "id": "vault", "label": "Secret Vault", "x": 45, "y": 65 },
+    { "id": "audit-log", "label": "Audit Log", "x": 75, "y": 70 }
+  ],
+  "connections": [
+    { "from": "auth", "to": "tls" },
+    { "from": "auth", "to": "vault" },
+    { "from": "tls", "to": "audit-log" },
+    { "from": "vault", "to": "audit-log" }
+  ]
+}

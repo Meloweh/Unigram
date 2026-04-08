@@ -1,0 +1,18 @@
+{
+  "id": "alpha-performance",
+  "label": "Alpha — Performance",
+  "nodes": [
+    { "id": "lb", "label": "Load Balancer", "x": 50, "y": 15 },
+    { "id": "cache-pool", "label": "Cache Pool", "x": 25, "y": 45 },
+    { "id": "workers", "label": "Worker Pool", "x": 75, "y": 45 },
+    { "id": "gw", "label": "Gateway", "x": 40, "y": 75 },
+    { "id": "metrics", "label": "Metrics Collector", "x": 70, "y": 75 }
+  ],
+  "connections": [
+    { "from": "lb", "to": "cache-pool" },
+    { "from": "lb", "to": "workers" },
+    { "from": "cache-pool", "to": "gw" },
+    { "from": "workers", "to": "metrics" },
+    { "from": "gw", "to": "metrics" }
+  ]
+}

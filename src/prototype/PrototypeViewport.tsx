@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelNode } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
+import { loadModel, loadModelById, exportAllModels, registerModelUrl, clearLoaderCache } from './modelLoader'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -63,6 +64,125 @@ function useUnzipAnim(popupKey: string | null) {
 const NODE_MIN_W = 80
 const NODE_MIN_H = 40
 
+/* ---- Edge-anchored connection helpers ---- */
+
+type Edge = 'top' | 'right' | 'bottom' | 'left'
+
+/** Estimate the pixel size of a child-scene-node from its label.
+ *  CSS: padding 10px 16px, border 2px, font ~0.95rem 600 */
+function estimateNodePx(label: string): { w: number; h: number } {
+  const charW = 8.5
+  return {
+    w: Math.max(80, label.length * charW + 36), // 16*2 padding + 2*2 border
+    h: 44,                                       // ~20 line-height + 20 pad + 4 border
+  }
+}
+
+/** Which edge of a rectangle (in pixel half-dims) does a direction vector exit through? */
+function dominantEdge(
+  hw: number, hh: number,
+  dxPx: number, dyPx: number,
+): Edge {
+  // Time to reach each edge along the ray
+  const tx = hw / (Math.abs(dxPx) || 1e-9)
+  const ty = hh / (Math.abs(dyPx) || 1e-9)
+  if (tx < ty) return dxPx > 0 ? 'right' : 'left'
+  return dyPx > 0 ? 'bottom' : 'top'
+}
+
+interface Anchor { fx: number; fy: number; tx: number; ty: number }
+
+/** Compute edge-anchored endpoints for every connection.
+ *  Returns a map from connectionKey to { fx, fy, tx, ty } in percentage coords. */
+function computeEdgeAnchors(
+  nodes: ModelNode[],
+  connections: ModelConnection[],
+  vpW: number, vpH: number,
+  posOf: (n: ModelNode) => { x: number; y: number },
+): Record<string, Anchor> {
+  const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+  // Per-endpoint info for grouping by (node, edge)
+  interface EpInfo {
+    connKey: string
+    isFrom: boolean
+    otherCenter: { x: number; y: number }
+  }
+
+  const groups = new Map<string, EpInfo[]>()          // key = "nodeId|edge"
+  const result: Record<string, Anchor> = {}
+
+  // --- Pass 1: determine which edge each endpoint hits ---
+  for (const c of connections) {
+    const fNode = nodeMap.get(c.from)
+    const tNode = nodeMap.get(c.to)
+    if (!fNode || !tNode) continue
+
+    const fp = posOf(fNode)
+    const tp = posOf(tNode)
+    const key = `${c.from}->${c.to}`
+
+    // Direction in pixels (for aspect-correct edge selection)
+    const dxPx = (tp.x - fp.x) * vpW / 100
+    const dyPx = (tp.y - fp.y) * vpH / 100
+
+    const fPx = estimateNodePx(fNode.label)
+    const tPx = estimateNodePx(tNode.label)
+
+    const fEdge = dominantEdge(fPx.w / 2, fPx.h / 2, dxPx, dyPx)
+    const tEdge = dominantEdge(tPx.w / 2, tPx.h / 2, -dxPx, -dyPx)
+
+    // Temporarily store center-to-center (overwritten in pass 2)
+    result[key] = { fx: fp.x, fy: fp.y, tx: tp.x, ty: tp.y }
+
+    const fgk = `${c.from}|${fEdge}`
+    const tgk = `${c.to}|${tEdge}`
+    let fg = groups.get(fgk); if (!fg) { fg = []; groups.set(fgk, fg) }
+    let tg = groups.get(tgk); if (!tg) { tg = []; groups.set(tgk, tg) }
+    fg.push({ connKey: key, isFrom: true, otherCenter: tp })
+    tg.push({ connKey: key, isFrom: false, otherCenter: fp })
+  }
+
+  // --- Pass 2: distribute connections along each edge ---
+  for (const [gk, eps] of groups) {
+    const sepIdx = gk.indexOf('|')
+    const nodeId = gk.slice(0, sepIdx)
+    const edge = gk.slice(sepIdx + 1) as Edge
+    const node = nodeMap.get(nodeId)!
+    const np = posOf(node)
+    const px = estimateNodePx(node.label)
+    const hw = px.w / 2 / vpW * 100   // half-width in %
+    const hh = px.h / 2 / vpH * 100   // half-height in %
+
+    const horiz = edge === 'top' || edge === 'bottom'
+
+    // Sort by the perpendicular coordinate of the other node so lines don't cross
+    eps.sort((a, b) => horiz
+      ? a.otherCenter.x - b.otherCenter.x
+      : a.otherCenter.y - b.otherCenter.y)
+
+    const n = eps.length
+    for (let i = 0; i < n; i++) {
+      const t = (i + 1) / (n + 1) // evenly spaced within (0, 1)
+      const ep = eps[i]
+      let ax: number, ay: number
+      if (horiz) {
+        ax = np.x - hw + t * 2 * hw
+        ay = edge === 'top' ? np.y - hh : np.y + hh
+      } else {
+        ax = edge === 'left' ? np.x - hw : np.x + hw
+        ay = np.y - hh + t * 2 * hh
+      }
+      const a = result[ep.connKey]
+      if (!a) continue
+      if (ep.isFrom) { a.fx = ax; a.fy = ay }
+      else            { a.tx = ax; a.ty = ay }
+    }
+  }
+
+  return result
+}
+
 export function PrototypeViewport() {
   const [debugOpen, setDebugOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -96,11 +216,14 @@ export function PrototypeViewport() {
     undoStacks,
     redoStacks,
     switchFrameMpd,
+    registerModel,
+    models: storeModels,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
   const model = storeGetModel(frame.modelId)!
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
     const el = viewportRef.current
@@ -111,6 +234,28 @@ export function PrototypeViewport() {
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
+
+  // Load root model from JSON on startup (if not already in store from hardcoded data)
+  useEffect(() => {
+    if (!storeGetModel('root')) {
+      setIsLoading(true)
+      loadModel('/models/root.json', registerModel).finally(() => setIsLoading(false))
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lazy-load child models when a node is selected that has a childModelId not yet in store
+  const selectedNode = model?.nodes.find((n) => n.id === frame.selectedNodeId)
+  useEffect(() => {
+    if (selectedNode?.childModelId && !storeGetModel(selectedNode.childModelId)) {
+      loadModelById(selectedNode.childModelId, registerModel)
+    }
+    // Also pre-load MPD siblings
+    if (selectedNode?.mpdIds) {
+      for (const id of selectedNode.mpdIds) {
+        if (!storeGetModel(id)) loadModelById(id, registerModel)
+      }
+    }
+  }, [selectedNode?.childModelId, selectedNode?.mpdIds]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unzip open/close animation
   const { progress: unzipAnimProgress, displayKey: unzipDisplayKey } = useUnzipAnim(
@@ -127,8 +272,7 @@ export function PrototypeViewport() {
   const p = frame.snapshot.nodeInflation // 0→1
   const isChild = frame.snapshot.handoffMode === 'child'
 
-  // Find the selected node and its child model
-  const selectedNode = model.nodes.find((n) => n.id === frame.selectedNodeId)
+  // Find the selected node's child model
   const childModel = selectedNode?.childModelId ? storeGetModel(selectedNode.childModelId) : undefined
 
   // MPD options: derived from the current frame's mpdIds (inherited from entry node)
@@ -340,6 +484,67 @@ export function PrototypeViewport() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, removeNode, clearSelection, closeUnzip, undo, redo])
 
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleSave = useCallback(() => {
+    const files = exportAllModels(storeModels)
+    const blob = new Blob([JSON.stringify(files, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'unigram-project.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [storeModels])
+
+  const handleLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string)
+        // data is Record<filename, ModelFile> — we need to import them
+        clearLoaderCache()
+        const basePath = '/models/'
+        for (const [filename, fileData] of Object.entries(data)) {
+          const modelFile = fileData as { id: string; label: string; nodes: unknown[]; connections: unknown[] }
+          registerModelUrl(modelFile.id, basePath + filename)
+        }
+        // Second pass: resolve references and register models
+        for (const [filename, fileData] of Object.entries(data)) {
+          const mf = fileData as {
+            id: string; label: string
+            nodes: { id: string; label: string; x: number; y: number; childModel?: string; mpdModels?: string[] }[]
+            connections: { from: string; to: string; evidence?: { title: string; citation: string; url: string }[] }[]
+          }
+          // Resolve file refs to model IDs
+          const idLookup = new Map<string, string>()
+          for (const [fn, fd] of Object.entries(data)) {
+            const m = fd as { id: string }
+            // Handle both relative and bare filename refs
+            idLookup.set('./' + fn, m.id)
+            idLookup.set(fn, m.id)
+          }
+          registerModel({
+            id: mf.id,
+            label: mf.label,
+            nodes: mf.nodes.map((n) => ({
+              id: n.id, label: n.label, x: n.x, y: n.y,
+              childModelId: n.childModel ? idLookup.get(n.childModel) : undefined,
+              mpdIds: n.mpdModels?.map((p) => idLookup.get(p)).filter(Boolean) as string[] | undefined,
+            })),
+            connections: mf.connections,
+          })
+        }
+      } catch (err) {
+        console.error('Failed to load project file:', err)
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = '' // reset so the same file can be re-loaded
+  }, [registerModel])
+
   return (
     <div
       ref={viewportRef}
@@ -527,6 +732,26 @@ export function PrototypeViewport() {
           }}
           title="Add new node"
         >&#x2795; Add Node</button>
+        <span className="toolbar-sep" />
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={handleSave}
+          title="Save project (JSON)"
+        >&#x1F4BE; Save</button>
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => fileInputRef.current?.click()}
+          title="Load project (JSON)"
+        >&#x1F4C2; Load</button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json"
+          style={{ display: 'none' }}
+          onChange={handleLoad}
+        />
       </div>
 
       {/* During MPD curtain: render old model in a clip wrapper (no transform → viewport coords) */}
@@ -748,15 +973,33 @@ function ModelSceneContent({
       : { x: node.x, y: node.y }
   }
 
+  // Compute edge-anchored connection endpoints
+  const anchors = useMemo(
+    () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, pos),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [model, spreadOffsets, vpSize],
+  )
+
   return (
     <>
       <svg className="child-scene-connections">
+        <defs>
+          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
+          </marker>
+          <marker id="arrowhead-evidence" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.65)" />
+          </marker>
+        </defs>
         {model.connections.map((c) => {
           const fromN = model.nodes.find((n) => n.id === c.from)
           const toN = model.nodes.find((n) => n.id === c.to)
           if (!fromN || !toN) return null
           const key = `${c.from}->${c.to}`
           const hasEvidence = !!c.evidence?.length
+          const a = anchors[key]
+          if (!a) return null
+          // Node centers (for popup anchor positioning)
           const fp = pos(fromN), tp = pos(toN)
           const midX = (fp.x + tp.x) / 2
           const midY = (fp.y + tp.y) / 2
@@ -766,8 +1009,8 @@ function ModelSceneContent({
             <g key={key}>
               {hasEvidence && (
                 <line
-                  x1={`${fp.x}%`} y1={`${fp.y}%`}
-                  x2={`${tp.x}%`} y2={`${tp.y}%`}
+                  x1={`${a.fx}%`} y1={`${a.fy}%`}
+                  x2={`${a.tx}%`} y2={`${a.ty}%`}
                   className="connection-hit-area"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -776,8 +1019,8 @@ function ModelSceneContent({
                 />
               )}
               <ConnectionLine
-                fromX={fp.x} fromY={fp.y}
-                toX={tp.x} toY={tp.y}
+                fromX={a.fx} fromY={a.fy}
+                toX={a.tx} toY={a.ty}
                 hasEvidence={hasEvidence}
                 gapProgress={gapT}
                 vpSize={vpSize}
@@ -836,11 +1079,13 @@ function ConnectionLine({
   const lineClass = hasEvidence ? 'connection-line has-evidence' : 'connection-line'
 
   if (gapProgress < 0.001) {
+    const marker = hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
     return (
       <line
         x1={`${fromX}%`} y1={`${fromY}%`}
         x2={`${toX}%`} y2={`${toY}%`}
         className={lineClass}
+        markerEnd={marker}
       />
     )
   }
@@ -1118,6 +1363,7 @@ function SceneNode({
           <ChildModelPreview
             model={childModel}
             scale={nodeW / vpSize.w}
+            vpSize={vpSize}
           />
         </div>
       )}
@@ -1126,20 +1372,32 @@ function SceneNode({
 }
 
 /** Preview of child model content inside a node canvas */
-function ChildModelPreview({ model, scale }: { model: Model; scale: number }) {
+function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: number; vpSize: { w: number; h: number } }) {
+  const identity = (n: ModelNode) => ({ x: n.x, y: n.y })
+  const anchors = useMemo(
+    () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, identity),
+    [model, vpSize],
+  )
+
   return (
     <>
       <svg className="child-scene-connections">
+        <defs>
+          <marker id="arrowhead-preview" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
+          </marker>
+        </defs>
         {model.connections.map((c) => {
-          const from = model.nodes.find((n) => n.id === c.from)
-          const to = model.nodes.find((n) => n.id === c.to)
-          if (!from || !to) return null
+          const key = `${c.from}->${c.to}`
+          const a = anchors[key]
+          if (!a) return null
           return (
             <line
               key={`${c.from}-${c.to}`}
-              x1={`${from.x}%`} y1={`${from.y}%`}
-              x2={`${to.x}%`} y2={`${to.y}%`}
+              x1={`${a.fx}%`} y1={`${a.fy}%`}
+              x2={`${a.tx}%`} y2={`${a.ty}%`}
               strokeWidth={2 * scale}
+              markerEnd="url(#arrowhead-preview)"
             />
           )
         })}

@@ -1,0 +1,14 @@
+{
+  "id": "svc-a-internals",
+  "label": "Service A Details",
+  "nodes": [
+    { "id": "handler", "label": "Request Handler", "x": 25, "y": 30 },
+    { "id": "cache", "label": "Cache Layer", "x": 70, "y": 25 },
+    { "id": "repo", "label": "Repository", "x": 45, "y": 70 }
+  ],
+  "connections": [
+    { "from": "handler", "to": "cache" },
+    { "from": "handler", "to": "repo" },
+    { "from": "cache", "to": "repo" }
+  ]
+}

@@ -87,6 +87,8 @@ interface HybridZoomState {
   redo: (modelId: string) => void
   /** Switch the current frame's model to an alternative MPD dimension */
   switchFrameMpd: (newModelId: string, initialPanOffset?: { x: number; y: number }) => void
+  /** Register a dynamically loaded model into the store */
+  registerModel: (model: Model) => void
 }
 
 const MAX_UNDO = 50
@@ -452,6 +454,12 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         unzipPopup: null,
       }
     })
+  },
+
+  registerModel: (model) => {
+    set((state) => ({
+      models: { ...state.models, [model.id]: model },
+    }))
   },
 }
 })

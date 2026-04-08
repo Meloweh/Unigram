@@ -1,0 +1,15 @@
+{
+  "id": "root",
+  "label": "System Overview",
+  "nodes": [
+    {
+      "id": "node-alpha",
+      "label": "Node Alpha",
+      "x": 50,
+      "y": 50,
+      "childModel": "./alpha-internals.json",
+      "mpdModels": ["./alpha-internals.json", "./alpha-performance.json"]
+    }
+  ],
+  "connections": []
+}
