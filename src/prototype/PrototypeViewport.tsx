@@ -688,17 +688,26 @@ export function PrototypeViewport() {
   const p = frame.snapshot.nodeInflation // 0→1
   const isChild = frame.snapshot.handoffMode === 'child'
 
-  // Find the selected node's child model
-  const childModel = selectedNode?.childModelId ? storeGetModel(selectedNode.childModelId) : undefined
+  // Find the selected node's child model (prefer lastChildModelId to preserve MPD switch)
+  const childModelId = frame.lastChildModelId ?? selectedNode?.childModelId
+  const childModel = childModelId ? storeGetModel(childModelId) : undefined
 
-  // MPD options: derived from the current frame's mpdIds (inherited from entry node)
+  // MPD dial: show only when the selected node has a twin (same id) in
+  // at least one other MPD sibling model at this frame level.
   const mpdOptions = useMemo(() => {
-    if (!frame.mpdIds || frame.mpdIds.length <= 1) return null
+    if (!frame.mpdIds || frame.mpdIds.length <= 1 || !frame.selectedNodeId) return null
+    // Check if selected node has a twin in any sibling model
+    const hasTwin = frame.mpdIds.some((id) => {
+      if (id === frame.modelId) return false
+      const m = storeGetModel(id)
+      return m?.nodes.some((n) => n.id === frame.selectedNodeId)
+    })
+    if (!hasTwin) return null
     return frame.mpdIds.map((id) => {
       const m = storeGetModel(id)
       return { id, label: m?.label ?? id }
     })
-  }, [frame.mpdIds, storeGetModel])
+  }, [frame.mpdIds, frame.modelId, frame.selectedNodeId, storeGetModel])
   const mpdActiveIndex = mpdOptions
     ? Math.max(0, frame.mpdIds!.indexOf(frame.modelId))
     : 0
@@ -722,12 +731,12 @@ export function PrototypeViewport() {
     }
   }, [selectedNode, frame.snapshot.nodeProgress, frame.snapshot.cameraScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
 
-  // At handoff, if the selected node has a child model, push into it
+  // At handoff, push into child model (prefer lastChildModelId to preserve MPD switch)
   useEffect(() => {
     if (isChild && selectedNode?.childModelId) {
-      pushModel(selectedNode.childModelId, selectedNode.id)
+      pushModel(frame.lastChildModelId ?? selectedNode.childModelId, selectedNode.id)
     }
-  }, [isChild, selectedNode?.childModelId, selectedNode?.id, pushModel])
+  }, [isChild, selectedNode?.childModelId, selectedNode?.id, frame.lastChildModelId, pushModel])
 
   // Compute the centering offset currently applied for the selected node
   // so we can bake it into panOffset when switching nodes (prevents visual jump)

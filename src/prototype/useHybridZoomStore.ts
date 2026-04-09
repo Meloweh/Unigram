@@ -31,6 +31,8 @@ export interface ZoomStackFrame {
   snapshot: HybridZoomSnapshot
   selectedNodeId: string | null
   panOffset: PanOffset
+  /** The child model ID that was actually displayed (may differ from node.childModelId after MPD switch) */
+  lastChildModelId?: string
 }
 
 export type UnzipLevel = 1 | 2 | 3
@@ -164,6 +166,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       unzipPopup: null,
       stack: updateTopFrame(state.stack, (frame) => ({
         selectedNodeId: nodeId,
+        lastChildModelId: undefined,
         snapshot: buildSnapshot(frame.snapshot.progress, 0),
         panOffset: centeringResidual
           ? { x: frame.panOffset.x + centeringResidual.x, y: frame.panOffset.y + centeringResidual.y }
@@ -183,6 +186,10 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => {
       const top = state.stack[state.stack.length - 1]
       if (!top.selectedNodeId) return state
+      // Only allow zoom if the selected node has a child model to zoom into
+      const model = state.models[top.modelId]
+      const node = model?.nodes.find((n) => n.id === top.selectedNodeId)
+      if (!node?.childModelId) return state
       return {
         unzipPopup: null,
         stack: updateTopFrame(state.stack, (frame) => ({
@@ -199,6 +206,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       const top = state.stack[state.stack.length - 1]
       // If at bottom of current level and there's a parent, pop the stack
       if (top.snapshot.progress <= 0 && state.stack.length > 1) {
+        const childModelId = top.modelId
         const newStack = [...state.stack]
         newStack.pop()
         // Set parent frame to progress=1 (just came back from child)
@@ -206,6 +214,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         return {
           stack: updateTopFrame(newStack, (frame) => ({
             snapshot: applyZoomStep(frame.snapshot, 'out'),
+            lastChildModelId: childModelId,
           })),
           isPaused: false,
         }
