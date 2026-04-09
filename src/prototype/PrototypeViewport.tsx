@@ -714,10 +714,11 @@ export function PrototypeViewport() {
       cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * frame.snapshot.cameraScale
       cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * frame.snapshot.cameraScale
     }
-    const gridPx = Math.min(vpSize.w, vpSize.h) * gridSnap / 100
+    const gridPxW = vpSize.w * gridSnap / 100
+    const gridPxH = vpSize.h * gridSnap / 100
     return {
       transform: `translate(${cx + frame.panOffset.x}px, ${cy + frame.panOffset.y}px) scale(${frame.snapshot.cameraScale})`,
-      backgroundSize: `${gridPx}px ${gridPx}px`,
+      backgroundSize: `${gridPxW}px ${gridPxH}px`,
     }
   }, [selectedNode, frame.snapshot.nodeProgress, frame.snapshot.cameraScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
 
@@ -1540,25 +1541,22 @@ function ModelSceneContent({
           const hasEvidence = !!c.evidence?.length
           const a = anchors[key]
           if (!a) return null
-          // Node centers (for popup anchor positioning)
-          const fp = pos(fromN), tp = pos(toN)
-          const midX = (fp.x + tp.x) / 2
-          const midY = (fp.y + tp.y) / 2
+          // Anchor midpoint (for popup positioning)
+          const midX = (a.fx + a.tx) / 2
+          const midY = (a.fy + a.ty) / 2
           const isUnzipping = unzipGap?.connectionKey === key
           const gapT = isUnzipping ? unzipGap.progress : 0
           return (
             <g key={key}>
-              {hasEvidence && (
-                <line
-                  x1={`${a.fx}%`} y1={`${a.fy}%`}
-                  x2={`${a.tx}%`} y2={`${a.ty}%`}
-                  className="connection-hit-area"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onClickConnection(key, midX, midY)
-                  }}
-                />
-              )}
+              <line
+                x1={`${a.fx}%`} y1={`${a.fy}%`}
+                x2={`${a.tx}%`} y2={`${a.ty}%`}
+                className="connection-hit-area"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClickConnection(key, midX, midY)
+                }}
+              />
               <ConnectionLine
                 fromX={a.fx} fromY={a.fy}
                 toX={a.tx} toY={a.ty}
