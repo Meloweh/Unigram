@@ -106,6 +106,24 @@
   margin: 0 4px;
 }
 
+.toolbar-label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.8rem;
+  color: #365f8f;
+  cursor: default;
+}
+
+.toolbar-select {
+  font-size: 0.8rem;
+  padding: 1px 4px;
+  border: 1px solid #c8d8ea;
+  border-radius: 4px;
+  background: #fff;
+  color: #17314f;
+}
+
 .mpd-dial {
   position: absolute;
   bottom: 52px;
@@ -202,10 +220,11 @@
   position: absolute;
   inset: 0;
   transform-origin: center;
+  overflow: visible;
   /* Dot grid — moves with pan/zoom since it's on the scene layer */
   background-image:
     radial-gradient(circle, rgba(37, 96, 149, 0.18) 1px, transparent 1px);
-  background-size: 40px 40px;
+  /* background-size set inline based on gridSnap */
 }
 
 .host-node {
@@ -228,7 +247,29 @@
   font-weight: 600;
   color: #17314f;
   white-space: nowrap;
-  width: fit-content;
+  text-align: center;
+}
+
+.host-label.multiline {
+  white-space: pre-wrap;
+}
+
+.host-label-editing {
+  display: block;
+  background: transparent;
+  border: none;
+  resize: none;
+  outline: none;
+  font: inherit;
+  color: inherit;
+  text-align: center;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  caret-color: #0e4f8f;
+  white-space: pre;
+  field-sizing: content;
+  min-width: 3ch;
 }
 
 .child-model {
@@ -257,7 +298,8 @@
   font-weight: 600;
   color: #17314f;
   font-size: 0.95rem;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  text-align: center;
   user-select: none;
 }
 
@@ -301,7 +343,7 @@
   pointer-events: none;
 }
 
-/* ---- Node label inline editing ---- */
+/* ---- Node label inline editing (legacy input fallback) ---- */
 
 .host-label-input {
   font-weight: 600;
@@ -415,6 +457,100 @@
   color: #8a9fb8;
   text-align: center;
   border-top: 1px solid #e8eff6;
+}
+
+/* Evidence study inline actions */
+.unzip-study-actions {
+  float: right;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.unzip-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #8a9fb8;
+  padding: 0 3px;
+  line-height: 1;
+}
+
+.unzip-action-btn:hover {
+  color: #365f8f;
+}
+
+/* Add/edit reference form */
+.unzip-add-btn {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-top: 1px solid #e8eff6;
+  color: #365f8f;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.unzip-add-btn:hover {
+  background: #f0f5fb;
+}
+
+.unzip-add-form {
+  padding: 6px 10px;
+  border-top: 1px solid #e8eff6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.unzip-add-input {
+  font-size: 0.78rem;
+  padding: 3px 6px;
+  border: 1px solid #c8d8ea;
+  border-radius: 4px;
+  outline: none;
+  color: #17314f;
+}
+
+.unzip-add-input:focus {
+  border-color: #365f8f;
+}
+
+.unzip-add-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.unzip-add-save,
+.unzip-add-cancel {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #c8d8ea;
+  cursor: pointer;
+}
+
+.unzip-add-save {
+  background: #365f8f;
+  color: #fff;
+  border-color: #365f8f;
+}
+
+.unzip-add-save:hover {
+  background: #2a4d75;
+}
+
+.unzip-add-cancel {
+  background: #fff;
+  color: #365f8f;
+}
+
+.unzip-add-cancel:hover {
+  background: #f0f5fb;
 }
 
 .empty-hint {

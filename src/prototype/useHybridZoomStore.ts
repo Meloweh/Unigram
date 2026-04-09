@@ -8,12 +8,12 @@ import {
 } from './hybridZoom'
 import { getInitialModels, type Model, type ModelConnection, type ModelNode } from './sampleModels'
 
-/** Grid size in percentage units (40px at 1000px viewport ≈ 4%) */
-export const GRID_SNAP = 4
+/** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
+export const DEFAULT_GRID_SNAP = 4
 
 /** Snap a percentage coordinate to the nearest grid point */
-export function snapToGrid(val: number): number {
-  return Math.round(val / GRID_SNAP) * GRID_SNAP
+export function snapToGrid(val: number, gridSnap = DEFAULT_GRID_SNAP): number {
+  return Math.round(val / gridSnap) * gridSnap
 }
 
 interface PanOffset {
@@ -52,6 +52,7 @@ interface HybridZoomState {
   isDragging: boolean
   isPaused: boolean
   unzipPopup: UnzipPopupState | null
+  gridSnap: number
 
   // Derived convenience (always reflects top of stack)
   currentFrame: () => ZoomStackFrame
@@ -80,8 +81,12 @@ interface HybridZoomState {
   moveNodes: (modelId: string, moves: { nodeId: string; x: number; y: number }[]) => void
   /** Snapshot current state for undo before a drag sequence */
   beginMoveNode: (modelId: string) => void
+  /** Snapshot current state for undo before an edit sequence */
+  beginEditNode: (modelId: string) => void
   addNode: (modelId: string, node: ModelNode) => void
   updateNodeLabel: (modelId: string, nodeId: string, label: string) => void
+  /** Update label without pushing undo (used during live editing after beginEditNode) */
+  setNodeLabelSilent: (modelId: string, nodeId: string, label: string) => void
   removeNode: (modelId: string, nodeId: string) => void
   addConnection: (modelId: string, connection: ModelConnection) => void
   removeConnection: (modelId: string, from: string, to: string) => void
@@ -93,6 +98,10 @@ interface HybridZoomState {
   registerModel: (model: Model) => void
   /** Reset zoom stack to root (e.g. after loading a project file) */
   resetToRoot: () => void
+  /** Update grid snap size */
+  setGridSnap: (size: number) => void
+  /** Update evidence on a connection */
+  updateConnectionEvidence: (modelId: string, from: string, to: string, evidence: import('./sampleModels').StudyEvidence[]) => void
 }
 
 const MAX_UNDO = 50
@@ -141,6 +150,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   isDragging: false,
   isPaused: false,
   unzipPopup: null,
+  gridSnap: DEFAULT_GRID_SNAP,
 
   currentFrame: () => {
     const { stack } = get()
@@ -297,7 +307,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
           [modelId]: {
             ...model,
             nodes: model.nodes.map((n) =>
-              n.id === nodeId ? { ...n, x: snapToGrid(x), y: snapToGrid(y) } : n,
+              n.id === nodeId ? { ...n, x: snapToGrid(x, state.gridSnap), y: snapToGrid(y, state.gridSnap) } : n,
             ),
           },
         },
@@ -317,7 +327,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             ...model,
             nodes: model.nodes.map((n) => {
               const m = lookup.get(n.id)
-              return m ? { ...n, x: snapToGrid(m.x), y: snapToGrid(m.y) } : n
+              return m ? { ...n, x: snapToGrid(m.x, state.gridSnap), y: snapToGrid(m.y, state.gridSnap) } : n
             }),
           },
         },
@@ -326,6 +336,10 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   },
 
   beginMoveNode: (modelId) => {
+    set((state) => pushUndo(state, modelId))
+  },
+
+  beginEditNode: (modelId) => {
     set((state) => pushUndo(state, modelId))
   },
 
@@ -339,7 +353,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
           ...state.models,
           [modelId]: {
             ...model,
-            nodes: [...model.nodes, { ...node, x: snapToGrid(node.x), y: snapToGrid(node.y) }],
+            nodes: [...model.nodes, { ...node, x: snapToGrid(node.x, state.gridSnap), y: snapToGrid(node.y, state.gridSnap) }],
           },
         },
       }
@@ -352,6 +366,24 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       if (!model) return state
       return {
         ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) =>
+              n.id === nodeId ? { ...n, label } : n,
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  setNodeLabelSilent: (modelId, nodeId, label) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
         models: {
           ...state.models,
           [modelId]: {
@@ -497,6 +529,31 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       redoStacks: {},
       unzipPopup: null,
       isPaused: true,
+    })
+  },
+
+  setGridSnap: (size) => {
+    set({ gridSnap: size })
+  },
+
+  updateConnectionEvidence: (modelId, from, to, evidence) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
+        ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            connections: model.connections.map((c) =>
+              c.from === from && c.to === to
+                ? { ...c, evidence: evidence.length > 0 ? evidence : undefined }
+                : c,
+            ),
+          },
+        },
+      }
     })
   },
 }

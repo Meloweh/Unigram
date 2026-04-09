@@ -12,6 +12,7 @@ interface UnzipPopupProps {
   /** Screen-space angle of the connection line (radians) */
   connectionAngle: number
   onSizeChange?: (w: number, h: number) => void
+  onUpdateEvidence?: (evidence: StudyEvidence[]) => void
 }
 
 /**
@@ -47,12 +48,17 @@ function buildRevealClip(w: number, h: number, angle: number, progress: number):
   return `polygon(${points.map(([x, y]) => `${x}px ${y}px`).join(', ')})`
 }
 
+const emptyEntry: StudyEvidence = { title: '', citation: '', url: '' }
+
 export function UnzipPopup({
-  connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle, onSizeChange,
+  connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle, onSizeChange, onUpdateEvidence,
 }: UnzipPopupProps) {
   const { closeUnzip, unzipDeeper, unzipShallower } = useHybridZoomStore()
   const popupRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 300, h: 200 })
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState<StudyEvidence>({ ...emptyEntry })
+  const [editingIdx, setEditingIdx] = useState<number | null>(null)
 
   // Measure popup border-box for accurate clip-path
   useEffect(() => {
@@ -73,13 +79,46 @@ export function UnzipPopup({
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeUnzip()
+      if (e.key === 'Escape') {
+        if (adding || editingIdx !== null) {
+          setAdding(false)
+          setEditingIdx(null)
+          setDraft({ ...emptyEntry })
+        } else {
+          closeUnzip()
+        }
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [closeUnzip])
+  }, [closeUnzip, adding, editingIdx])
 
-  if (evidence.length === 0) return null
+  const handleSave = () => {
+    if (!draft.title.trim()) return
+    if (editingIdx !== null) {
+      const updated = evidence.map((e, i) => i === editingIdx ? { ...draft } : e)
+      onUpdateEvidence?.(updated)
+      setEditingIdx(null)
+    } else {
+      onUpdateEvidence?.([...evidence, { ...draft }])
+    }
+    setDraft({ ...emptyEntry })
+    setAdding(false)
+  }
+
+  const handleRemove = (idx: number) => {
+    onUpdateEvidence?.(evidence.filter((_, i) => i !== idx))
+    if (editingIdx === idx) {
+      setEditingIdx(null)
+      setDraft({ ...emptyEntry })
+    }
+  }
+
+  const handleEdit = (idx: number) => {
+    setEditingIdx(idx)
+    setDraft({ ...evidence[idx] })
+    setAdding(true)
+  }
 
   const clipPath = buildRevealClip(size.w, size.h, connectionAngle, animProgress)
 
@@ -113,26 +152,77 @@ export function UnzipPopup({
           ×
         </button>
       </div>
-      <ul className="unzip-list">
-        {evidence.map((study, i) => (
-          <li key={i} className="unzip-study">
-            <div className="unzip-study-title">{study.title}</div>
-            {level >= 2 && (
-              <div className="unzip-study-citation">{study.citation}</div>
-            )}
-            {level >= 3 && (
-              <a
-                className="unzip-study-url"
-                href={study.url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {study.url}
-              </a>
-            )}
-          </li>
-        ))}
-      </ul>
+      {evidence.length > 0 && (
+        <ul className="unzip-list">
+          {evidence.map((study, i) => (
+            <li key={i} className="unzip-study">
+              <div className="unzip-study-title">
+                {study.title}
+                {onUpdateEvidence && (
+                  <span className="unzip-study-actions">
+                    <button type="button" className="unzip-action-btn" onClick={() => handleEdit(i)} title="Edit">✎</button>
+                    <button type="button" className="unzip-action-btn" onClick={() => handleRemove(i)} title="Remove">×</button>
+                  </span>
+                )}
+              </div>
+              {level >= 2 && (
+                <div className="unzip-study-citation">{study.citation}</div>
+              )}
+              {level >= 3 && study.url && (
+                <a
+                  className="unzip-study-url"
+                  href={study.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {study.url}
+                </a>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {adding && onUpdateEvidence ? (
+        <div className="unzip-add-form">
+          <input
+            className="unzip-add-input"
+            placeholder="Title"
+            value={draft.title}
+            onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+            autoFocus
+          />
+          <input
+            className="unzip-add-input"
+            placeholder="Citation"
+            value={draft.citation}
+            onChange={(e) => setDraft({ ...draft, citation: e.target.value })}
+          />
+          <input
+            className="unzip-add-input"
+            placeholder="URL"
+            value={draft.url}
+            onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+          />
+          <div className="unzip-add-buttons">
+            <button type="button" className="unzip-add-save" onClick={handleSave}>
+              {editingIdx !== null ? 'Update' : 'Add'}
+            </button>
+            <button type="button" className="unzip-add-cancel" onClick={() => {
+              setAdding(false)
+              setEditingIdx(null)
+              setDraft({ ...emptyEntry })
+            }}>Cancel</button>
+          </div>
+        </div>
+      ) : onUpdateEvidence ? (
+        <button
+          type="button"
+          className="unzip-add-btn"
+          onClick={() => { setAdding(true); setEditingIdx(null); setDraft({ ...emptyEntry }) }}
+        >
+          + Add reference
+        </button>
+      ) : null}
       <div className="unzip-hint">
         {level < 3 ? 'Scroll up for more detail' : 'Scroll down to collapse'}
       </div>

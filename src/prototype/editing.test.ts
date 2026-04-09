@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useHybridZoomStore, snapToGrid, GRID_SNAP } from './useHybridZoomStore'
+import { useHybridZoomStore, snapToGrid, DEFAULT_GRID_SNAP } from './useHybridZoomStore'
 
 const store = useHybridZoomStore
 
@@ -10,14 +10,14 @@ function reset() {
 describe('snapToGrid', () => {
   it('snaps to nearest grid point', () => {
     expect(snapToGrid(0)).toBe(0)
-    expect(snapToGrid(GRID_SNAP)).toBe(GRID_SNAP)
-    expect(snapToGrid(GRID_SNAP * 2.3)).toBe(GRID_SNAP * 2)
-    expect(snapToGrid(GRID_SNAP * 2.6)).toBe(GRID_SNAP * 3)
+    expect(snapToGrid(DEFAULT_GRID_SNAP)).toBe(DEFAULT_GRID_SNAP)
+    expect(snapToGrid(DEFAULT_GRID_SNAP * 2.3)).toBe(DEFAULT_GRID_SNAP * 2)
+    expect(snapToGrid(DEFAULT_GRID_SNAP * 2.6)).toBe(DEFAULT_GRID_SNAP * 3)
   })
 
   it('snaps negative values', () => {
     expect(snapToGrid(-1)).toBeCloseTo(0)
-    expect(snapToGrid(-GRID_SNAP * 0.6)).toBe(-GRID_SNAP)
+    expect(snapToGrid(-DEFAULT_GRID_SNAP * 0.6)).toBe(-DEFAULT_GRID_SNAP)
   })
 })
 

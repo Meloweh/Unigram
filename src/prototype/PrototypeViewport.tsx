@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
 import { type Model, type ModelConnection, type ModelNode } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
-import { GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
+import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
 import { loadModel, loadModelById, exportAllModels, registerModelUrl, clearLoaderCache } from './modelLoader'
 
@@ -72,9 +72,15 @@ type Edge = 'top' | 'right' | 'bottom' | 'left'
  *  CSS: padding 10px 16px, border 2px, font ~0.95rem 600 */
 function estimateNodePx(label: string): { w: number; h: number } {
   const charW = 8.5
+  const lineH = 20
+  const padX = 36 // 16*2 padding + 2*2 border
+  const padY = 32 // 14*2 padding + 2*2 border (matches measureLabel vPad=28+4)
+  const trimmed = label.replace(/\n+$/, '')
+  const lines = trimmed ? trimmed.split('\n') : ['']
+  const maxLineLen = Math.max(...lines.map((l) => l.length), 1)
   return {
-    w: Math.max(80, label.length * charW + 36), // 16*2 padding + 2*2 border
-    h: 44,                                       // ~20 line-height + 20 pad + 4 border
+    w: Math.max(NODE_MIN_W, maxLineLen * charW + padX),
+    h: Math.max(NODE_MIN_H, lines.length * lineH + padY),
   }
 }
 
@@ -99,8 +105,10 @@ function computeEdgeAnchors(
   connections: ModelConnection[],
   vpW: number, vpH: number,
   posOf: (n: ModelNode) => { x: number; y: number },
+  nodeSizes?: Map<string, { w: number; h: number }>,
 ): Record<string, Anchor> {
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const sizeOf = (n: ModelNode) => nodeSizes?.get(n.id) ?? estimateNodePx(n.label)
 
   // Per-endpoint info for grouping by (node, edge)
   interface EpInfo {
@@ -126,8 +134,8 @@ function computeEdgeAnchors(
     const dxPx = (tp.x - fp.x) * vpW / 100
     const dyPx = (tp.y - fp.y) * vpH / 100
 
-    const fPx = estimateNodePx(fNode.label)
-    const tPx = estimateNodePx(tNode.label)
+    const fPx = sizeOf(fNode)
+    const tPx = sizeOf(tNode)
 
     const fEdge = dominantEdge(fPx.w / 2, fPx.h / 2, dxPx, dyPx)
     const tEdge = dominantEdge(tPx.w / 2, tPx.h / 2, -dxPx, -dyPx)
@@ -150,7 +158,7 @@ function computeEdgeAnchors(
     const edge = gk.slice(sepIdx + 1) as Edge
     const node = nodeMap.get(nodeId)!
     const np = posOf(node)
-    const px = estimateNodePx(node.label)
+    const px = sizeOf(node)
     const hw = px.w / 2 / vpW * 100   // half-width in %
     const hh = px.h / 2 / vpH * 100   // half-height in %
 
@@ -291,6 +299,7 @@ function computeUntangledPositions(
   connections: ModelConnection[],
   vpW: number,
   vpH: number,
+  gridSnapSize = DEFAULT_GRID_SNAP,
 ): Record<string, { x: number; y: number }> | null {
   // Work in pixel space for aspect-correct geometry
   const pos = new Map<string, { x: number; y: number }>()
@@ -576,8 +585,8 @@ function computeUntangledPositions(
   for (const n of nodes) {
     const p = posOf(n.id)
     result[n.id] = {
-      x: snapToGrid(p.x * 100 / vpW),
-      y: snapToGrid(p.y * 100 / vpH),
+      x: snapToGrid(p.x * 100 / vpW, gridSnapSize),
+      y: snapToGrid(p.y * 100 / vpH, gridSnapSize),
     }
   }
   return result
@@ -608,8 +617,10 @@ export function PrototypeViewport() {
     moveNode,
     moveNodes,
     beginMoveNode,
+    beginEditNode,
     addNode,
     updateNodeLabel,
+    setNodeLabelSilent,
     removeNode,
     addConnection,
     undo,
@@ -620,6 +631,9 @@ export function PrototypeViewport() {
     registerModel,
     resetToRoot,
     models: storeModels,
+    gridSnap,
+    setGridSnap,
+    updateConnectionEvidence,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
@@ -700,10 +714,12 @@ export function PrototypeViewport() {
       cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * frame.snapshot.cameraScale
       cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * frame.snapshot.cameraScale
     }
+    const gridPx = Math.min(vpSize.w, vpSize.h) * gridSnap / 100
     return {
       transform: `translate(${cx + frame.panOffset.x}px, ${cy + frame.panOffset.y}px) scale(${frame.snapshot.cameraScale})`,
+      backgroundSize: `${gridPx}px ${gridPx}px`,
     }
-  }, [selectedNode, frame.snapshot.nodeProgress, frame.snapshot.cameraScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h])
+  }, [selectedNode, frame.snapshot.nodeProgress, frame.snapshot.cameraScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
 
   // At handoff, if the selected node has a child model, push into it
   useEffect(() => {
@@ -881,10 +897,16 @@ export function PrototypeViewport() {
           closeUnzip()
         }
       }
+      // Tab or F2 to start editing the selected node
+      if ((e.key === 'Tab' || e.key === 'F2') && !editingNodeId && frame.selectedNodeId) {
+        e.preventDefault()
+        beginEditNode(frame.modelId)
+        setEditingNodeId(frame.selectedNodeId)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, removeNode, clearSelection, closeUnzip, undo, redo])
+  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, removeNode, clearSelection, closeUnzip, undo, redo, beginEditNode])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -963,7 +985,7 @@ export function PrototypeViewport() {
 
   const handleUntangle = useCallback(() => {
     if (isUntangling) return
-    const targets = computeUntangledPositions(model.nodes, model.connections, vpSize.w, vpSize.h)
+    const targets = computeUntangledPositions(model.nodes, model.connections, vpSize.w, vpSize.h, gridSnap)
     if (!targets) return // already untangled
 
     beginMoveNode(frame.modelId) // snapshot for undo
@@ -1228,6 +1250,19 @@ export function PrototypeViewport() {
           style={{ display: 'none' }}
           onChange={handleLoad}
         />
+        <span className="toolbar-sep" />
+        <label className="toolbar-label" title="Grid snap size (%)">
+          Grid&nbsp;
+          <select
+            className="toolbar-select"
+            value={gridSnap}
+            onChange={(e) => setGridSnap(Number(e.target.value))}
+          >
+            {[1, 2, 4, 5, 8, 10].map((v) => (
+              <option key={v} value={v}>{v}%</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* During MPD curtain: render old model in a clip wrapper (no transform → viewport coords) */}
@@ -1249,12 +1284,14 @@ export function PrototypeViewport() {
               progress={0}
               vpSize={vpSize}
               onSelectNode={() => {}}
+              onDoubleClickNode={() => {}}
               onClickConnection={() => {}}
               onNodeDragStart={() => {}}
               onConnectionDragStart={() => {}}
               draggingNodeId={null}
               editingNodeId={null}
               onFinishEditing={() => {}}
+              onLiveEditLabel={() => {}}
               connectionDraft={null}
               unzipGap={null}
             />
@@ -1282,6 +1319,10 @@ export function PrototypeViewport() {
           progress={p}
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
+          onDoubleClickNode={(nodeId) => {
+            beginEditNode(frame.modelId)
+            setEditingNodeId(nodeId)
+          }}
           onClickConnection={openUnzip}
           onNodeDragStart={handleNodeDragStart}
           onConnectionDragStart={handleConnectionDragStart}
@@ -1290,11 +1331,16 @@ export function PrototypeViewport() {
           noTransition={!!mpdCurtain}
           onFinishEditing={(nodeId, label) => {
             if (label.trim()) {
-              updateNodeLabel(frame.modelId, nodeId, label.trim())
+              // Label is already in the store from onLiveEditLabel; just trim whitespace
+              setNodeLabelSilent(frame.modelId, nodeId, label.trim())
             } else {
               removeNode(frame.modelId, nodeId)
             }
             setEditingNodeId(null)
+          }}
+          onLiveEditLabel={(nodeId, label) => {
+            // Live-update the label in the store so node size recalcs properly (no undo push)
+            setNodeLabelSilent(frame.modelId, nodeId, label)
           }}
           connectionDraft={connectionDraft}
           unzipGap={unzipDisplayKey ? {
@@ -1318,7 +1364,7 @@ export function PrototypeViewport() {
           const conn = model.connections.find(
             (c) => `${c.from}->${c.to}` === activeUnzipPopup.connectionKey,
           )
-          if (!conn?.evidence?.length) return null
+          if (!conn) return null
           const fromNode = model.nodes.find((n) => n.id === conn.from)
           const toNode = model.nodes.find((n) => n.id === conn.to)
           const angle = fromNode && toNode
@@ -1331,12 +1377,15 @@ export function PrototypeViewport() {
             <UnzipPopup
               connectionKey={activeUnzipPopup.connectionKey}
               level={activeUnzipPopup.level}
-              evidence={conn.evidence}
+              evidence={conn.evidence ?? []}
               anchorX={activeUnzipPopup.anchorX}
               anchorY={activeUnzipPopup.anchorY}
               animProgress={unzipAnimProgress}
               connectionAngle={angle}
               onSizeChange={handlePopupSizeChange}
+              onUpdateEvidence={(evidence) => {
+                updateConnectionEvidence(frame.modelId, conn.from, conn.to, evidence)
+              }}
             />
           )
         })()}
@@ -1365,12 +1414,14 @@ function ModelSceneContent({
   progress,
   vpSize,
   onSelectNode,
+  onDoubleClickNode,
   onClickConnection,
   onNodeDragStart,
   onConnectionDragStart,
   draggingNodeId,
   editingNodeId,
   onFinishEditing,
+  onLiveEditLabel,
   connectionDraft,
   unzipGap,
   noTransition,
@@ -1381,16 +1432,30 @@ function ModelSceneContent({
   progress: number
   vpSize: { w: number; h: number }
   onSelectNode: (id: string) => void
+  onDoubleClickNode: (id: string) => void
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
   onNodeDragStart: (nodeId: string, e: React.PointerEvent) => void
   onConnectionDragStart: (nodeId: string, e: React.PointerEvent) => void
   draggingNodeId: string | null
   editingNodeId: string | null
   onFinishEditing: (nodeId: string, label: string) => void
+  onLiveEditLabel: (nodeId: string, label: string) => void
   connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number } | null
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
 }) {
+  // Track actual measured node sizes for accurate anchor placement
+  const nodeSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map())
+  const [sizeGen, setSizeGen] = useState(0)
+  const handleNodeResize = useCallback((id: string, size: { w: number; h: number }) => {
+    const map = nodeSizesRef.current
+    const prev = map.get(id)
+    if (!prev || prev.w !== size.w || prev.h !== size.h) {
+      map.set(id, size)
+      setSizeGen(g => g + 1)
+    }
+  }, [])
+
   // Compute per-node spread offsets: when a popup needs more room than the
   // connection length provides, push both endpoint nodes apart symmetrically.
   const spreadOffsets = useMemo(() => {
@@ -1451,19 +1516,19 @@ function ModelSceneContent({
 
   // Compute edge-anchored connection endpoints
   const anchors = useMemo(
-    () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, pos),
+    () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, pos, nodeSizesRef.current),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [model, spreadOffsets, vpSize],
+    [model, spreadOffsets, vpSize, sizeGen],
   )
 
   return (
     <>
       <svg className="child-scene-connections">
         <defs>
-          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
           </marker>
-          <marker id="arrowhead-evidence" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <marker id="arrowhead-evidence" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.65)" />
           </marker>
         </defs>
@@ -1528,11 +1593,14 @@ function ModelSceneContent({
             childModel={node.id === selectedNodeId ? childModel : undefined}
             vpSize={vpSize}
             onSelect={() => onSelectNode(node.id)}
+            onDoubleClick={() => onDoubleClickNode(node.id)}
             onDragStart={(e) => onNodeDragStart(node.id, e)}
             onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
             isDragging={node.id === draggingNodeId || !!noTransition}
             isEditing={node.id === editingNodeId}
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
+            onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
+            onResize={(size) => handleNodeResize(node.id, size)}
           />
         )
       })}
@@ -1556,10 +1624,23 @@ function ConnectionLine({
 
   if (gapProgress < 0.001) {
     const marker = hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
+    // Shorten line so it ends at arrowhead base (refX=0).
+    // Arrowhead extends forward from line endpoint to original target (node edge).
+    // Marker size: 8 markerUnits × strokeWidth(2) = 16px
+    const dxPx = (toX - fromX) * vpSize.w / 100
+    const dyPx = (toY - fromY) * vpSize.h / 100
+    const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
+    const arrowLenPx = 16
+    let adjToX = toX, adjToY = toY
+    if (lenPx > arrowLenPx * 2) {
+      const ratio = arrowLenPx / lenPx
+      adjToX = toX - (toX - fromX) * ratio
+      adjToY = toY - (toY - fromY) * ratio
+    }
     return (
       <line
         x1={`${fromX}%`} y1={`${fromY}%`}
-        x2={`${toX}%`} y2={`${toY}%`}
+        x2={`${adjToX}%`} y2={`${adjToY}%`}
         className={lineClass}
         markerEnd={marker}
       />
@@ -1722,11 +1803,14 @@ function SceneNode({
   childModel,
   vpSize,
   onSelect,
+  onDoubleClick,
   onDragStart,
   onConnectionDragStart,
   isDragging,
   isEditing,
   onFinishEditing,
+  onLiveEditLabel,
+  onResize,
 }: {
   node: ModelNode
   posX: number
@@ -1737,17 +1821,23 @@ function SceneNode({
   childModel: Model | undefined
   vpSize: { w: number; h: number }
   onSelect: () => void
+  onDoubleClick: () => void
   onDragStart: (e: React.PointerEvent) => void
   onConnectionDragStart: (e: React.PointerEvent) => void
   isDragging: boolean
   isEditing: boolean
   onFinishEditing: (label: string) => void
+  onLiveEditLabel: (label: string) => void
+  onResize: (size: { w: number; h: number }) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
+  const editRef = useRef<HTMLTextAreaElement>(null)
+  const finishedRef = useRef(false)
   const [baseSize, setBaseSize] = useState({ w: NODE_MIN_W, h: NODE_MIN_H })
 
-  useEffect(() => {
-    const el = labelRef.current
+  // Measure label size (both for display and editing)
+  const measureLabel = useCallback(() => {
+    const el = isEditing ? editRef.current : labelRef.current
     if (!el) return
     const pad = 32 + 4
     const vPad = 28 + 4
@@ -1755,7 +1845,18 @@ function SceneNode({
       w: Math.max(NODE_MIN_W, el.scrollWidth + pad),
       h: Math.max(NODE_MIN_H, el.scrollHeight + vPad),
     })
-  }, [node.label])
+  }, [isEditing])
+
+  useEffect(() => {
+    if (progress > 0) return
+    measureLabel()
+  }, [node.label, measureLabel, progress])
+
+  // Report measured size to parent for anchor computation
+  useEffect(() => {
+    onResize(baseSize)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseSize])
 
   const targetW = vpSize.w / CAMERA_SCALE_FINAL
   const targetH = vpSize.h / CAMERA_SCALE_FINAL
@@ -1786,15 +1887,47 @@ function SceneNode({
     zIndex: isZooming ? 10 : 1,
   }
 
-  const [editLabel, setEditLabel] = useState(node.label)
-  const inputRef = useRef<HTMLInputElement>(null)
-
+  // Focus textarea when entering edit mode
   useEffect(() => {
-    if (isEditing && inputRef.current) {
-      setEditLabel(node.label)
-      inputRef.current.focus()
+    if (isEditing && editRef.current) {
+      finishedRef.current = false
+      const el = editRef.current
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+      // Auto-size height for multiline content
+      el.style.height = 'auto'
+      el.style.height = el.scrollHeight + 'px'
+      measureLabel()
     }
-  }, [isEditing, node.label])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing])
+
+  const getEditText = (): string => {
+    if (!editRef.current) return ''
+    return editRef.current.value.replace(/\n+$/, '')
+  }
+
+  const handleInput = () => {
+    if (editRef.current) {
+      editRef.current.style.height = 'auto'
+      editRef.current.style.height = editRef.current.scrollHeight + 'px'
+    }
+    measureLabel()
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      finishedRef.current = true
+      onFinishEditing(getEditText())
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      finishedRef.current = true
+      onFinishEditing('')
+    }
+    // Shift+Enter inserts a line break (default textarea behavior)
+  }
 
   return (
     <article
@@ -1803,6 +1936,10 @@ function SceneNode({
       onClick={(event) => {
         event.stopPropagation()
         onSelect()
+      }}
+      onDoubleClick={(event) => {
+        event.stopPropagation()
+        if (!isEditing) onDoubleClick()
       }}
       onPointerDown={(e) => {
         if (e.button === 0 && !isEditing) {
@@ -1813,25 +1950,35 @@ function SceneNode({
       }}
     >
       {isEditing ? (
-        <input
-          ref={inputRef}
-          className="host-label-input"
-          value={editLabel}
-          onChange={(e) => setEditLabel(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onFinishEditing(editLabel)
-            if (e.key === 'Escape') onFinishEditing('')
+        <textarea
+          ref={editRef}
+          className="host-label host-label-editing"
+          defaultValue={node.label}
+          rows={1}
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onBlur={() => {
+            if (!finishedRef.current) {
+              finishedRef.current = true
+              onFinishEditing(getEditText())
+            }
           }}
-          onBlur={() => onFinishEditing(editLabel)}
           onClick={(e) => e.stopPropagation()}
         />
       ) : (
         <div
           ref={labelRef}
-          className="host-label"
+          className={`host-label${node.label.includes('\n') ? ' multiline' : ''}`}
           style={{ opacity: chromeFade, visibility: chromeFade > 0.01 ? 'visible' : 'hidden' }}
         >
-          {node.label || '\u00A0'}
+          {node.label ? (node.label.includes('\n')
+            ? node.label.split('\n').map((line, i, arr) => (
+              i < arr.length - 1
+                ? <span key={i}>{line}<br /></span>
+                : <span key={i}>{line}</span>
+            ))
+            : node.label
+          ) : '\u00A0'}
         </div>
       )}
       {isZooming && childModel && (
@@ -1859,7 +2006,7 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
     <>
       <svg className="child-scene-connections">
         <defs>
-          <marker id="arrowhead-preview" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <marker id="arrowhead-preview" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
           </marker>
         </defs>
@@ -1888,7 +2035,11 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
             transform: `translate(-50%, -50%) scale(${scale})`,
           }}
         >
-          {node.label}
+          {node.label.includes('\n')
+            ? node.label.split('\n').map((line, i, arr) => (
+                <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+              ))
+            : node.label}
         </div>
       ))}
     </>
