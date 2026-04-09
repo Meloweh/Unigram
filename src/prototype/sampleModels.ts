@@ -1,11 +1,21 @@
 /** Sample model data for recursive zoom prototype */
 
+export type NodeShape = 'rectangle' | 'rounded-rect' | 'oval' | 'circle' | 'diamond' | 'hexagon' | 'parallelogram' | 'triangle'
+
 export interface ModelNode {
   id: string
   label: string
   /** Canonical position as percentage of model canvas */
   x: number
   y: number
+  /** Visual shape of the node (default: 'rounded-rect') */
+  shape?: NodeShape
+  /** Fill / cell background color (default: '#f4f8fd') */
+  cellColor?: string
+  /** Border / membrane stroke color (default: '#365f8f') */
+  membraneColor?: string
+  /** Whether the membrane border is visible (default: true) */
+  membraneVisible?: boolean
   /** ID of the child model this node opens on zoom (if any) */
   childModelId?: string
   /** Available MPD (Multi-Parallel-Dimension) model IDs for this node.

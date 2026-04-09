@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
+import { LeftSidebar } from './LeftSidebar'
+import { RightSidebar } from './RightSidebar'
 import { loadModel, loadModelById, exportAllModels, registerModelUrl, clearLoaderCache } from './modelLoader'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
@@ -94,6 +96,74 @@ function dominantEdge(
   const ty = hh / (Math.abs(dyPx) || 1e-9)
   if (tx < ty) return dxPx > 0 ? 'right' : 'left'
   return dyPx > 0 ? 'bottom' : 'top'
+}
+
+/** Find where a ray from origin in direction (dx, dy) exits a node shape.
+ *  Returns a point relative to the node center. hw/hh are half-dimensions. */
+function shapeEdgeIntersect(
+  shape: string | undefined,
+  hw: number, hh: number,
+  dx: number, dy: number,
+): { x: number; y: number } {
+  const s = shape ?? 'rounded-rect'
+
+  // Elliptical shapes
+  if (s === 'oval' || s === 'circle') {
+    const denom = Math.sqrt((dx * dx) / (hw * hw) + (dy * dy) / (hh * hh))
+    if (denom < 1e-9) return { x: 0, y: 0 }
+    return { x: dx / denom, y: dy / denom }
+  }
+
+  // Polygon shapes
+  const polygons: Record<string, [number, number][]> = {
+    diamond: [[0, -hh], [hw, 0], [0, hh], [-hw, 0]],
+    hexagon: [[-hw / 2, -hh], [hw / 2, -hh], [hw, 0], [hw / 2, hh], [-hw / 2, hh], [-hw, 0]],
+    parallelogram: [[-0.7 * hw, -hh], [hw, -hh], [0.7 * hw, hh], [-hw, hh]],
+    triangle: [[0, -hh], [hw, hh], [-hw, hh]],
+  }
+  const poly = polygons[s]
+  if (!poly) {
+    // Rectangle / rounded-rect: intersect with axis-aligned rect
+    const tx = Math.abs(dx) > 1e-9 ? hw / Math.abs(dx) : Infinity
+    const ty = Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity
+    const t = Math.min(tx, ty)
+    return { x: dx * t, y: dy * t }
+  }
+
+  // Ray-convex-polygon intersection (smallest positive t)
+  let bestT = Infinity
+  for (let i = 0; i < poly.length; i++) {
+    const [p1x, p1y] = poly[i]
+    const [p2x, p2y] = poly[(i + 1) % poly.length]
+    const ex = p2x - p1x
+    const ey = p2y - p1y
+    const det = dy * ex - dx * ey
+    if (Math.abs(det) < 1e-12) continue
+    const t = (p1y * ex - p1x * ey) / det
+    const u = (dx * p1y - dy * p1x) / det
+    if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9 && t < bestT) {
+      bestT = t
+    }
+  }
+  if (bestT < Infinity) {
+    return { x: dx * bestT, y: dy * bestT }
+  }
+  // Fallback: rect boundary
+  const tx = Math.abs(dx) > 1e-9 ? hw / Math.abs(dx) : Infinity
+  const ty = Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity
+  const t = Math.min(tx, ty)
+  return { x: dx * t, y: dy * t }
+}
+
+/** SVG polygon points string for a shape. w/h are total node dimensions. */
+function shapeSvgPoints(shape: string, w: number, h: number): string {
+  switch (shape) {
+    case 'diamond': return `${w / 2},0 ${w},${h / 2} ${w / 2},${h} 0,${h / 2}`
+    case 'hexagon': return `${w * 0.25},0 ${w * 0.75},0 ${w},${h / 2} ${w * 0.75},${h} ${w * 0.25},${h} 0,${h / 2}`
+    case 'parallelogram': return `${w * 0.15},0 ${w},0 ${w * 0.85},${h} 0,${h}`
+    case 'triangle': return `${w / 2},0 ${w},${h} 0,${h}`
+    default: return ''
+  }
 }
 
 interface Anchor { fx: number; fy: number; tx: number; ty: number }
@@ -204,12 +274,24 @@ function computeEdgeAnchors(
       }
     }
 
-    // Write final anchor positions
+    // Write final anchor positions (projected onto actual shape boundary)
     for (let i = 0; i < n; i++) {
-      const sp = slotPos(i)
+      let sp = slotPos(i)
       const ep = eps[i]
       const a = result[ep.connKey]
       if (!a) continue
+
+      // Adjust anchor to sit on shape boundary instead of bounding rect
+      const nodeShape = node.shape
+      if (nodeShape && nodeShape !== 'rectangle' && nodeShape !== 'rounded-rect') {
+        const dirX = sp.x - np.x
+        const dirY = sp.y - np.y
+        if (Math.abs(dirX) > 1e-9 || Math.abs(dirY) > 1e-9) {
+          const pt = shapeEdgeIntersect(nodeShape, hw, hh, dirX, dirY)
+          sp = { x: np.x + pt.x, y: np.y + pt.y }
+        }
+      }
+
       if (ep.isFrom) { a.fx = sp.x; a.fy = sp.y }
       else            { a.tx = sp.x; a.ty = sp.y }
     }
@@ -620,6 +702,8 @@ export function PrototypeViewport() {
     beginEditNode,
     addNode,
     updateNodeLabel,
+    updateNodeShape,
+    updateNodeProps,
     setNodeLabelSilent,
     removeNode,
     addConnection,
@@ -871,6 +955,36 @@ export function PrototypeViewport() {
     setEditingNodeId(newId)
   }, [clientToScene, frame.modelId, addNode, selectNode])
 
+  // ---- Drop from sidebar (shape palette) ----
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('application/unigram-shape')) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    const shapeId = e.dataTransfer.getData('application/unigram-shape')
+    if (!shapeId) return
+    e.preventDefault()
+    // Clear any pan state that may have started from pointer events during the drag
+    endDrag()
+    lastPointer.current = null
+    const pos = clientToScene(e.clientX, e.clientY)
+    const snappedX = snapToGrid(pos.x)
+    const snappedY = snapToGrid(pos.y)
+    const newId = `node-${Date.now()}`
+    addNode(frame.modelId, {
+      id: newId,
+      label: '',
+      x: snappedX,
+      y: snappedY,
+      shape: shapeId as NodeShape,
+    })
+    selectNode(newId)
+    setEditingNodeId(newId)
+  }, [clientToScene, frame.modelId, addNode, selectNode, endDrag])
+
   // ---- Node deletion (Delete key) + Undo/Redo ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1105,6 +1219,8 @@ export function PrototypeViewport() {
         }
       }}
       onDoubleClick={handleDoubleClick}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="debug-overlay">
@@ -1260,19 +1376,6 @@ export function PrototypeViewport() {
           style={{ display: 'none' }}
           onChange={handleLoad}
         />
-        <span className="toolbar-sep" />
-        <label className="toolbar-label" title="Grid snap size (%)">
-          Grid&nbsp;
-          <select
-            className="toolbar-select"
-            value={gridSnap}
-            onChange={(e) => setGridSnap(Number(e.target.value))}
-          >
-            {[1, 2, 4, 5, 8, 10].map((v) => (
-              <option key={v} value={v}>{v}%</option>
-            ))}
-          </select>
-        </label>
       </div>
 
       {/* During MPD curtain: render old model in a clip wrapper (no transform → viewport coords) */}
@@ -1412,6 +1515,20 @@ export function PrototypeViewport() {
           }}
         />
       )}
+
+      <LeftSidebar />
+      <RightSidebar
+        model={model}
+        selectedNode={selectedNode}
+        selectedConnection={selectedNode ? undefined : (unzipPopup
+          ? model?.connections.find(c => `${c.from}->${c.to}` === unzipPopup.connectionKey)
+          : undefined
+        )}
+        gridSnap={gridSnap}
+        onSetGridSnap={setGridSnap}
+        onUpdateNodeShape={(nodeId, shape) => updateNodeShape(frame.modelId, nodeId, shape)}
+        onUpdateNodeProps={(nodeId, props) => updateNodeProps(frame.modelId, nodeId, props)}
+      />
     </div>
   )
 }
@@ -1868,30 +1985,91 @@ function SceneNode({
   const targetW = vpSize.w / CAMERA_SCALE_FINAL
   const targetH = vpSize.h / CAMERA_SCALE_FINAL
 
-  const nodeW = baseSize.w + (targetW - baseSize.w) * progress
-  const nodeH = baseSize.h + (targetH - baseSize.h) * progress
+  let nodeW = baseSize.w + (targetW - baseSize.w) * progress
+  let nodeH = baseSize.h + (targetH - baseSize.h) * progress
+
+  const shape = node.shape ?? 'rounded-rect'
+
+  // Circle enforces equal dimensions
+  if (shape === 'circle' && progress === 0) {
+    const maxDim = Math.max(nodeW, nodeH)
+    nodeW = maxDim
+    nodeH = maxDim
+  }
 
   const chromeFade = progress > 0.7 ? 1 - (progress - 0.7) / 0.3 : 1
 
-  const style: React.CSSProperties = {
+  // Node style properties with defaults
+  const cellColor = node.cellColor ?? '#f4f8fd'
+  const membraneColor = node.membraneColor ?? '#365f8f'
+  const membraneVisible = node.membraneVisible !== false
+
+  // Parse hex to rgb components for alpha blending with chromeFade
+  const hexToRgb = (hex: string) => {
+    const h = hex.replace('#', '')
+    return {
+      r: parseInt(h.substring(0, 2), 16),
+      g: parseInt(h.substring(2, 4), 16),
+      b: parseInt(h.substring(4, 6), 16),
+    }
+  }
+  const cellRgb = hexToRgb(cellColor)
+  const memRgb = hexToRgb(membraneColor)
+  // Lighter shade for gradient end
+  const cellEndRgb = {
+    r: Math.max(0, cellRgb.r - 21),
+    g: Math.max(0, cellRgb.g - 15),
+    b: Math.max(0, cellRgb.b - 8),
+  }
+
+  // Shape-specific clip-path for complex shapes
+  const clipPaths: Partial<Record<string, string>> = {
+    diamond: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)',
+    hexagon: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)',
+    parallelogram: 'polygon(15% 0%, 100% 0%, 85% 100%, 0% 100%)',
+    triangle: 'polygon(50% 0%, 100% 100%, 0% 100%)',
+  }
+  const clipPath = clipPaths[shape]
+
+  // Shape-specific border-radius
+  let borderRadius: number | string = 18 * chromeFade
+  if (shape === 'rectangle') borderRadius = 0
+  else if (shape === 'oval' || shape === 'circle') borderRadius = '50%'
+
+  const shadow = chromeFade > 0.01
+    ? `0 10px 30px rgba(19, 41, 73, ${0.2 * chromeFade})`
+    : 'none'
+
+  // Positioning styles (shared for both approaches)
+  const positionStyle: React.CSSProperties = {
+    position: 'absolute',
     left: `${posX}%`,
     top: `${posY}%`,
     transition: isDragging ? 'none' : 'left 0.35s cubic-bezier(0.25,0.1,0.25,1), top 0.35s cubic-bezier(0.25,0.1,0.25,1)',
     width: nodeW,
-    minWidth: baseSize.w,
+    minWidth: shape === 'circle' ? nodeW : baseSize.w,
     height: nodeH,
-    minHeight: baseSize.h,
+    minHeight: shape === 'circle' ? nodeH : baseSize.h,
     transform: 'translate(-50%, -50%)',
-    borderColor: `rgba(54, 95, 143, ${chromeFade})`,
-    background: chromeFade > 0.01
-      ? `linear-gradient(145deg, rgba(244,248,253,${chromeFade}), rgba(223,233,245,${chromeFade}))`
-      : 'transparent',
-    boxShadow: chromeFade > 0.01
-      ? `0 10px 30px rgba(19, 41, 73, ${0.2 * chromeFade})`
-      : 'none',
-    borderRadius: 18 * chromeFade,
-    padding: chromeFade > 0.01 ? `${14 * chromeFade}px ${16 * chromeFade}px` : 0,
     zIndex: isZooming ? 10 : 1,
+  }
+
+  // Visual styles for the article
+  const vizStyle: React.CSSProperties = {
+    borderColor: clipPath ? 'transparent'
+      : (membraneVisible || isSelected)
+        ? `rgba(${isSelected ? '14, 79, 143' : `${memRgb.r}, ${memRgb.g}, ${memRgb.b}`}, ${chromeFade})`
+      : 'transparent',
+    background: chromeFade > 0.01
+      ? `linear-gradient(145deg, rgba(${cellRgb.r},${cellRgb.g},${cellRgb.b},${chromeFade}), rgba(${cellEndRgb.r},${cellEndRgb.g},${cellEndRgb.b},${chromeFade}))`
+      : 'transparent',
+    boxShadow: clipPath ? 'none' : shadow,
+    filter: clipPath && chromeFade > 0.01
+      ? `drop-shadow(${shadow})${isSelected ? ' drop-shadow(0 0 3px rgba(44, 120, 188, 0.6))' : ''}`
+      : undefined,
+    borderRadius,
+    clipPath,
+    padding: chromeFade > 0.01 ? `${14 * chromeFade}px ${16 * chromeFade}px` : 0,
   }
 
   // Focus textarea when entering edit mode
@@ -1936,26 +2114,8 @@ function SceneNode({
     // Shift+Enter inserts a line break (default textarea behavior)
   }
 
-  return (
-    <article
-      className={`host-node ${isSelected ? 'focused' : ''}`}
-      style={style}
-      onClick={(event) => {
-        event.stopPropagation()
-        onSelect()
-      }}
-      onDoubleClick={(event) => {
-        event.stopPropagation()
-        if (!isEditing) onDoubleClick()
-      }}
-      onPointerDown={(e) => {
-        if (e.button === 0 && !isEditing) {
-          onDragStart(e)
-        } else if (e.button === 2) {
-          onConnectionDragStart(e)
-        }
-      }}
-    >
+  const articleContent = (
+    <>
       {isEditing ? (
         <textarea
           ref={editRef}
@@ -1997,6 +2157,71 @@ function SceneNode({
           />
         </div>
       )}
+    </>
+  )
+
+  const articleEventHandlers = {
+    onClick: (event: React.MouseEvent) => { event.stopPropagation(); onSelect() },
+    onDoubleClick: (event: React.MouseEvent) => { event.stopPropagation(); if (!isEditing) onDoubleClick() },
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.button === 0 && !isEditing) onDragStart(e)
+      else if (e.button === 2) onConnectionDragStart(e)
+    },
+  }
+
+  // Polygon shapes use a wrapper div so the SVG border is not clipped
+  if (clipPath) {
+    return (
+      <div style={{ ...positionStyle, pointerEvents: 'none' }}>
+        {chromeFade > 0.01 && membraneVisible && (
+          <svg
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none',
+              overflow: 'visible',
+            }}
+          >
+            <polygon
+              points={shapeSvgPoints(shape, nodeW, nodeH)}
+              fill="none"
+              stroke={isSelected
+                ? `rgba(14, 79, 143, ${chromeFade})`
+                : `rgba(${memRgb.r}, ${memRgb.g}, ${memRgb.b}, ${chromeFade})`}
+              strokeWidth={2}
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+        <article
+          className={`host-node ${isSelected ? 'focused' : ''}`}
+          style={{
+            ...vizStyle,
+            position: 'relative',
+            left: 0,
+            top: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'auto',
+          }}
+          {...articleEventHandlers}
+        >
+          {articleContent}
+        </article>
+      </div>
+    )
+  }
+
+  return (
+    <article
+      className={`host-node ${isSelected ? 'focused' : ''}`}
+      style={{ ...positionStyle, ...vizStyle }}
+      {...articleEventHandlers}
+    >
+      {articleContent}
     </article>
   )
 }
@@ -2045,23 +2270,104 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
           )
         })}
       </svg>
-      {model.nodes.map((node) => (
-        <div
-          key={node.id}
-          className="child-scene-node"
-          style={{
-            left: `${node.x}%`,
-            top: `${node.y}%`,
-            transform: `translate(-50%, -50%) scale(${scale})`,
-          }}
-        >
-          {node.label.includes('\n')
-            ? node.label.split('\n').map((line, i, arr) => (
-                <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
-              ))
-            : node.label}
-        </div>
-      ))}
+      {model.nodes.map((node) => {
+        const shape = node.shape ?? 'rounded-rect'
+        const previewClipPaths: Partial<Record<string, string>> = {
+          diamond: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)',
+          hexagon: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)',
+          parallelogram: 'polygon(15% 0%, 100% 0%, 85% 100%, 0% 100%)',
+          triangle: 'polygon(50% 0%, 100% 100%, 0% 100%)',
+        }
+        const pClip = previewClipPaths[shape]
+        let pRadius: string | number = 14
+        if (shape === 'rectangle') pRadius = 0
+        else if (shape === 'oval' || shape === 'circle') pRadius = '50%'
+
+        const cellColor = node.cellColor ?? '#f4f8fd'
+        const memColor = node.membraneColor ?? '#365f8f'
+        const memVisible = node.membraneVisible !== false
+
+        const hexToRgb = (hex: string) => {
+          const h = hex.replace('#', '')
+          return { r: parseInt(h.substring(0, 2), 16), g: parseInt(h.substring(2, 4), 16), b: parseInt(h.substring(4, 6), 16) }
+        }
+        const cRgb = hexToRgb(cellColor)
+        const cEnd = { r: Math.max(0, cRgb.r - 21), g: Math.max(0, cRgb.g - 15), b: Math.max(0, cRgb.b - 8) }
+
+        const shapeStyle: React.CSSProperties = {
+          borderRadius: pRadius,
+          clipPath: pClip,
+          borderColor: pClip ? 'transparent' : memVisible ? memColor : 'transparent',
+          background: `linear-gradient(145deg, rgb(${cRgb.r},${cRgb.g},${cRgb.b}), rgb(${cEnd.r},${cEnd.g},${cEnd.b}))`,
+          ...(shape === 'circle' ? { aspectRatio: '1', minWidth: 'fit-content' } : {}),
+        }
+
+        const labelContent = node.label.includes('\n')
+          ? node.label.split('\n').map((line, i, arr) => (
+              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+            ))
+          : node.label
+
+        const posStyle: React.CSSProperties = {
+          left: `${node.x}%`,
+          top: `${node.y}%`,
+          transform: `translate(-50%, -50%) scale(${scale})`,
+        }
+
+        // Polygon shapes need a wrapper with SVG border overlay
+        if (pClip && memVisible) {
+          const svgPolygonPoints: Record<string, string> = {
+            diamond: '50,0 100,50 50,100 0,50',
+            hexagon: '25,0 75,0 100,50 75,100 25,100 0,50',
+            parallelogram: '15,0 100,0 85,100 0,100',
+            triangle: '50,0 100,100 0,100',
+          }
+          return (
+            <div
+              key={node.id}
+              className="child-scene-node-wrapper"
+              style={posStyle}
+            >
+              <svg
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+              >
+                <polygon
+                  points={svgPolygonPoints[shape] ?? ''}
+                  fill="none"
+                  stroke={memColor}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+              <div
+                className="child-scene-node"
+                style={{
+                  position: 'relative',
+                  left: 0,
+                  top: 0,
+                  transform: 'none',
+                  ...shapeStyle,
+                }}
+              >
+                {labelContent}
+              </div>
+            </div>
+          )
+        }
+
+        return (
+          <div
+            key={node.id}
+            className="child-scene-node"
+            style={{ ...posStyle, ...shapeStyle }}
+          >
+            {labelContent}
+          </div>
+        )
+      })}
     </>
   )
 }

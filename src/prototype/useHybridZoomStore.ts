@@ -6,7 +6,7 @@ import {
   realignPanOffset,
   type HybridZoomSnapshot,
 } from './hybridZoom'
-import { getInitialModels, type Model, type ModelConnection, type ModelNode } from './sampleModels'
+import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape } from './sampleModels'
 
 /** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
 export const DEFAULT_GRID_SNAP = 4
@@ -87,6 +87,9 @@ interface HybridZoomState {
   beginEditNode: (modelId: string) => void
   addNode: (modelId: string, node: ModelNode) => void
   updateNodeLabel: (modelId: string, nodeId: string, label: string) => void
+  updateNodeShape: (modelId: string, nodeId: string, shape: NodeShape) => void
+  /** Update arbitrary visual properties on a node (with undo) */
+  updateNodeProps: (modelId: string, nodeId: string, props: Partial<ModelNode>) => void
   /** Update label without pushing undo (used during live editing after beginEditNode) */
   setNodeLabelSilent: (modelId: string, nodeId: string, label: string) => void
   removeNode: (modelId: string, nodeId: string) => void
@@ -381,6 +384,44 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             ...model,
             nodes: model.nodes.map((n) =>
               n.id === nodeId ? { ...n, label } : n,
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  updateNodeShape: (modelId, nodeId, shape) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
+        ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) =>
+              n.id === nodeId ? { ...n, shape } : n,
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  updateNodeProps: (modelId, nodeId, props) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
+        ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) =>
+              n.id === nodeId ? { ...n, ...props } : n,
             ),
           },
         },
