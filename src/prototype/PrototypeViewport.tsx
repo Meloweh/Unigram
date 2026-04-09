@@ -2011,7 +2011,7 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
 
   return (
     <>
-      <svg className="child-scene-connections">
+      <svg className="child-preview-connections">
         <defs>
           <marker id="arrowhead-preview" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
@@ -2021,11 +2021,24 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
           const key = `${c.from}->${c.to}`
           const a = anchors[key]
           if (!a) return null
+          // Shorten line so arrowhead tip lands at node edge (refX=0)
+          // Marker size in container px = markerWidth(8) × strokeWidth(2×scale)
+          // In vpSize-px (same units as anchors): 8 × 2 × scale × (vpSize.w/nodeW) = 16
+          const dxPx = (a.tx - a.fx) * vpSize.w / 100
+          const dyPx = (a.ty - a.fy) * vpSize.h / 100
+          const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
+          const arrowLenPx = 16
+          let tx = a.tx, ty = a.ty
+          if (lenPx > arrowLenPx * 2) {
+            const ratio = arrowLenPx / lenPx
+            tx = a.tx - (a.tx - a.fx) * ratio
+            ty = a.ty - (a.ty - a.fy) * ratio
+          }
           return (
             <line
               key={`${c.from}-${c.to}`}
               x1={`${a.fx}%`} y1={`${a.fy}%`}
-              x2={`${a.tx}%`} y2={`${a.ty}%`}
+              x2={`${tx}%`} y2={`${ty}%`}
               strokeWidth={2 * scale}
               markerEnd="url(#arrowhead-preview)"
             />
