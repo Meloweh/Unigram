@@ -712,6 +712,7 @@ export function PrototypeViewport() {
     undoStacks,
     redoStacks,
     switchFrameMpd,
+    switchNodeMpd,
     clearLastChildModelId,
     setLastChildModelId,
     registerModel,
@@ -787,37 +788,34 @@ export function PrototypeViewport() {
   //    The dial switches the whole view via switchFrameMpd + curtain.
 
   // --- Node-level dial ---
-  // Stable combined perspective list: childModelId first, then mpdIds (deduped)
+  // Only mpdIds — RMM (childModelId) is separate and never appears on the MPD dial
+  // When we've switched to an MPD model (nodeMpdOriginalModelId is set), look up
+  // the source node from the original model so the dial stays visible.
+  const nodeMpdSourceNode = useMemo(() => {
+    if (!frame.nodeMpdOriginalModelId || !frame.selectedNodeId) return null
+    const origModel = storeModels[frame.nodeMpdOriginalModelId]
+    return origModel?.nodes.find((n) => n.id === frame.selectedNodeId) ?? null
+  }, [frame.nodeMpdOriginalModelId, frame.selectedNodeId, storeModels])
+
   const nodeDialIds = useMemo(() => {
-    if (!selectedNode) return null
-    const ids: string[] = []
-    if (selectedNode.childModelId) ids.push(selectedNode.childModelId)
-    if (selectedNode.mpdIds) {
-      for (const id of selectedNode.mpdIds) {
-        if (!ids.includes(id)) ids.push(id)
-      }
-    }
-    return ids.length > 1 ? ids : null
-  }, [selectedNode?.childModelId, selectedNode?.mpdIds])
+    const node = nodeMpdSourceNode ?? selectedNode
+    if (!node) return null
+    if (!node.mpdIds || node.mpdIds.length < 2) return null
+    return node.mpdIds
+  }, [nodeMpdSourceNode, selectedNode])
 
   // --- Frame-level dial ---
-  // Derive live combined perspectives from the entry node in the parent
-  // model so newly added MPDs are picked up without re-zooming.
+  // Derive live MPD perspectives from the entry node in the parent model
+  // so newly added MPDs are picked up without re-zooming.
+  // Only mpdIds — childModelId (RMM) is never part of the frame-level dial.
   const liveMpdIds = useMemo(() => {
     if (stack.length < 2 || !frame.entryNodeId) return undefined
     const parentFrame = stack[stack.length - 2]
     const parentModel = storeModels[parentFrame.modelId]
     const entryNode = parentModel?.nodes.find((n) => n.id === frame.entryNodeId)
-    if (!entryNode) return frame.mpdIds
-    const ids: string[] = []
-    if (entryNode.childModelId) ids.push(entryNode.childModelId)
-    if (entryNode.mpdIds) {
-      for (const id of entryNode.mpdIds) {
-        if (!ids.includes(id)) ids.push(id)
-      }
-    }
-    return ids.length > 1 ? ids : frame.mpdIds
-  }, [stack, frame.entryNodeId, frame.mpdIds, storeModels])
+    if (!entryNode?.mpdIds || entryNode.mpdIds.length < 2) return undefined
+    return entryNode.mpdIds
+  }, [stack, frame.entryNodeId, storeModels])
 
   // Node-level takes priority; frame-level only when no node-level and a node is selected
   const isNodeLevelMpd = !!nodeDialIds
@@ -842,11 +840,14 @@ export function PrototypeViewport() {
   const mpdActiveIndex = useMemo(() => {
     if (!mpdOptions) return 0
     if (isNodeLevelMpd) {
-      const activeId = childModelId ?? nodeDialIds![0]
-      return Math.max(0, nodeDialIds!.indexOf(activeId))
+      // When viewing the original model (or no MPD switch yet), active = first entry (default)
+      if (!frame.nodeMpdOriginalModelId) return 0
+      // Otherwise find which mpdId matches current frame.modelId
+      const idx = nodeDialIds!.indexOf(frame.modelId)
+      return idx >= 0 ? idx : 0
     }
     return Math.max(0, liveMpdIds!.indexOf(frame.modelId))
-  }, [mpdOptions, isNodeLevelMpd, childModelId, nodeDialIds, liveMpdIds, frame.modelId])
+  }, [mpdOptions, isNodeLevelMpd, frame.modelId, frame.nodeMpdOriginalModelId, nodeDialIds, liveMpdIds])
 
   const sceneStyle = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
@@ -1311,9 +1312,56 @@ export function PrototypeViewport() {
           onSelect={(idx, direction) => {
             const newModelId = mpdOptions[idx].id
 
-            // --- Node-level: pick which perspective to zoom into ---
+            // --- Node-level: switch MPD with curtain animation ---
             if (isNodeLevelMpd) {
-              setLastChildModelId(newModelId)
+              // First entry (default) = restore original model
+              const isDefault = idx === 0
+              const targetId = isDefault && frame.nodeMpdOriginalModelId
+                ? frame.nodeMpdOriginalModelId
+                : newModelId
+              // Skip if already showing this model
+              if (targetId === frame.modelId) return
+
+              // Compute pan offset to keep twin node anchored at same screen position
+              // After switch, centering auto-tracks the twin, so we only need to
+              // compensate for the position delta between old node and twin.
+              let alignPan: { x: number; y: number } | undefined
+              if (frame.selectedNodeId) {
+                const oldNode = model.nodes.find((n) => n.id === frame.selectedNodeId)
+                const newModel = storeGetModel(targetId)
+                const twinNode = newModel?.nodes.find((n) => n.id === frame.selectedNodeId)
+                if (oldNode && twinNode) {
+                  const cs = frame.snapshot.cameraScale
+                  const np = frame.snapshot.nodeProgress
+                  const dx = (twinNode.x - oldNode.x) / 100 * vpSize.w * cs * (np - 1)
+                  const dy = (twinNode.y - oldNode.y) / 100 * vpSize.h * cs * (np - 1)
+                  alignPan = {
+                    x: frame.panOffset.x + dx,
+                    y: frame.panOffset.y + dy,
+                  }
+                }
+              }
+
+              const oldModel = model
+              const oldStyle = { ...sceneStyle }
+              cancelAnimationFrame(curtainRaf.current)
+              flushSync(() => {
+                setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+              })
+              switchNodeMpd(targetId, nodeDialIds!, alignPan)
+              const startTime = performance.now()
+              const animate = () => {
+                const elapsed = performance.now() - startTime
+                const t = Math.min(elapsed / 500, 1)
+                const eased = t * t * (3 - 2 * t)
+                setMpdCurtain((prev) => prev ? { ...prev, progress: eased } : null)
+                if (t < 1) {
+                  curtainRaf.current = requestAnimationFrame(animate)
+                } else {
+                  setMpdCurtain(null)
+                }
+              }
+              curtainRaf.current = requestAnimationFrame(animate)
               return
             }
 

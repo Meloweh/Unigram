@@ -26,9 +26,9 @@ function reset() {
 /** Helper: zoom into Node Alpha so the current frame has mpdIds */
 function enterNodeAlpha() {
   const s = store.getState()
-  // Give Node Alpha mpdIds so pushModel computes combined perspectives
-  s.updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-performance'] })
-  // Select and push into Node Alpha (childModelId=alpha-internals + mpdIds=['alpha-performance'])
+  // Give Node Alpha mpdIds (both as MPD entries) so frame-level dial works after zoom
+  s.updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-internals', 'alpha-performance'] })
+  // Select and push into Node Alpha via childModelId (RMM)
   s.selectNode('node-alpha')
   s.pushModel('alpha-internals', 'node-alpha')
 }
@@ -94,11 +94,13 @@ describe('switchFrameMpd', () => {
     expect(store.getState().currentFrame().modelId).toBe('root')
   })
 
-  it('preserves mpdIds on the frame after switching', () => {
+  it('allows switching back after switching dimensions', () => {
     enterNodeAlpha()
     store.getState().switchFrameMpd('alpha-performance')
-    // mpdIds should still be available for switching back
-    expect(store.getState().currentFrame().mpdIds).toEqual(['alpha-internals', 'alpha-performance'])
+    expect(store.getState().currentFrame().modelId).toBe('alpha-performance')
+    // Switch back to original
+    store.getState().switchFrameMpd('alpha-internals')
+    expect(store.getState().currentFrame().modelId).toBe('alpha-internals')
   })
 
   it('applies initialPanOffset when provided', () => {
@@ -108,14 +110,14 @@ describe('switchFrameMpd', () => {
   })
 })
 
-describe('pushModel captures mpdIds from entry node', () => {
+describe('pushModel does not inherit mpdIds from entry node', () => {
   beforeEach(reset)
 
-  it('stores mpdIds when entry node has them', () => {
-    store.getState().updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-performance'] })
+  it('leaves mpdIds undefined (MPDs are handled at node level)', () => {
+    store.getState().updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-internals', 'alpha-performance'] })
     store.getState().selectNode('node-alpha')
     store.getState().pushModel('alpha-internals', 'node-alpha')
-    expect(store.getState().currentFrame().mpdIds).toEqual(['alpha-internals', 'alpha-performance'])
+    expect(store.getState().currentFrame().mpdIds).toBeUndefined()
   })
 
   it('leaves mpdIds undefined when entry node has none', () => {

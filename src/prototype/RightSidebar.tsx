@@ -152,8 +152,8 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
   const makeTwinNode = (): ModelNode => ({
     id: node.id,
     label: node.label,
-    x: 50,
-    y: 50,
+    x: node.x,
+    y: node.y,
     shape: node.shape,
     cellColor: node.cellColor,
     membraneColor: node.membraneColor,
@@ -176,11 +176,8 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
     if (node.mpdIds) {
       // Already has MPD entries — just append
       onUpdateProps({ mpdIds: [...node.mpdIds, mpdId] })
-    } else if (node.childModelId) {
-      // Has an RMM but no mpdIds yet — bootstrap: include RMM as base
-      onUpdateProps({ mpdIds: [node.childModelId, mpdId] })
     } else {
-      // No RMM, no mpdIds — create a default model for the current (empty) scene
+      // No mpdIds yet — create a default model for the current scene
       const defaultId = genId('mpd')
       const defaultLabel = `${node.label || 'Node'} (default)`
       onRegisterModel({ id: defaultId, label: defaultLabel, nodes: [], connections: [] })

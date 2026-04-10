@@ -33,6 +33,8 @@ export interface ZoomStackFrame {
   panOffset: PanOffset
   /** The child model ID that was actually displayed (may differ from node.childModelId after MPD switch) */
   lastChildModelId?: string
+  /** Original modelId before a node-level MPD switch (so we can switch back) */
+  nodeMpdOriginalModelId?: string
 }
 
 export type UnzipLevel = 1 | 2 | 3
@@ -103,6 +105,8 @@ interface HybridZoomState {
   setLastChildModelId: (modelId: string) => void
   /** Switch the current frame's model to an alternative MPD dimension */
   switchFrameMpd: (newModelId: string, initialPanOffset?: { x: number; y: number }) => void
+  /** Switch the current frame to a node-level MPD (keeps original modelId for switching back) */
+  switchNodeMpd: (newModelId: string, mpdIds: string[], initialPanOffset?: { x: number; y: number }) => void
   /** Register a dynamically loaded model into the store */
   registerModel: (model: Model) => void
   /** Update a model's label */
@@ -243,23 +247,12 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       const top = state.stack[state.stack.length - 1]
       if (top.modelId === childModelId && top.entryNodeId === entryNodeId) return state
 
-      const currentModel = state.models[top.modelId]
-      const entryNode = currentModel?.nodes.find((n) => n.id === entryNodeId)
-      // Combine RMM (childModelId) + MPDs for frame dial options
-      const allPerspectives: string[] = []
-      if (entryNode?.childModelId) allPerspectives.push(entryNode.childModelId)
-      if (entryNode?.mpdIds) {
-        for (const id of entryNode.mpdIds) {
-          if (!allPerspectives.includes(id)) allPerspectives.push(id)
-        }
-      }
       return {
         stack: [
           ...state.stack,
           {
             modelId: childModelId,
             entryNodeId,
-            mpdIds: allPerspectives.length > 1 ? allPerspectives : undefined,
             snapshot: createInitialSnapshot(),
             selectedNodeId: null,
             panOffset: { x: 0, y: 0 },
@@ -574,21 +567,14 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => {
       const frame = state.stack[state.stack.length - 1]
       if (frame.modelId === newModelId) return state
-      // Derive live mpdIds from the parent frame's entry node
-      let liveMpdIds = frame.mpdIds
+      // Derive live mpdIds from the parent frame's entry node (MPDs only, not RMM)
+      let liveMpdIds: string[] | undefined = undefined
       if (state.stack.length >= 2 && frame.entryNodeId) {
         const parentFrame = state.stack[state.stack.length - 2]
         const parentModel = state.models[parentFrame.modelId]
         const entryNode = parentModel?.nodes.find((n) => n.id === frame.entryNodeId)
-        if (entryNode) {
-          const ids: string[] = []
-          if (entryNode.childModelId) ids.push(entryNode.childModelId)
-          if (entryNode.mpdIds) {
-            for (const id of entryNode.mpdIds) {
-              if (!ids.includes(id)) ids.push(id)
-            }
-          }
-          if (ids.length > 1) liveMpdIds = ids
+        if (entryNode?.mpdIds && entryNode.mpdIds.length > 1) {
+          liveMpdIds = entryNode.mpdIds
         }
       }
       if (!liveMpdIds?.includes(newModelId)) return state
@@ -603,6 +589,26 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
           selectedNodeId: keepSelection,
           panOffset: initialPanOffset ?? { x: 0, y: 0 },
           snapshot: createInitialSnapshot(),
+        })),
+        unzipPopup: null,
+      }
+    })
+  },
+
+  switchNodeMpd: (newModelId, mpdIds, initialPanOffset) => {
+    set((state) => {
+      const frame = state.stack[state.stack.length - 1]
+      if (frame.modelId === newModelId) return state
+      const originalModelId = frame.nodeMpdOriginalModelId ?? frame.modelId
+      // Allow switching to any mpdId or back to the original model
+      if (newModelId !== originalModelId && !mpdIds.includes(newModelId)) return state
+      return {
+        stack: updateTopFrame(state.stack, () => ({
+          modelId: newModelId,
+          nodeMpdOriginalModelId: newModelId === originalModelId ? undefined : originalModelId,
+          selectedNodeId: frame.selectedNodeId,
+          panOffset: initialPanOffset ?? frame.panOffset,
+          snapshot: frame.snapshot,
         })),
         unzipPopup: null,
       }
