@@ -894,6 +894,20 @@ export function PrototypeViewport() {
   // ---- Node dragging ----
   const draggingNodeRef = useRef<string | null>(null)
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+  const multiDragOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map())
+
+  // ---- Selection rectangle mode ----
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
+  const [selectionRect, setSelectionRect] = useState<{
+    startX: number; startY: number; endX: number; endY: number
+  } | null>(null)
+  const selectionStartRef = useRef<{ clientX: number; clientY: number } | null>(null)
+  const justFinishedSelectionRef = useRef(false)
+  const clipboardRef = useRef<{ nodes: ModelNode[]; connections: ModelConnection[] } | null>(null)
+
+  // Clear multi-selection when model changes (e.g. MPD switch)
+  useEffect(() => { setSelectedNodeIds(new Set()) }, [frame.modelId])
 
   // MPD curtain transition state
   const [mpdCurtain, setMpdCurtain] = useState<{
@@ -934,17 +948,38 @@ export function PrototypeViewport() {
     draggingNodeRef.current = nodeId
     setDraggingNodeId(nodeId)
     beginMoveNode(frame.modelId)
+    // Capture offsets for multi-drag when dragged node is in the selection
+    multiDragOffsetsRef.current.clear()
+    if (selectedNodeIds.has(nodeId)) {
+      const pos = clientToScene(e.clientX, e.clientY)
+      for (const id of selectedNodeIds) {
+        const n = model.nodes.find((nd) => nd.id === id)
+        if (n && id !== nodeId) {
+          multiDragOffsetsRef.current.set(id, { dx: n.x - pos.x, dy: n.y - pos.y })
+        }
+      }
+    }
     ;(e.target as Element).setPointerCapture(e.pointerId)
-  }, [beginMoveNode, frame.modelId])
+  }, [beginMoveNode, frame.modelId, selectedNodeIds, clientToScene, model.nodes])
 
   const handleNodeDragMove = useCallback((e: React.PointerEvent) => {
     if (!draggingNodeRef.current) return
     const pos = clientToScene(e.clientX, e.clientY)
-    moveNode(frame.modelId, draggingNodeRef.current, pos.x, pos.y)
-  }, [clientToScene, frame.modelId, moveNode])
+    if (multiDragOffsetsRef.current.size > 0) {
+      // Multi-drag: move primary node + all offset companions
+      const moves = [{ nodeId: draggingNodeRef.current, x: pos.x, y: pos.y }]
+      for (const [id, off] of multiDragOffsetsRef.current) {
+        moves.push({ nodeId: id, x: pos.x + off.dx, y: pos.y + off.dy })
+      }
+      moveNodes(frame.modelId, moves)
+    } else {
+      moveNode(frame.modelId, draggingNodeRef.current, pos.x, pos.y)
+    }
+  }, [clientToScene, frame.modelId, moveNode, moveNodes])
 
   const handleNodeDragEnd = useCallback(() => {
     draggingNodeRef.current = null
+    multiDragOffsetsRef.current.clear()
     setDraggingNodeId(null)
   }, [])
 
@@ -1038,7 +1073,7 @@ export function PrototypeViewport() {
     setEditingNodeId(newId)
   }, [clientToScene, frame.modelId, addNode, selectNode, endDrag])
 
-  // ---- Node deletion (Delete key) + Undo/Redo ----
+  // ---- Node deletion (Delete key) + Undo/Redo + Copy/Paste ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Undo: Ctrl+Z / Cmd+Z
@@ -1053,9 +1088,72 @@ export function PrototypeViewport() {
         redo(frame.modelId)
         return
       }
+      // Copy: Ctrl+C
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (editingNodeId) return // don't intercept text copy in edit mode
+        const ids = selectedNodeIds.size > 0
+          ? selectedNodeIds
+          : frame.selectedNodeId ? new Set([frame.selectedNodeId]) : null
+        if (!ids || ids.size === 0) return
+        e.preventDefault()
+        const nodes = model.nodes.filter((n) => ids.has(n.id))
+        const connections = model.connections.filter(
+          (c) => ids.has(c.from) && ids.has(c.to),
+        )
+        clipboardRef.current = { nodes, connections }
+        return
+      }
+      // Paste: Ctrl+V
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (editingNodeId) return
+        const clip = clipboardRef.current
+        if (!clip || clip.nodes.length === 0) return
+        e.preventDefault()
+        const idMap = new Map<string, string>()
+        const pastedIds = new Set<string>()
+        // Create new IDs and offset positions
+        for (const node of clip.nodes) {
+          const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          idMap.set(node.id, newId)
+          pastedIds.add(newId)
+        }
+        beginEditNode(frame.modelId) // push undo snapshot
+        for (const node of clip.nodes) {
+          const newId = idMap.get(node.id)!
+          addNode(frame.modelId, {
+            ...node,
+            id: newId,
+            x: snapToGrid(node.x + 4),
+            y: snapToGrid(node.y + 4),
+            // Don't copy RMM/MPD references — those are specific to the source node
+            childModelId: undefined,
+            mpdIds: undefined,
+          })
+        }
+        for (const conn of clip.connections) {
+          const newFrom = idMap.get(conn.from)
+          const newTo = idMap.get(conn.to)
+          if (newFrom && newTo) {
+            addConnection(frame.modelId, { from: newFrom, to: newTo })
+          }
+        }
+        // Select the pasted nodes
+        setSelectedNodeIds(pastedIds)
+        clearSelection() // clear single-select
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         // Don't delete while typing in a node label
         if (editingNodeId) return
+        // Multi-selection delete
+        if (selectedNodeIds.size > 0) {
+          beginEditNode(frame.modelId) // push undo snapshot
+          for (const id of selectedNodeIds) {
+            removeNode(frame.modelId, id)
+          }
+          setSelectedNodeIds(new Set())
+          return
+        }
         if (frame.selectedNodeId) {
           removeNode(frame.modelId, frame.selectedNodeId)
         }
@@ -1071,8 +1169,16 @@ export function PrototypeViewport() {
           setEditingNodeId(null)
         } else {
           clearSelection()
+          setSelectedNodeIds(new Set())
           closeUnzip()
         }
+      }
+      // Select All: Ctrl+A
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        if (editingNodeId) return
+        e.preventDefault()
+        setSelectedNodeIds(new Set(model.nodes.map((n) => n.id)))
+        return
       }
       // Tab or F2 to start editing the selected node
       if ((e.key === 'Tab' || e.key === 'F2') && !editingNodeId && frame.selectedNodeId) {
@@ -1083,7 +1189,7 @@ export function PrototypeViewport() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, removeNode, clearSelection, closeUnzip, undo, redo, beginEditNode])
+  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, model.connections, selectedNodeIds, removeNode, clearSelection, closeUnzip, undo, redo, beginEditNode, addNode, addConnection])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -1210,7 +1316,7 @@ export function PrototypeViewport() {
   return (
     <div
       ref={viewportRef}
-      className={`viewport ${isDragging ? 'dragging' : ''}`}
+      className={`viewport ${isDragging ? 'dragging' : ''}${selectMode ? ' select-mode' : ''}`}
       onWheel={(event) => {
         event.preventDefault()
         // Cancel any running untangle animation before zooming
@@ -1226,10 +1332,26 @@ export function PrototypeViewport() {
       }}
       onPointerDown={(event) => {
         if (event.button !== 0) return
+        // Selection-rectangle mode: start rubber band on empty space
+        if (selectMode && !draggingNodeRef.current && !connectionDraft) {
+          const el = event.target as HTMLElement
+          if (!el.closest('.host-node')) {
+            selectionStartRef.current = { clientX: event.clientX, clientY: event.clientY }
+            const pos = clientToScene(event.clientX, event.clientY)
+            setSelectionRect({ startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y })
+            return
+          }
+        }
         beginDrag()
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerMove={(event) => {
+        // Selection rectangle dragging
+        if (selectionStartRef.current) {
+          const pos = clientToScene(event.clientX, event.clientY)
+          setSelectionRect((r) => r ? { ...r, endX: pos.x, endY: pos.y } : null)
+          return
+        }
         // Node dragging takes priority
         if (draggingNodeRef.current) {
           handleNodeDragMove(event)
@@ -1247,6 +1369,24 @@ export function PrototypeViewport() {
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerUp={(event) => {
+        // Finish selection rectangle
+        if (selectionStartRef.current && selectionRect) {
+          selectionStartRef.current = null
+          const minX = Math.min(selectionRect.startX, selectionRect.endX)
+          const maxX = Math.max(selectionRect.startX, selectionRect.endX)
+          const minY = Math.min(selectionRect.startY, selectionRect.endY)
+          const maxY = Math.max(selectionRect.startY, selectionRect.endY)
+          const ids = new Set<string>()
+          for (const node of model.nodes) {
+            if (node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY) {
+              ids.add(node.id)
+            }
+          }
+          setSelectedNodeIds(ids)
+          setSelectionRect(null)
+          justFinishedSelectionRef.current = true
+          return
+        }
         if (draggingNodeRef.current) {
           handleNodeDragEnd()
           return
@@ -1260,15 +1400,24 @@ export function PrototypeViewport() {
         pause()
       }}
       onPointerLeave={() => {
+        if (selectionStartRef.current) {
+          selectionStartRef.current = null
+          setSelectionRect(null)
+        }
         handleNodeDragEnd()
         setConnectionDraft(null)
         endDrag()
         lastPointer.current = null
       }}
       onClick={(event) => {
+        if (justFinishedSelectionRef.current) {
+          justFinishedSelectionRef.current = false
+          return
+        }
         const el = event.target as HTMLElement
         if (el === event.currentTarget || el.classList.contains('scene')) {
           clearSelection()
+          setSelectedNodeIds(new Set())
           closeUnzip()
         }
       }}
@@ -1456,15 +1605,10 @@ export function PrototypeViewport() {
         <span className="toolbar-sep" />
         <button
           type="button"
-          className="toolbar-btn"
-          onClick={() => {
-            const newId = `node-${Date.now()}`
-            addNode(frame.modelId, { id: newId, label: '', x: snapToGrid(50), y: snapToGrid(50) })
-            selectNode(newId)
-            setEditingNodeId(newId)
-          }}
-          title="Add new node"
-        >&#x2795; Add Node</button>
+          className={`toolbar-btn${selectMode ? ' toolbar-btn-active' : ''}`}
+          onClick={() => setSelectMode(!selectMode)}
+          title="Toggle selection mode (drag to select multiple nodes)"
+        >{selectMode ? '⬚ Select' : '⬚ Select'}</button>
         <span className="toolbar-sep" />
         <button
           type="button"
@@ -1537,6 +1681,7 @@ export function PrototypeViewport() {
         <ModelSceneContent
           model={model}
           selectedNodeId={frame.selectedNodeId}
+          selectedNodeIds={selectedNodeIds}
           childModel={childModel}
           progress={p}
           vpSize={vpSize}
@@ -1549,6 +1694,7 @@ export function PrototypeViewport() {
           onNodeDragStart={handleNodeDragStart}
           onConnectionDragStart={handleConnectionDragStart}
           draggingNodeId={draggingNodeId}
+          draggingMultiIds={multiDragOffsetsRef.current.size > 0 ? selectedNodeIds : undefined}
           editingNodeId={editingNodeId}
           noTransition={!!mpdCurtain}
           onFinishEditing={(nodeId, label) => {
@@ -1625,6 +1771,34 @@ export function PrototypeViewport() {
         />
       )}
 
+      {selectionRect && (() => {
+        const rect = viewportRef.current?.getBoundingClientRect()
+        if (!rect) return null
+        const cs = frame.snapshot.cameraScale
+        let cx = 0, cy = 0
+        if (selectedNode) {
+          const np = frame.snapshot.nodeProgress
+          cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
+          cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+        }
+        const toScreen = (pctX: number, pctY: number) => ({
+          x: (pctX / 100) * vpSize.w * cs + cx + frame.panOffset.x,
+          y: (pctY / 100) * vpSize.h * cs + cy + frame.panOffset.y,
+        })
+        const s = toScreen(selectionRect.startX, selectionRect.startY)
+        const e = toScreen(selectionRect.endX, selectionRect.endY)
+        const left = Math.min(s.x, e.x)
+        const top = Math.min(s.y, e.y)
+        const width = Math.abs(e.x - s.x)
+        const height = Math.abs(e.y - s.y)
+        return (
+          <div
+            className="selection-rect"
+            style={{ left, top, width, height }}
+          />
+        )
+      })()}
+
       <LeftSidebar />
       <RightSidebar
         model={model}
@@ -1649,6 +1823,7 @@ export function PrototypeViewport() {
 function ModelSceneContent({
   model,
   selectedNodeId,
+  selectedNodeIds,
   childModel,
   progress,
   vpSize,
@@ -1658,6 +1833,7 @@ function ModelSceneContent({
   onNodeDragStart,
   onConnectionDragStart,
   draggingNodeId,
+  draggingMultiIds,
   editingNodeId,
   onFinishEditing,
   onLiveEditLabel,
@@ -1667,6 +1843,7 @@ function ModelSceneContent({
 }: {
   model: Model
   selectedNodeId: string | null
+  selectedNodeIds?: Set<string>
   childModel: Model | undefined
   progress: number
   vpSize: { w: number; h: number }
@@ -1676,6 +1853,7 @@ function ModelSceneContent({
   onNodeDragStart: (nodeId: string, e: React.PointerEvent) => void
   onConnectionDragStart: (nodeId: string, e: React.PointerEvent) => void
   draggingNodeId: string | null
+  draggingMultiIds?: Set<string>
   editingNodeId: string | null
   onFinishEditing: (nodeId: string, label: string) => void
   onLiveEditLabel: (nodeId: string, label: string) => void
@@ -1823,7 +2001,8 @@ function ModelSceneContent({
             node={node}
             posX={p.x}
             posY={p.y}
-            isSelected={node.id === selectedNodeId}
+            isSelected={node.id === selectedNodeId || (selectedNodeIds?.has(node.id) ?? false)}
+            isMultiSelected={selectedNodeIds?.has(node.id) ?? false}
             isZooming={node.id === selectedNodeId && progress > 0}
             progress={node.id === selectedNodeId ? progress : 0}
             childModel={node.id === selectedNodeId ? childModel : undefined}
@@ -1832,7 +2011,7 @@ function ModelSceneContent({
             onDoubleClick={() => onDoubleClickNode(node.id)}
             onDragStart={(e) => onNodeDragStart(node.id, e)}
             onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
-            isDragging={node.id === draggingNodeId || !!noTransition}
+            isDragging={node.id === draggingNodeId || (draggingMultiIds?.has(node.id) ?? false) || !!noTransition}
             isEditing={node.id === editingNodeId}
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
             onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
@@ -2034,6 +2213,7 @@ function SceneNode({
   posX,
   posY,
   isSelected,
+  isMultiSelected,
   isZooming,
   progress,
   childModel,
@@ -2052,6 +2232,7 @@ function SceneNode({
   posX: number
   posY: number
   isSelected: boolean
+  isMultiSelected?: boolean
   isZooming: boolean
   progress: number
   childModel: Model | undefined
@@ -2308,8 +2489,30 @@ function SceneNode({
             />
           </svg>
         )}
+        {isMultiSelected && (
+          <svg
+            style={{
+              position: 'absolute',
+              left: -5,
+              top: -5,
+              width: 'calc(100% + 10px)',
+              height: 'calc(100% + 10px)',
+              pointerEvents: 'none',
+              overflow: 'visible',
+            }}
+          >
+            <polygon
+              points={shapeSvgPoints(shape, nodeW + 10, nodeH + 10)}
+              fill="none"
+              stroke="rgba(37, 99, 235, 0.7)"
+              strokeWidth={2}
+              strokeDasharray="6 4"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
         <article
-          className={`host-node ${isSelected ? 'focused' : ''}`}
+          className={`host-node${isSelected ? ' focused' : ''}`}
           style={{
             ...vizStyle,
             position: 'relative',
@@ -2329,7 +2532,7 @@ function SceneNode({
 
   return (
     <article
-      className={`host-node ${isSelected ? 'focused' : ''}`}
+      className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}`}
       style={{ ...positionStyle, ...vizStyle }}
       {...articleEventHandlers}
     >
