@@ -245,6 +245,16 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
               onChange={(e) => onUpdateProps({ membraneVisible: e.target.checked })}
             />
           </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="node-locked">Lock</label>
+            <input
+              id="node-locked"
+              type="checkbox"
+              className="settings-checkbox"
+              checked={node.locked === true}
+              onChange={(e) => onUpdateProps({ locked: e.target.checked })}
+            />
+          </div>
         </div>
       </div>
       <div className="sidebar-section">

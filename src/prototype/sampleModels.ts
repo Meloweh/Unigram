@@ -22,6 +22,8 @@ export interface ModelNode {
    *  The dial appears when this array has more than one entry.
    *  childModelId should always be one of these. */
   mpdIds?: string[]
+  /** Whether the node is locked (cannot be moved by dragging or untangle) */
+  locked?: boolean
 }
 
 export interface StudyEvidence {

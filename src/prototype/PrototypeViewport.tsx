@@ -383,6 +383,9 @@ function computeUntangledPositions(
   vpH: number,
   gridSnapSize = DEFAULT_GRID_SNAP,
 ): Record<string, { x: number; y: number }> | null {
+  // Locked node IDs — these must not move during any phase
+  const lockedIds = new Set(nodes.filter(n => n.locked).map(n => n.id))
+
   // Work in pixel space for aspect-correct geometry
   const pos = new Map<string, { x: number; y: number }>()
   for (const n of nodes) {
@@ -463,6 +466,7 @@ function computeUntangledPositions(
       ]
 
       for (const cand of candidates) {
+        if (lockedIds.has(cand.id)) continue
         const p = posOf(cand.id)
         const partner = posOf(cand.partnerId)
         const lf = posOf(cand.lineFrom), lt = posOf(cand.lineTo)
@@ -512,7 +516,9 @@ function computeUntangledPositions(
 
     let bestI = -1, bestJ = -1, bestReduction = 0
     for (let i = 0; i < nodes.length; i++) {
+      if (lockedIds.has(nodes[i].id)) continue
       for (let j = i + 1; j < nodes.length; j++) {
+        if (lockedIds.has(nodes[j].id)) continue
         const pi = posOf(nodes[i].id), pj = posOf(nodes[j].id)
         const tmpX = pi.x, tmpY = pi.y
         pi.x = pj.x; pi.y = pj.y; pj.x = tmpX; pj.y = tmpY
@@ -644,6 +650,7 @@ function computeUntangledPositions(
     }
 
     for (const n of nodes) {
+      if (lockedIds.has(n.id)) continue
       const p = posOf(n.id)
       const f = forces.get(n.id)!
       let dx = f.fx, dy = f.fy
@@ -662,16 +669,17 @@ function computeUntangledPositions(
     }
   }
 
-  // Convert back to percentage and snap to grid
+  // Convert back to percentage and snap to grid (exclude locked nodes)
   const result: Record<string, { x: number; y: number }> = {}
   for (const n of nodes) {
+    if (lockedIds.has(n.id)) continue
     const p = posOf(n.id)
     result[n.id] = {
       x: snapToGrid(p.x * 100 / vpW, gridSnapSize),
       y: snapToGrid(p.y * 100 / vpH, gridSnapSize),
     }
   }
-  return result
+  return Object.keys(result).length > 0 ? result : null
 }
 
 export function PrototypeViewport() {
@@ -945,6 +953,9 @@ export function PrototypeViewport() {
   const handleNodeDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
+    // Locked nodes cannot be dragged
+    const draggedNode = model.nodes.find((n) => n.id === nodeId)
+    if (draggedNode?.locked) return
     draggingNodeRef.current = nodeId
     setDraggingNodeId(nodeId)
     beginMoveNode(frame.modelId)
@@ -954,7 +965,7 @@ export function PrototypeViewport() {
       const pos = clientToScene(e.clientX, e.clientY)
       for (const id of selectedNodeIds) {
         const n = model.nodes.find((nd) => nd.id === id)
-        if (n && id !== nodeId) {
+        if (n && id !== nodeId && !n.locked) {
           multiDragOffsetsRef.current.set(id, { dx: n.x - pos.x, dy: n.y - pos.y })
         }
       }
@@ -2079,6 +2090,15 @@ function ConnectionLine({
   const perpX = -alongY
   const perpY = alongX
 
+  // Shorten the target end by the arrowhead length so the marker tip
+  // lands at the original target (node edge) rather than overshooting.
+  const arrowLenPx = 16
+  let adjTxPx = txPx, adjTyPx = tyPx
+  if (lenPx > arrowLenPx * 2) {
+    adjTxPx = txPx - alongX * arrowLenPx
+    adjTyPx = tyPx - alongY * arrowLenPx
+  }
+
   const midXPx = (fxPx + txPx) / 2
   const midYPx = (fyPx + tyPx) / 2
 
@@ -2157,7 +2177,7 @@ function ConnectionLine({
       entAbs,
       ...myCorners,
       extAbs,
-      { x: txPx, y: tyPx },
+      { x: adjTxPx, y: adjTyPx },
     ]
 
     // Build path with quadratic-bezier rounded corners at indices 1..length-2
@@ -2192,16 +2212,18 @@ function ConnectionLine({
     const sAy = fyPx + alongY * lenPx * 0.30
     const sBx = fxPx + alongX * lenPx * 0.70
     const sBy = fyPx + alongY * lenPx * 0.70
-    return `M ${fxPx} ${fyPx} L ${sAx} ${sAy} Q ${cpx} ${cpy} ${sBx} ${sBy} L ${txPx} ${tyPx}`
+    return `M ${fxPx} ${fyPx} L ${sAx} ${sAy} Q ${cpx} ${cpy} ${sBx} ${sBy} L ${adjTxPx} ${adjTyPx}`
   }
 
   const hasPopup = popupSize && popupSize.w > 0 && popupSize.h > 0
   const d1 = hasPopup ? buildTrackForPopup(+1) : buildFallbackTrack(+1)
   const d2 = hasPopup ? buildTrackForPopup(-1) : buildFallbackTrack(-1)
 
+  const marker = hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
+
   return (
     <>
-      <path d={d1} className={lineClass} fill="none" />
+      <path d={d1} className={lineClass} fill="none" markerEnd={marker} />
       <path d={d2} className={lineClass} fill="none" />
     </>
   )
