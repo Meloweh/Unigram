@@ -130,3 +130,69 @@ describe('pushModel does not inherit mpdIds from entry node', () => {
     expect(store.getState().currentFrame().mpdIds).toBeUndefined()
   })
 })
+
+describe('switchNodeMpd with multiple MPDs', () => {
+  beforeEach(reset)
+
+  it('switches to each MPD independently', () => {
+    // Setup: 4 MPDs on node-alpha (default + 3 dimensions)
+    const s = store.getState()
+    s.registerModel({ id: 'mpd-default', label: 'Default', nodes: [], connections: [] })
+    s.registerModel({ id: 'mpd-1', label: 'MPD 1', nodes: [{ id: 'node-alpha', label: 'A', x: 50, y: 50 }], connections: [] })
+    s.registerModel({ id: 'mpd-2', label: 'MPD 2', nodes: [{ id: 'node-alpha', label: 'A', x: 50, y: 50 }], connections: [] })
+    s.registerModel({ id: 'mpd-3', label: 'MPD 3', nodes: [{ id: 'node-alpha', label: 'A', x: 50, y: 50 }], connections: [] })
+    s.updateNodeProps('root', 'node-alpha', { mpdIds: ['mpd-default', 'mpd-1', 'mpd-2', 'mpd-3'] })
+    s.selectNode('node-alpha')
+
+    const mpdIds = ['mpd-default', 'mpd-1', 'mpd-2', 'mpd-3']
+
+    // Switch to MPD 1
+    store.getState().switchNodeMpd('mpd-1', mpdIds)
+    expect(store.getState().currentFrame().modelId).toBe('mpd-1')
+    expect(store.getState().currentFrame().nodeMpdOriginalModelId).toBe('root')
+
+    // Switch directly to MPD 2 (from MPD 1)
+    store.getState().switchNodeMpd('mpd-2', mpdIds)
+    expect(store.getState().currentFrame().modelId).toBe('mpd-2')
+    expect(store.getState().currentFrame().nodeMpdOriginalModelId).toBe('root')
+
+    // Switch directly to MPD 3 (from MPD 2)
+    store.getState().switchNodeMpd('mpd-3', mpdIds)
+    expect(store.getState().currentFrame().modelId).toBe('mpd-3')
+    expect(store.getState().currentFrame().nodeMpdOriginalModelId).toBe('root')
+
+    // Switch back to default (original model)
+    store.getState().switchNodeMpd('root', mpdIds)
+    expect(store.getState().currentFrame().modelId).toBe('root')
+    expect(store.getState().currentFrame().nodeMpdOriginalModelId).toBeUndefined()
+
+    // Switch directly to MPD 3 (from default)
+    store.getState().switchNodeMpd('mpd-3', mpdIds)
+    expect(store.getState().currentFrame().modelId).toBe('mpd-3')
+  })
+
+  it('adds content independently to each MPD model', () => {
+    const s = store.getState()
+    s.registerModel({ id: 'mpd-default', label: 'Default', nodes: [], connections: [] })
+    s.registerModel({ id: 'mpd-1', label: 'MPD 1', nodes: [{ id: 'node-alpha', label: 'A', x: 50, y: 50 }], connections: [] })
+    s.registerModel({ id: 'mpd-2', label: 'MPD 2', nodes: [{ id: 'node-alpha', label: 'A', x: 50, y: 50 }], connections: [] })
+    s.updateNodeProps('root', 'node-alpha', { mpdIds: ['mpd-default', 'mpd-1', 'mpd-2'] })
+    s.selectNode('node-alpha')
+
+    const mpdIds = ['mpd-default', 'mpd-1', 'mpd-2']
+
+    // Switch to MPD 1 and add a node
+    store.getState().switchNodeMpd('mpd-1', mpdIds)
+    store.getState().addNode('mpd-1', { id: 'extra-1', label: 'Extra 1', x: 20, y: 20 })
+
+    // Switch to MPD 2 — should NOT see the node from MPD 1
+    store.getState().switchNodeMpd('mpd-2', mpdIds)
+    const mpd2Model = store.getState().models['mpd-2']
+    expect(mpd2Model.nodes.find(n => n.id === 'extra-1')).toBeUndefined()
+    expect(store.getState().currentFrame().modelId).toBe('mpd-2')
+
+    // MPD 1 should still have its extra node
+    const mpd1Model = store.getState().models['mpd-1']
+    expect(mpd1Model.nodes.find(n => n.id === 'extra-1')).toBeDefined()
+  })
+})
