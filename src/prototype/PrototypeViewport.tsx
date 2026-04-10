@@ -712,7 +712,10 @@ export function PrototypeViewport() {
     undoStacks,
     redoStacks,
     switchFrameMpd,
+    clearLastChildModelId,
+    setLastChildModelId,
     registerModel,
+    updateModelLabel,
     resetToRoot,
     models: storeModels,
     gridSnap,
@@ -776,25 +779,74 @@ export function PrototypeViewport() {
   const childModelId = frame.lastChildModelId ?? selectedNode?.childModelId
   const childModel = childModelId ? storeGetModel(childModelId) : undefined
 
-  // MPD dial: show only when the selected node has a twin (same id) in
-  // at least one other MPD sibling model at this frame level.
+  // MPD dial — two modes:
+  // 1. Node-level: selected node at any depth has childModelId + mpdIds (> 1
+  //    combined perspective).  The dial picks which perspective to zoom into
+  //    by setting lastChildModelId (transient frame state, NOT node data).
+  // 2. Frame-level: after zooming in, the frame has multiple perspectives.
+  //    The dial switches the whole view via switchFrameMpd + curtain.
+
+  // --- Node-level dial ---
+  // Stable combined perspective list: childModelId first, then mpdIds (deduped)
+  const nodeDialIds = useMemo(() => {
+    if (!selectedNode) return null
+    const ids: string[] = []
+    if (selectedNode.childModelId) ids.push(selectedNode.childModelId)
+    if (selectedNode.mpdIds) {
+      for (const id of selectedNode.mpdIds) {
+        if (!ids.includes(id)) ids.push(id)
+      }
+    }
+    return ids.length > 1 ? ids : null
+  }, [selectedNode?.childModelId, selectedNode?.mpdIds])
+
+  // --- Frame-level dial ---
+  // Derive live combined perspectives from the entry node in the parent
+  // model so newly added MPDs are picked up without re-zooming.
+  const liveMpdIds = useMemo(() => {
+    if (stack.length < 2 || !frame.entryNodeId) return undefined
+    const parentFrame = stack[stack.length - 2]
+    const parentModel = storeModels[parentFrame.modelId]
+    const entryNode = parentModel?.nodes.find((n) => n.id === frame.entryNodeId)
+    if (!entryNode) return frame.mpdIds
+    const ids: string[] = []
+    if (entryNode.childModelId) ids.push(entryNode.childModelId)
+    if (entryNode.mpdIds) {
+      for (const id of entryNode.mpdIds) {
+        if (!ids.includes(id)) ids.push(id)
+      }
+    }
+    return ids.length > 1 ? ids : frame.mpdIds
+  }, [stack, frame.entryNodeId, frame.mpdIds, storeModels])
+
+  // Node-level takes priority; frame-level only when no node-level and a node is selected
+  const isNodeLevelMpd = !!nodeDialIds
+  const isFrameLevelMpd = !isNodeLevelMpd && !!liveMpdIds && liveMpdIds.length > 1 && !!frame.selectedNodeId
+
   const mpdOptions = useMemo(() => {
-    if (!frame.mpdIds || frame.mpdIds.length <= 1 || !frame.selectedNodeId) return null
-    // Check if selected node has a twin in any sibling model
-    const hasTwin = frame.mpdIds.some((id) => {
-      if (id === frame.modelId) return false
-      const m = storeGetModel(id)
-      return m?.nodes.some((n) => n.id === frame.selectedNodeId)
-    })
-    if (!hasTwin) return null
-    return frame.mpdIds.map((id) => {
-      const m = storeGetModel(id)
-      return { id, label: m?.label ?? id }
-    })
-  }, [frame.mpdIds, frame.modelId, frame.selectedNodeId, storeGetModel])
-  const mpdActiveIndex = mpdOptions
-    ? Math.max(0, frame.mpdIds!.indexOf(frame.modelId))
-    : 0
+    if (isNodeLevelMpd) {
+      return nodeDialIds!.map((id) => {
+        const m = storeGetModel(id)
+        return { id, label: m?.label ?? id }
+      })
+    }
+    if (isFrameLevelMpd) {
+      return liveMpdIds!.map((id) => {
+        const m = storeGetModel(id)
+        return { id, label: m?.label ?? id }
+      })
+    }
+    return null
+  }, [isNodeLevelMpd, isFrameLevelMpd, nodeDialIds, liveMpdIds, storeGetModel])
+
+  const mpdActiveIndex = useMemo(() => {
+    if (!mpdOptions) return 0
+    if (isNodeLevelMpd) {
+      const activeId = childModelId ?? nodeDialIds![0]
+      return Math.max(0, nodeDialIds!.indexOf(activeId))
+    }
+    return Math.max(0, liveMpdIds!.indexOf(frame.modelId))
+  }, [mpdOptions, isNodeLevelMpd, childModelId, nodeDialIds, liveMpdIds, frame.modelId])
 
   const sceneStyle = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
@@ -1213,7 +1265,8 @@ export function PrototypeViewport() {
         lastPointer.current = null
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) {
+        const el = event.target as HTMLElement
+        if (el === event.currentTarget || el.classList.contains('scene')) {
           clearSelection()
           closeUnzip()
         }
@@ -1251,12 +1304,20 @@ export function PrototypeViewport() {
         <div className="empty-hint">Click a node to select, then scroll to zoom in.</div>
       )}
 
-      {mpdOptions && mpdOptions.length > 1 && frame.selectedNodeId && (
+      {mpdOptions && mpdOptions.length > 1 && (
         <MpdDial
           options={mpdOptions}
           activeIndex={mpdActiveIndex}
           onSelect={(idx, direction) => {
             const newModelId = mpdOptions[idx].id
+
+            // --- Node-level: pick which perspective to zoom into ---
+            if (isNodeLevelMpd) {
+              setLastChildModelId(newModelId)
+              return
+            }
+
+            // --- Frame-level: switch the whole view with curtain animation ---
             if (newModelId === frame.modelId) return
 
             // Compute pan offset to align twin nodes across dimensions
@@ -1528,6 +1589,9 @@ export function PrototypeViewport() {
         onSetGridSnap={setGridSnap}
         onUpdateNodeShape={(nodeId, shape) => updateNodeShape(frame.modelId, nodeId, shape)}
         onUpdateNodeProps={(nodeId, props) => updateNodeProps(frame.modelId, nodeId, props)}
+        allModels={storeModels}
+        onRegisterModel={registerModel}
+        onUpdateModelLabel={updateModelLabel}
       />
     </div>
   )

@@ -3,14 +3,32 @@ import { useHybridZoomStore } from './useHybridZoomStore'
 
 const store = useHybridZoomStore
 
+function seedModels() {
+  const s = store.getState()
+  s.registerModel({ id: 'root', label: 'Root', nodes: [
+    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals' },
+  ], connections: [] })
+  s.registerModel({ id: 'alpha-internals', label: 'Alpha Internals', nodes: [
+    { id: 'svc-a', label: 'Service A', x: 20, y: 25 },
+    { id: 'svc-b', label: 'Service B', x: 70, y: 20 },
+    { id: 'gw', label: 'Gateway', x: 75, y: 65 },
+  ], connections: [{ from: 'svc-a', to: 'svc-b' }] })
+  s.registerModel({ id: 'alpha-performance', label: 'Alpha Performance', nodes: [
+    { id: 'gw', label: 'Gateway', x: 40, y: 75 },
+  ], connections: [] })
+}
+
 function reset() {
   store.setState(store.getInitialState())
+  seedModels()
 }
 
 /** Helper: zoom into Node Alpha so the current frame has mpdIds */
 function enterNodeAlpha() {
   const s = store.getState()
-  // Select and push into Node Alpha (which has mpdIds: ['alpha-internals', 'alpha-performance'])
+  // Give Node Alpha mpdIds so pushModel computes combined perspectives
+  s.updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-performance'] })
+  // Select and push into Node Alpha (childModelId=alpha-internals + mpdIds=['alpha-performance'])
   s.selectNode('node-alpha')
   s.pushModel('alpha-internals', 'node-alpha')
 }
@@ -94,6 +112,7 @@ describe('pushModel captures mpdIds from entry node', () => {
   beforeEach(reset)
 
   it('stores mpdIds when entry node has them', () => {
+    store.getState().updateNodeProps('root', 'node-alpha', { mpdIds: ['alpha-performance'] })
     store.getState().selectNode('node-alpha')
     store.getState().pushModel('alpha-internals', 'node-alpha')
     expect(store.getState().currentFrame().mpdIds).toEqual(['alpha-internals', 'alpha-performance'])

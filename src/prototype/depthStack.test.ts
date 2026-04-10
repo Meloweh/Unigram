@@ -2,9 +2,20 @@ import { useHybridZoomStore } from './useHybridZoomStore'
 
 const { getState } = useHybridZoomStore
 
+function seedModels() {
+  const s = getState()
+  s.registerModel({ id: 'root', label: 'Root', nodes: [
+    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals' },
+  ], connections: [] })
+  s.registerModel({ id: 'alpha-internals', label: 'Alpha Internals', nodes: [
+    { id: 'svc-a', label: 'Service A', x: 20, y: 25, childModelId: 'svc-a-internals' },
+    { id: 'svc-b', label: 'Service B', x: 70, y: 20 },
+  ], connections: [] })
+  s.registerModel({ id: 'svc-a-internals', label: 'Svc A Details', nodes: [], connections: [] })
+}
+
 function resetStore() {
   getState().clearSelection()
-  // Replace entire stack with fresh root
   useHybridZoomStore.setState({
     stack: [
       {
@@ -18,6 +29,7 @@ function resetStore() {
     isPaused: false,
     isDragging: false,
   })
+  seedModels()
 }
 
 beforeEach(resetStore)

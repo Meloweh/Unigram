@@ -97,10 +97,16 @@ interface HybridZoomState {
   removeConnection: (modelId: string, from: string, to: string) => void
   undo: (modelId: string) => void
   redo: (modelId: string) => void
+  /** Clear lastChildModelId on the current frame (used when node-level MPD dial switches) */
+  clearLastChildModelId: () => void
+  /** Set lastChildModelId on the current frame (node-level dial perspective pick) */
+  setLastChildModelId: (modelId: string) => void
   /** Switch the current frame's model to an alternative MPD dimension */
   switchFrameMpd: (newModelId: string, initialPanOffset?: { x: number; y: number }) => void
   /** Register a dynamically loaded model into the store */
   registerModel: (model: Model) => void
+  /** Update a model's label */
+  updateModelLabel: (modelId: string, label: string) => void
   /** Reset zoom stack to root (e.g. after loading a project file) */
   resetToRoot: () => void
   /** Update grid snap size */
@@ -239,13 +245,21 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
 
       const currentModel = state.models[top.modelId]
       const entryNode = currentModel?.nodes.find((n) => n.id === entryNodeId)
+      // Combine RMM (childModelId) + MPDs for frame dial options
+      const allPerspectives: string[] = []
+      if (entryNode?.childModelId) allPerspectives.push(entryNode.childModelId)
+      if (entryNode?.mpdIds) {
+        for (const id of entryNode.mpdIds) {
+          if (!allPerspectives.includes(id)) allPerspectives.push(id)
+        }
+      }
       return {
         stack: [
           ...state.stack,
           {
             modelId: childModelId,
             entryNodeId,
-            mpdIds: entryNode?.mpdIds,
+            mpdIds: allPerspectives.length > 1 ? allPerspectives : undefined,
             snapshot: createInitialSnapshot(),
             selectedNodeId: null,
             panOffset: { x: 0, y: 0 },
@@ -544,11 +558,40 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     })
   },
 
+  clearLastChildModelId: () => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, () => ({ lastChildModelId: undefined })),
+    }))
+  },
+
+  setLastChildModelId: (modelId) => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, () => ({ lastChildModelId: modelId })),
+    }))
+  },
+
   switchFrameMpd: (newModelId, initialPanOffset) => {
     set((state) => {
       const frame = state.stack[state.stack.length - 1]
-      if (!frame.mpdIds?.includes(newModelId)) return state
       if (frame.modelId === newModelId) return state
+      // Derive live mpdIds from the parent frame's entry node
+      let liveMpdIds = frame.mpdIds
+      if (state.stack.length >= 2 && frame.entryNodeId) {
+        const parentFrame = state.stack[state.stack.length - 2]
+        const parentModel = state.models[parentFrame.modelId]
+        const entryNode = parentModel?.nodes.find((n) => n.id === frame.entryNodeId)
+        if (entryNode) {
+          const ids: string[] = []
+          if (entryNode.childModelId) ids.push(entryNode.childModelId)
+          if (entryNode.mpdIds) {
+            for (const id of entryNode.mpdIds) {
+              if (!ids.includes(id)) ids.push(id)
+            }
+          }
+          if (ids.length > 1) liveMpdIds = ids
+        }
+      }
+      if (!liveMpdIds?.includes(newModelId)) return state
       // Preserve selection if a twin node exists in the new model
       const newModel = state.models[newModelId]
       const keepSelection = frame.selectedNodeId && newModel?.nodes.some((n) => n.id === frame.selectedNodeId)
@@ -570,6 +613,16 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => ({
       models: { ...state.models, [model.id]: model },
     }))
+  },
+
+  updateModelLabel: (modelId, label) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
+        models: { ...state.models, [modelId]: { ...model, label } },
+      }
+    })
   },
 
   resetToRoot: () => {

@@ -3,8 +3,28 @@ import { useHybridZoomStore, snapToGrid, DEFAULT_GRID_SNAP } from './useHybridZo
 
 const store = useHybridZoomStore
 
+function seedModels() {
+  const s = store.getState()
+  s.registerModel({ id: 'root', label: 'Root', nodes: [
+    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals' },
+  ], connections: [] })
+  s.registerModel({ id: 'alpha-internals', label: 'Alpha Internals', nodes: [
+    { id: 'svc-a', label: 'Service A', x: 20, y: 25, childModelId: 'svc-a-internals' },
+    { id: 'svc-b', label: 'Service B', x: 70, y: 20 },
+    { id: 'db', label: 'Database', x: 30, y: 70 },
+    { id: 'gw', label: 'Gateway', x: 75, y: 65 },
+  ], connections: [
+    { from: 'svc-a', to: 'svc-b' },
+    { from: 'svc-a', to: 'db' },
+    { from: 'svc-b', to: 'gw' },
+    { from: 'db', to: 'gw' },
+  ] })
+  s.registerModel({ id: 'svc-a-internals', label: 'Svc A Details', nodes: [], connections: [] })
+}
+
 function reset() {
   store.setState(store.getInitialState())
+  seedModels()
 }
 
 describe('snapToGrid', () => {

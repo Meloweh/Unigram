@@ -127,10 +127,12 @@
 .mpd-dial {
   position: absolute;
   bottom: 52px;
-  left: 0;
-  right: 0;
-  height: 56px;
+  left: 28px;
+  right: 28px;
+  height: 72px;
   z-index: 10;
+  transition: left 0.25s cubic-bezier(0.25, 0.1, 0.25, 1),
+              right 0.25s cubic-bezier(0.25, 0.1, 0.25, 1);
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(8px);
   border-top: 1px solid #c8d8ea;
@@ -141,6 +143,14 @@
 
 .mpd-dial.dragging {
   cursor: grabbing;
+}
+
+/* Offset dial for expanded sidebars */
+.viewport:has(> .sidebar-left:not(.collapsed)) .mpd-dial {
+  left: 220px;
+}
+.viewport:has(> .sidebar-right:not(.collapsed)) .mpd-dial {
+  right: 240px;
 }
 
 .mpd-dial-label {
@@ -193,8 +203,8 @@
 .mpd-dial-knob {
   position: absolute;
   bottom: 2px;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   background: #2563eb;
   border-radius: 50%;
   transform: translateX(-50%);
@@ -598,7 +608,7 @@
   border: 1px solid #c8d8ea;
   box-shadow: 0 2px 16px rgba(19, 41, 73, 0.08);
   transition: width 0.25s cubic-bezier(0.25, 0.1, 0.25, 1);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sidebar-left {
@@ -617,6 +627,7 @@
 
 .sidebar.collapsed {
   width: 28px;
+  overflow: hidden;
 }
 
 .sidebar-toggle {
@@ -749,6 +760,15 @@
   min-height: 28px;
 }
 
+.settings-row-indent {
+  padding-left: 56px;
+}
+
+.mpd-default-entry {
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .settings-label {
   color: #4a6e90;
   font-weight: 500;
@@ -782,23 +802,58 @@
   border: 1px solid #c8d8ea;
 }
 
-.settings-color-input {
-  width: 32px;
-  height: 24px;
+.settings-color-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+.settings-color-native {
+  position: absolute;
+  left: -260px;
+  top: 0;
+  width: 0;
+  height: 0;
   padding: 0;
+  border: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-color-swatch {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
   border: 1px solid #c8d8ea;
   border-radius: 4px;
-  background: none;
   cursor: pointer;
+  padding: 0;
 }
 
-.settings-color-input::-webkit-color-swatch-wrapper {
-  padding: 2px;
+.settings-color-swatch:hover {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
 }
 
-.settings-color-input::-webkit-color-swatch {
-  border: none;
-  border-radius: 2px;
+.settings-color-hex {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+  border: 1px solid #c8d8ea;
+  border-radius: 4px;
+  background: #fff;
+  color: #17314f;
+  outline: none;
+  width: 70px;
+}
+
+.settings-color-hex:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
 }
 
 .settings-checkbox {
@@ -806,6 +861,63 @@
   height: 16px;
   accent-color: #365f8f;
   cursor: pointer;
+}
+
+.settings-text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  font-family: inherit;
+  border: 1px solid #c8d8ea;
+  border-radius: 4px;
+  background: #fff;
+  color: #17314f;
+  outline: none;
+}
+
+.settings-text-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.settings-add-btn {
+  padding: 2px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.settings-add-btn:hover {
+  background: rgba(37, 99, 235, 0.15);
+}
+
+.settings-remove-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: #94a3b8;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-remove-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
 @media (max-width: 900px) {

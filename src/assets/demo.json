@@ -7,7 +7,8 @@
         "id": "node-alpha",
         "label": "Node Alpha",
         "x": 50,
-        "y": 50
+        "y": 50,
+        "childModel": "./alpha-internals.json"
       }
     ],
     "connections": []
@@ -20,37 +21,42 @@
         "id": "svc-a",
         "label": "Service A",
         "x": 20,
-        "y": 24
+        "y": 25,
+        "childModel": "./svc-a-internals.json"
       },
       {
         "id": "svc-b",
         "label": "Service B",
-        "x": 32,
-        "y": 72
+        "x": 70,
+        "y": 20
       },
       {
         "id": "db",
         "label": "Database",
-        "x": 72,
-        "y": 20
+        "x": 28,
+        "y": 72,
+        "mpdModels": [
+          "./mpd-1775799785476-1.json",
+          "./mpd-1775799787413-2.json"
+        ]
       },
       {
         "id": "gw",
         "label": "Gateway",
-        "x": 60,
-        "y": 52
+        "x": 75,
+        "y": 65
       },
       {
         "id": "monitor",
         "label": "Monitor",
-        "x": 44,
-        "y": 16
+        "x": 52,
+        "y": 46
       },
       {
         "id": "logger",
         "label": "Logger",
-        "x": 36,
-        "y": 40
+        "x": 60,
+        "y": 52
       }
     ],
     "connections": [
@@ -121,22 +127,6 @@
             "url": "https://example.com/sridharan-tracing"
           }
         ]
-      },
-      {
-        "from": "logger",
-        "to": "gw"
-      },
-      {
-        "from": "logger",
-        "to": "db"
-      },
-      {
-        "from": "monitor",
-        "to": "db"
-      },
-      {
-        "from": "logger",
-        "to": "svc-b"
       }
     ]
   },
@@ -283,5 +273,31 @@
         "to": "metrics"
       }
     ]
+  },
+  "mpd-1775799785476-1.json": {
+    "id": "mpd-1775799785476-1",
+    "label": "Database MPD 1",
+    "nodes": [
+      {
+        "id": "db",
+        "label": "Database",
+        "x": 50,
+        "y": 50
+      }
+    ],
+    "connections": []
+  },
+  "mpd-1775799787413-2.json": {
+    "id": "mpd-1775799787413-2",
+    "label": "Database MPD 2",
+    "nodes": [
+      {
+        "id": "db",
+        "label": "Database",
+        "x": 50,
+        "y": 50
+      }
+    ],
+    "connections": []
   }
 }

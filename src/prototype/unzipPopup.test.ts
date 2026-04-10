@@ -2,6 +2,13 @@ import { useHybridZoomStore } from './useHybridZoomStore'
 
 const { getState } = useHybridZoomStore
 
+function seedModels() {
+  const s = getState()
+  s.registerModel({ id: 'root', label: 'Root', nodes: [
+    { id: 'node-alpha', label: 'Node Alpha', x: 50, y: 50, childModelId: 'alpha-internals' },
+  ], connections: [] })
+}
+
 function resetStore() {
   useHybridZoomStore.setState({
     stack: [
@@ -17,6 +24,7 @@ function resetStore() {
     isDragging: false,
     unzipPopup: null,
   })
+  seedModels()
 }
 
 beforeEach(resetStore)
