@@ -76,6 +76,12 @@
   border-radius: 12px;
   padding: 4px 8px;
   box-shadow: 0 2px 12px rgba(19, 41, 73, 0.10);
+  transition: bottom 0.25s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* Stack toolbar above the dial when it's present */
+.viewport:has(.mpd-dial) .editor-toolbar {
+  bottom: 84px;
 }
 
 .toolbar-btn {
@@ -135,7 +141,7 @@
 
 .mpd-dial {
   position: absolute;
-  bottom: 52px;
+  bottom: 4px;
   left: 28px;
   right: 28px;
   height: 72px;
@@ -211,7 +217,7 @@
 
 .mpd-dial-knob {
   position: absolute;
-  bottom: 2px;
+  bottom: 10px;
   width: 18px;
   height: 18px;
   background: #2563eb;
