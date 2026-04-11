@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
@@ -1054,39 +1054,139 @@ export function PrototypeViewport() {
     setEditingNodeId(newId)
   }, [clientToScene, frame.modelId, addNode, selectNode])
 
-  // ---- Drop from sidebar (shape palette) ----
+  // ---- Drop from sidebar (shape/media-type palette) and file drops ----
+
+  /** Detect the media node type from a MIME type */
+  const mimeToMediaType = (mime: string): MediaNodeType | null => {
+    if (mime === 'image/gif') return 'gif'
+    if (mime.startsWith('image/')) return 'image'
+    if (mime.startsWith('audio/')) return 'audio'
+    if (mime.startsWith('video/')) return 'video'
+    return null
+  }
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/unigram-shape')) {
+    if (
+      e.dataTransfer.types.includes('application/unigram-shape') ||
+      e.dataTransfer.types.includes('application/unigram-media-type') ||
+      e.dataTransfer.types.includes('Files')
+    ) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
     }
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
+    // 1) Shape from sidebar
     const shapeId = e.dataTransfer.getData('application/unigram-shape')
-    if (!shapeId) return
-    e.preventDefault()
-    // Clear any pan state that may have started from pointer events during the drag
-    endDrag()
-    lastPointer.current = null
-    const pos = clientToScene(e.clientX, e.clientY)
-    const snappedX = snapToGrid(pos.x)
-    const snappedY = snapToGrid(pos.y)
-    const newId = `node-${Date.now()}`
-    addNode(frame.modelId, {
-      id: newId,
-      label: '',
-      x: snappedX,
-      y: snappedY,
-      shape: shapeId as NodeShape,
-    })
-    selectNode(newId)
-    setEditingNodeId(newId)
-  }, [clientToScene, frame.modelId, addNode, selectNode, endDrag])
+    if (shapeId) {
+      e.preventDefault()
+      endDrag()
+      lastPointer.current = null
+      const pos = clientToScene(e.clientX, e.clientY)
+      const snappedX = snapToGrid(pos.x)
+      const snappedY = snapToGrid(pos.y)
+      const newId = `node-${Date.now()}`
+      addNode(frame.modelId, {
+        id: newId, label: '', x: snappedX, y: snappedY,
+        shape: shapeId as NodeShape,
+      })
+      selectNode(newId)
+      setEditingNodeId(newId)
+      return
+    }
+
+    // 2) Media type node from sidebar (empty media node)
+    const mediaTypeId = e.dataTransfer.getData('application/unigram-media-type')
+    if (mediaTypeId) {
+      e.preventDefault()
+      endDrag()
+      lastPointer.current = null
+      const pos = clientToScene(e.clientX, e.clientY)
+      const snappedX = snapToGrid(pos.x)
+      const snappedY = snapToGrid(pos.y)
+      const newId = `node-${Date.now()}`
+      const defaultSizes: Record<string, { w: number; h: number }> = {
+        image: { w: 160, h: 120 },
+        gif: { w: 160, h: 120 },
+        audio: { w: 200, h: 80 },
+        video: { w: 200, h: 140 },
+      }
+      const sz = defaultSizes[mediaTypeId] ?? { w: 160, h: 120 }
+      addNode(frame.modelId, {
+        id: newId, label: '', x: snappedX, y: snappedY,
+        shape: 'rounded-rect',
+        mediaType: mediaTypeId as MediaNodeType,
+        nodeWidth: sz.w, nodeHeight: sz.h,
+      })
+      selectNode(newId)
+      return
+    }
+
+    // 3) File drop from OS — either onto empty scene or onto existing media node
+    const files = e.dataTransfer.files
+    if (files.length > 0) {
+      const file = files[0]
+      const mType = mimeToMediaType(file.type)
+      if (!mType) return
+      e.preventDefault()
+      endDrag()
+      lastPointer.current = null
+
+      // Check if dropped on an existing media node
+      const target = e.target as HTMLElement
+      const hostNode = target.closest('.host-node')
+      const hostNodeId = hostNode?.getAttribute('data-node-id')
+      const existingNode = hostNodeId
+        ? model.nodes.find((n) => n.id === hostNodeId && n.mediaType)
+        : undefined
+
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        if (existingNode) {
+          // Drop onto existing media node — replace its media
+          updateNodeProps(frame.modelId, existingNode.id, {
+            mediaSrc: dataUrl,
+            mediaFileName: file.name,
+          })
+        } else {
+          // Drop onto empty scene — create a new media node
+          const pos = clientToScene(e.clientX, e.clientY)
+          const snappedX = snapToGrid(pos.x)
+          const snappedY = snapToGrid(pos.y)
+          const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          const defaultSizes: Record<string, { w: number; h: number }> = {
+            image: { w: 160, h: 120 },
+            gif: { w: 160, h: 120 },
+            audio: { w: 200, h: 80 },
+            video: { w: 200, h: 140 },
+          }
+          const sz = defaultSizes[mType] ?? { w: 160, h: 120 }
+          addNode(frame.modelId, {
+            id: newId, label: '', x: snappedX, y: snappedY,
+            shape: 'rounded-rect',
+            mediaType: mType,
+            mediaSrc: dataUrl,
+            mediaFileName: file.name,
+            nodeWidth: sz.w, nodeHeight: sz.h,
+          })
+          selectNode(newId)
+        }
+      }
+      reader.readAsDataURL(file)
+      return
+    }
+  }, [clientToScene, frame.modelId, addNode, selectNode, endDrag, model.nodes, updateNodeProps])
 
   // ---- Node deletion (Delete key) + Undo/Redo + Copy/Paste ----
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore non-modifier keys when focus is on a form input (sidebar fields, etc.)
+      const tag = (e.target as HTMLElement)?.tagName
+      const inFormField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+      if (inFormField && !e.ctrlKey && !e.metaKey) return
+
       // Undo: Ctrl+Z / Cmd+Z
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
         e.preventDefault()
@@ -2291,17 +2391,23 @@ function SceneNode({
     measureLabel()
   }, [node.label, measureLabel, progress])
 
+  // Override base size with custom nodeWidth/nodeHeight if specified
+  const effectiveBase = {
+    w: node.nodeWidth ?? baseSize.w,
+    h: node.nodeHeight ?? baseSize.h,
+  }
+
   // Report measured size to parent for anchor computation
   useEffect(() => {
-    onResize(baseSize)
+    onResize(effectiveBase)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseSize])
+  }, [effectiveBase.w, effectiveBase.h])
 
   const targetW = vpSize.w / CAMERA_SCALE_FINAL
   const targetH = vpSize.h / CAMERA_SCALE_FINAL
 
-  let nodeW = baseSize.w + (targetW - baseSize.w) * progress
-  let nodeH = baseSize.h + (targetH - baseSize.h) * progress
+  let nodeW = effectiveBase.w + (targetW - effectiveBase.w) * progress
+  let nodeH = effectiveBase.h + (targetH - effectiveBase.h) * progress
 
   const shape = node.shape ?? 'rounded-rect'
 
@@ -2362,9 +2468,9 @@ function SceneNode({
     top: `${posY}%`,
     transition: isDragging ? 'none' : 'left 0.35s cubic-bezier(0.25,0.1,0.25,1), top 0.35s cubic-bezier(0.25,0.1,0.25,1)',
     width: nodeW,
-    minWidth: shape === 'circle' ? nodeW : baseSize.w,
+    minWidth: shape === 'circle' ? nodeW : effectiveBase.w,
     height: nodeH,
-    minHeight: shape === 'circle' ? nodeH : baseSize.h,
+    minHeight: shape === 'circle' ? nodeH : effectiveBase.h,
     transform: 'translate(-50%, -50%)',
     zIndex: isZooming ? 10 : 1,
   }
@@ -2429,8 +2535,75 @@ function SceneNode({
     // Shift+Enter inserts a line break (default textarea behavior)
   }
 
+  const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
+
+  // Apply playStart whenever it changes or the media element mounts
+  useEffect(() => {
+    const el = mediaRef.current
+    if (!el) return
+    if (node.playStart != null) {
+      el.currentTime = node.playStart
+    }
+  }, [node.playStart, node.mediaSrc])
+
+  const handleMediaTimeUpdate = useCallback((e: React.SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) => {
+    const el = e.currentTarget
+    if (node.playEnd != null && el.currentTime >= node.playEnd) {
+      el.pause()
+      el.currentTime = node.playStart ?? 0
+    }
+  }, [node.playEnd, node.playStart])
+
   const articleContent = (
     <>
+      {/* Media content for media node types */}
+      {node.mediaType && node.mediaSrc && chromeFade > 0.01 && (
+        <div className="media-node-content" style={{ opacity: chromeFade }}>
+          {node.mediaType === 'image' && (
+            <img src={node.mediaSrc} alt={node.label || 'Image'} draggable={false} />
+          )}
+          {node.mediaType === 'gif' && (
+            <img src={node.mediaSrc} alt={node.label || 'GIF'} draggable={false} />
+          )}
+          {node.mediaType === 'audio' && (
+            <div className="media-audio-wrapper">
+              {node.audioCoverSrc && (
+                <img src={node.audioCoverSrc} alt="Cover" className="media-audio-cover" draggable={false} />
+              )}
+              <audio
+                ref={mediaRef as React.RefObject<HTMLAudioElement>}
+                src={node.mediaSrc}
+                controls
+                preload="metadata"
+                onTimeUpdate={handleMediaTimeUpdate}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
+          {node.mediaType === 'video' && (
+            <video
+              ref={mediaRef as React.RefObject<HTMLVideoElement>}
+              src={node.mediaSrc}
+              controls
+              preload="metadata"
+              draggable={false}
+              onTimeUpdate={handleMediaTimeUpdate}
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
+        </div>
+      )}
+      {/* Empty media placeholder */}
+      {node.mediaType && !node.mediaSrc && chromeFade > 0.01 && (
+        <div className="media-node-placeholder" style={{ opacity: chromeFade }}>
+          <span className="media-node-placeholder-icon">
+            {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? '🔊' : '🎬'}
+          </span>
+          <span className="media-node-placeholder-text">
+            Drop {node.mediaType} here
+          </span>
+        </div>
+      )}
       {isEditing ? (
         <textarea
           ref={editRef}
@@ -2535,6 +2708,7 @@ function SceneNode({
         )}
         <article
           className={`host-node${isSelected ? ' focused' : ''}`}
+          data-node-id={node.id}
           style={{
             ...vizStyle,
             position: 'relative',
@@ -2555,6 +2729,7 @@ function SceneNode({
   return (
     <article
       className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}`}
+      data-node-id={node.id}
       style={{ ...positionStyle, ...vizStyle }}
       {...articleEventHandlers}
     >

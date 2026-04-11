@@ -2,6 +2,8 @@
 
 export type NodeShape = 'rectangle' | 'rounded-rect' | 'oval' | 'circle' | 'diamond' | 'hexagon' | 'parallelogram' | 'triangle'
 
+export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video'
+
 export interface ModelNode {
   id: string
   label: string
@@ -24,6 +26,22 @@ export interface ModelNode {
   mpdIds?: string[]
   /** Whether the node is locked (cannot be moved by dragging or untangle) */
   locked?: boolean
+  /** Media node type — when set, the node hosts media content */
+  mediaType?: MediaNodeType
+  /** Data URL or object URL of the media file */
+  mediaSrc?: string
+  /** Original filename of the media */
+  mediaFileName?: string
+  /** Custom node width in px (overrides auto-sizing) */
+  nodeWidth?: number
+  /** Custom node height in px (overrides auto-sizing) */
+  nodeHeight?: number
+  /** Playback start time in seconds (for gif/audio/video) */
+  playStart?: number
+  /** Playback end time in seconds (for gif/audio/video) */
+  playEnd?: number
+  /** Cover image data URL for audio nodes */
+  audioCoverSrc?: string
 }
 
 export interface StudyEvidence {

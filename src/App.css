@@ -285,6 +285,104 @@
   outline-offset: 3px;
 }
 
+/* ---- Media node content ---- */
+
+.media-node-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.media-node-content img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.media-node-content video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-node-content audio {
+  width: calc(100% - 12px);
+  height: 32px;
+}
+
+.media-audio-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 4px;
+}
+
+.media-audio-cover {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: cover;
+}
+
+.media-node-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.media-node-placeholder-icon {
+  font-size: 1.6rem;
+  opacity: 0.4;
+}
+
+.media-node-placeholder-text {
+  font-size: 0.7rem;
+  color: #8596a8;
+  font-weight: 500;
+}
+
+/* ---- Media settings (right sidebar) ---- */
+
+.settings-media-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-media-filename {
+  font-size: 0.78rem;
+  color: #365f8f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+}
+
+.settings-number-input {
+  width: 64px;
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  border: 1px solid #c8d8ea;
+  border-radius: 4px;
+  background: #fff;
+  color: #17314f;
+}
+
 .host-label {
   font-weight: 600;
   color: #17314f;

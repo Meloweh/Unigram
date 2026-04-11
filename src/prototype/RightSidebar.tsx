@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType } from './sampleModels'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -255,8 +255,44 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
               onChange={(e) => onUpdateProps({ locked: e.target.checked })}
             />
           </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="node-width">Width</label>
+            <input
+              id="node-width"
+              type="number"
+              className="settings-number-input"
+              min={40}
+              step={1}
+              value={node.nodeWidth ?? ''}
+              placeholder="auto"
+              onChange={(e) => {
+                const v = e.target.value
+                onUpdateProps({ nodeWidth: v ? Number(v) : undefined })
+              }}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="node-height">Height</label>
+            <input
+              id="node-height"
+              type="number"
+              className="settings-number-input"
+              min={30}
+              step={1}
+              value={node.nodeHeight ?? ''}
+              placeholder="auto"
+              onChange={(e) => {
+                const v = e.target.value
+                onUpdateProps({ nodeHeight: v ? Number(v) : undefined })
+              }}
+            />
+          </div>
         </div>
       </div>
+      {/* Media section — only for media node types */}
+      {node.mediaType && (
+        <MediaSettings node={node} onUpdateProps={onUpdateProps} />
+      )}
       <div className="sidebar-section">
         <div className="sidebar-section-header static">Diagrams</div>
         <div className="sidebar-section-body">
@@ -315,6 +351,153 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
         </div>
       </div>
     </>
+  )
+}
+
+function MediaSettings({ node, onUpdateProps }: {
+  node: ModelNode
+  onUpdateProps: (props: Partial<ModelNode>) => void
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const coverInputRef = useRef<HTMLInputElement>(null)
+  const isPlayable = node.mediaType === 'gif' || node.mediaType === 'audio' || node.mediaType === 'video'
+
+  const acceptMap: Record<MediaNodeType, string> = {
+    image: 'image/png,image/jpeg,image/webp,image/svg+xml',
+    gif: 'image/gif',
+    audio: 'audio/*',
+    video: 'video/*',
+  }
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      onUpdateProps({
+        mediaSrc: reader.result as string,
+        mediaFileName: file.name,
+      })
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  const handleCoverSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      onUpdateProps({ audioCoverSrc: reader.result as string })
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-section-header static">Media</div>
+      <div className="sidebar-section-body">
+        <div className="settings-row">
+          <span className="settings-label">Type</span>
+          <span className="settings-value">{node.mediaType}</span>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">File</span>
+          <div className="settings-media-file">
+            {node.mediaFileName ? (
+              <>
+                <span className="settings-media-filename" title={node.mediaFileName}>{node.mediaFileName}</span>
+                <button
+                  type="button"
+                  className="settings-remove-btn"
+                  onClick={() => onUpdateProps({ mediaSrc: undefined, mediaFileName: undefined })}
+                  title="Remove media"
+                >×</button>
+              </>
+            ) : (
+              <button type="button" className="settings-add-btn" onClick={() => fileInputRef.current?.click()}>
+                + Select file
+              </button>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={acceptMap[node.mediaType!]}
+              style={{ display: 'none' }}
+              onChange={handleFileSelect}
+            />
+          </div>
+        </div>
+
+        {node.mediaType === 'audio' && (
+          <div className="settings-row">
+            <span className="settings-label">Cover</span>
+            <div className="settings-media-file">
+              {node.audioCoverSrc ? (
+                <>
+                  <span className="settings-media-filename">cover image</span>
+                  <button
+                    type="button"
+                    className="settings-remove-btn"
+                    onClick={() => onUpdateProps({ audioCoverSrc: undefined })}
+                    title="Remove cover"
+                  >×</button>
+                </>
+              ) : (
+                <button type="button" className="settings-add-btn" onClick={() => coverInputRef.current?.click()}>
+                  + Select cover
+                </button>
+              )}
+              <input
+                ref={coverInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handleCoverSelect}
+              />
+            </div>
+          </div>
+        )}
+
+        {isPlayable && (
+          <>
+            <div className="settings-row">
+              <label className="settings-label" htmlFor="play-start">Start (s)</label>
+              <input
+                id="play-start"
+                type="number"
+                className="settings-number-input"
+                min={0}
+                step={0.1}
+                value={node.playStart ?? ''}
+                placeholder="0"
+                onChange={(e) => {
+                  const v = e.target.value
+                  onUpdateProps({ playStart: v ? Number(v) : undefined })
+                }}
+              />
+            </div>
+            <div className="settings-row">
+              <label className="settings-label" htmlFor="play-end">End (s)</label>
+              <input
+                id="play-end"
+                type="number"
+                className="settings-number-input"
+                min={0}
+                step={0.1}
+                value={node.playEnd ?? ''}
+                placeholder="end"
+                onChange={(e) => {
+                  const v = e.target.value
+                  onUpdateProps({ playEnd: v ? Number(v) : undefined })
+                }}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
