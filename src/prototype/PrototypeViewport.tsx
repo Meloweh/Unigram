@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidebar } from './RightSidebar'
+import { FlowEffectEditor } from './FlowEffectEditor'
 import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
@@ -715,6 +716,7 @@ export function PrototypeViewport() {
     setNodeLabelSilent,
     removeNode,
     addConnection,
+    updateConnectionType,
     undo,
     redo,
     undoStacks,
@@ -995,12 +997,14 @@ export function PrototypeViewport() {
   }, [])
 
   // ---- Connection creation (right-click drag) ----
+  const [activeConnectionType, setActiveConnectionType] = useState<ConnectionType>('default')
   const [connectionDraft, setConnectionDraft] = useState<{
     fromId: string
     fromX: number
     fromY: number
     toX: number
     toY: number
+    connectionType?: ConnectionType
   } | null>(null)
 
   const handleConnectionDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
@@ -1014,6 +1018,7 @@ export function PrototypeViewport() {
       fromY: node.y,
       toX: node.x,
       toY: node.y,
+      connectionType: activeConnectionType,
     })
     ;(e.target as Element).setPointerCapture(e.pointerId)
   }, [model.nodes])
@@ -1034,10 +1039,279 @@ export function PrototypeViewport() {
       return Math.sqrt(dx * dx + dy * dy) < 5 // hit radius ~5% of scene
     })
     if (target && target.id !== connectionDraft.fromId) {
-      addConnection(frame.modelId, { from: connectionDraft.fromId, to: target.id })
+      addConnection(frame.modelId, { from: connectionDraft.fromId, to: target.id, type: activeConnectionType === 'default' ? undefined : activeConnectionType })
     }
     setConnectionDraft(null)
-  }, [connectionDraft, clientToScene, model.nodes, frame.modelId, addConnection])
+  }, [connectionDraft, clientToScene, model.nodes, frame.modelId, addConnection, activeConnectionType])
+
+  // ---- Flow animation state ----
+  const [flowAnimations, setFlowAnimations] = useState<Map<string, number>>(new Map()) // connectionKey → progress (0→1)
+  const [flowActiveNodes, setFlowActiveNodes] = useState<Set<string>>(new Set()) // node IDs currently executing effects
+  const flowAnimRef = useRef<number | null>(null)
+  const flowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ---- Flow effect editor state ----
+  const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
+
+  type FlowStep = { kind: 'node'; nodeId: string; durationMs: number } | { kind: 'wire'; connectionKey: string; durationMs: number }
+
+  const flowQueueRef = useRef<{ steps: FlowStep[]; currentIdx: number; startTime: number } | null>(null)
+
+  const stopFlowAnimation = useCallback(() => {
+    if (flowAnimRef.current != null) cancelAnimationFrame(flowAnimRef.current)
+    if (flowTimeoutRef.current != null) clearTimeout(flowTimeoutRef.current)
+    flowAnimRef.current = null
+    flowTimeoutRef.current = null
+    flowQueueRef.current = null
+    setFlowAnimations(new Map())
+    setFlowActiveNodes(new Set())
+  }, [])
+
+  // Trigger media playback on a node via DOM
+  const triggerMediaPlay = useCallback((nodeId: string) => {
+    const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`)
+    if (!article) return
+    const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
+    if (media) {
+      const node = model.nodes.find(n => n.id === nodeId)
+      if (node?.playStart != null) media.currentTime = node.playStart
+      media.play().catch(() => {})
+    }
+  }, [model.nodes])
+
+  /**
+   * Execute all effect graphs on a diagram node. Returns total duration (ms).
+   * Traverses each effect's graph from the entry node, running effects in BFS
+   * layers: nodes at the same depth run in parallel, layers run in sequence.
+   */
+  const executeNodeEffects = useCallback((nodeId: string): number => {
+    const node = model.nodes.find(n => n.id === nodeId)
+    if (!node) return 100
+
+    // Collect all effects — include the implicit locked media effect if present
+    const effects = node.flowEffects ?? []
+    // Also consider implicit media if no locked effect exists
+    const hasLockedEffect = effects.some(e => e.locked)
+    const hasMedia = !!node.mediaType
+
+    let maxDuration = 0
+
+    for (const effect of effects) {
+      const graphNodes = effect.graph.nodes
+      const graphEdges = effect.graph.edges
+      if (graphNodes.length === 0) continue
+
+      // Build adjacency from graph edges
+      const adj = new Map<string, string[]>()
+      for (const e of graphEdges) {
+        if (!adj.has(e.from)) adj.set(e.from, [])
+        adj.get(e.from)!.push(e.to)
+      }
+
+      // BFS from entry node(s), executing effects layer by layer
+      const entryNodes = graphNodes.filter(n => n.kind === 'entry')
+      if (entryNodes.length === 0) continue
+
+      let frontier = entryNodes.map(n => n.id)
+      const visited = new Set<string>(frontier)
+      let totalDelay = 0
+
+      while (frontier.length > 0) {
+        const nextFrontier: string[] = []
+        let layerMaxDuration = 0
+
+        for (const gNodeId of frontier) {
+          const targets = adj.get(gNodeId) ?? []
+          for (const targetId of targets) {
+            if (visited.has(targetId)) continue
+            visited.add(targetId)
+            nextFrontier.push(targetId)
+
+            const gNode = graphNodes.find(n => n.id === targetId)
+            if (!gNode) continue
+
+            // Schedule this effect's execution
+            const delay = totalDelay
+            const dur = (gNode.config.durationMs as number) ?? 300
+
+            switch (gNode.kind) {
+              case 'play-media':
+                setTimeout(() => triggerMediaPlay(nodeId), delay)
+                layerMaxDuration = Math.max(layerMaxDuration, 200)
+                break
+              case 'wait':
+                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                break
+              case 'color': {
+                const color = (gNode.config.color as string) ?? '#f59e0b'
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (el) {
+                    el.style.transition = `background ${dur}ms ease`
+                    el.style.background = color
+                    // Revert after duration
+                    setTimeout(() => {
+                      el.style.background = ''
+                      el.style.transition = ''
+                    }, dur)
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                break
+              }
+              case 'move': {
+                const dx = (gNode.config.dx as number) ?? 0
+                const dy = (gNode.config.dy as number) ?? 0
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (el) {
+                    el.style.transition = `transform ${dur}ms ease`
+                    el.style.transform = `translate(${dx}px, ${dy}px)`
+                    setTimeout(() => {
+                      el.style.transform = ''
+                      el.style.transition = ''
+                    }, dur)
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                break
+              }
+              case 'spawn':
+                // placeholder for future
+                break
+              case 'entry':
+                break
+            }
+          }
+        }
+
+        totalDelay += layerMaxDuration
+        frontier = nextFrontier
+      }
+
+      maxDuration = Math.max(maxDuration, totalDelay)
+    }
+
+    // If there's implicit media and no locked effect, still play media
+    if (hasMedia && !hasLockedEffect && effects.length === 0) {
+      triggerMediaPlay(nodeId)
+      maxDuration = Math.max(maxDuration, 200)
+    }
+
+    return maxDuration > 0 ? maxDuration : 100
+  }, [model.nodes, triggerMediaPlay])
+
+  const startFlowAnimation = useCallback((startNodeId: string) => {
+    stopFlowAnimation()
+    // BFS from startNodeId following flow connections
+    const flowConns = model.connections.filter(c => c.type === 'flow')
+    if (flowConns.length === 0) return
+
+    // Build adjacency
+    const outgoing = new Map<string, ModelConnection[]>()
+    for (const c of flowConns) {
+      if (!outgoing.has(c.from)) outgoing.set(c.from, [])
+      outgoing.get(c.from)!.push(c)
+    }
+
+    // BFS to build interleaved steps: node → wires → node → wires → ...
+    const steps: FlowStep[] = []
+    const visited = new Set<string>([startNodeId])
+    let frontier = [startNodeId]
+
+    // Compute node step duration from effect graph
+    const nodeDuration = (nodeId: string) => {
+      const node = model.nodes.find(n => n.id === nodeId)
+      const hasEffects = node && ((node.flowEffects?.length ?? 0) > 0 || !!node.mediaType)
+      return hasEffects ? 0 : 100 // 0 = will be computed at execution time
+    }
+
+    steps.push({ kind: 'node', nodeId: startNodeId, durationMs: nodeDuration(startNodeId) })
+
+    while (frontier.length > 0) {
+      const nextFrontier: string[] = []
+      for (const nodeId of frontier) {
+        const conns = outgoing.get(nodeId) ?? []
+        for (const c of conns) {
+          steps.push({ kind: 'wire', connectionKey: `${c.from}->${c.to}`, durationMs: 600 })
+          if (!visited.has(c.to)) {
+            visited.add(c.to)
+            nextFrontier.push(c.to)
+            steps.push({ kind: 'node', nodeId: c.to, durationMs: nodeDuration(c.to) })
+          }
+        }
+      }
+      frontier = nextFrontier
+    }
+
+    if (steps.length === 0) return
+
+    flowQueueRef.current = { steps, currentIdx: 0, startTime: performance.now() }
+
+    // Execute the first step's side effects
+    const firstStep = steps[0]
+    if (firstStep.kind === 'node') {
+      setFlowActiveNodes(new Set([firstStep.nodeId]))
+      // Execute graph effects and set the actual duration
+      const dur = executeNodeEffects(firstStep.nodeId)
+      if (firstStep.durationMs === 0) firstStep.durationMs = Math.max(dur + 100, 200)
+    }
+
+    const tick = (now: number) => {
+      const q = flowQueueRef.current
+      if (!q) return
+      const step = q.steps[q.currentIdx]
+      const elapsed = now - q.startTime
+      const progress = Math.min(elapsed / step.durationMs, 1)
+
+      if (step.kind === 'wire') {
+        setFlowAnimations(prev => {
+          const next = new Map(prev)
+          next.set(step.connectionKey, progress)
+          return next
+        })
+      }
+
+      if (progress >= 1) {
+        // Move to next step
+        if (q.currentIdx < q.steps.length - 1) {
+          q.currentIdx++
+          q.startTime = now
+          const nextStep = q.steps[q.currentIdx]
+          // Execute side effects for the new step
+          if (nextStep.kind === 'node') {
+            setFlowActiveNodes(prev => new Set([...prev, nextStep.nodeId]))
+            const dur = executeNodeEffects(nextStep.nodeId)
+            if (nextStep.durationMs === 0) nextStep.durationMs = Math.max(dur + 100, 200)
+          }
+          flowAnimRef.current = requestAnimationFrame(tick)
+        } else {
+          // All done — keep final state briefly then clear
+          flowTimeoutRef.current = setTimeout(() => {
+            setFlowAnimations(new Map())
+            setFlowActiveNodes(new Set())
+            flowQueueRef.current = null
+          }, 400)
+        }
+      } else {
+        flowAnimRef.current = requestAnimationFrame(tick)
+      }
+    }
+
+    flowAnimRef.current = requestAnimationFrame(tick)
+  }, [model.connections, model.nodes, stopFlowAnimation, executeNodeEffects])
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    if (flowAnimRef.current != null) cancelAnimationFrame(flowAnimRef.current)
+    if (flowTimeoutRef.current != null) clearTimeout(flowTimeoutRef.current)
+  }, [])
+
+  // Check if selected node is part of a flow
+  const selectedNodeIsInFlow = useMemo(() => {
+    if (!selectedNode) return false
+    return model.connections.some(c => c.type === 'flow' && (c.from === selectedNode.id || c.to === selectedNode.id))
+  }, [selectedNode, model.connections])
 
   // ---- Node creation (double-click on empty space) ----
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
@@ -1245,7 +1519,7 @@ export function PrototypeViewport() {
           const newFrom = idMap.get(conn.from)
           const newTo = idMap.get(conn.to)
           if (newFrom && newTo) {
-            addConnection(frame.modelId, { from: newFrom, to: newTo })
+            addConnection(frame.modelId, { from: newFrom, to: newTo, type: conn.type })
           }
         }
         // Select the pasted nodes
@@ -1717,6 +1991,26 @@ export function PrototypeViewport() {
           onClick={() => setSelectMode(!selectMode)}
           title="Toggle selection mode (drag to select multiple nodes)"
         >{selectMode ? '⬚ Select' : '⬚ Select'}</button>
+        {selectedNodeIsInFlow && (
+          <>
+            <span className="toolbar-sep" />
+            {flowQueueRef.current ? (
+              <button
+                type="button"
+                className="toolbar-btn toolbar-btn-stop"
+                onClick={stopFlowAnimation}
+                title="Stop flow animation"
+              >&#x25A0; Stop</button>
+            ) : (
+              <button
+                type="button"
+                className="toolbar-btn toolbar-btn-play"
+                onClick={() => selectedNode && startFlowAnimation(selectedNode.id)}
+                title="Play flow animation from selected node"
+              >&#x25B6; Play</button>
+            )}
+          </>
+        )}
         <span className="toolbar-sep" />
         <button
           type="button"
@@ -1767,6 +2061,8 @@ export function PrototypeViewport() {
               onFinishEditing={() => {}}
               onLiveEditLabel={() => {}}
               connectionDraft={null}
+              flowAnimations={new Map()}
+              flowActiveNodes={new Set()}
               unzipGap={null}
             />
           </div>
@@ -1819,6 +2115,8 @@ export function PrototypeViewport() {
             setNodeLabelSilent(frame.modelId, nodeId, label)
           }}
           connectionDraft={connectionDraft}
+          flowAnimations={flowAnimations}
+          flowActiveNodes={flowActiveNodes}
           unzipGap={unzipDisplayKey ? {
             connectionKey: unzipDisplayKey,
             progress: unzipAnimProgress,
@@ -1907,7 +2205,7 @@ export function PrototypeViewport() {
         )
       })()}
 
-      <LeftSidebar />
+      <LeftSidebar connectionType={activeConnectionType} onConnectionTypeChange={setActiveConnectionType} />
       <RightSidebar
         model={model}
         selectedNode={selectedNode}
@@ -1922,7 +2220,61 @@ export function PrototypeViewport() {
         allModels={storeModels}
         onRegisterModel={registerModel}
         onUpdateModelLabel={updateModelLabel}
+        onUpdateConnectionType={(from, to, type) => updateConnectionType(frame.modelId, from, to, type)}
+        onEditEffect={(nodeId, effectId) => setEditingEffect({ nodeId, effectId })}
       />
+
+      {/* Flow effect graph editor modal */}
+      {editingEffect && (() => {
+        const editNode = model.nodes.find(n => n.id === editingEffect.nodeId)
+        // Find the effect — either from flowEffects or build the locked media virtual effect
+        let editFx = editNode?.flowEffects?.find(e => e.id === editingEffect.effectId)
+        if (!editFx && editingEffect.effectId === '__locked-media__' && editNode?.mediaType) {
+          editFx = {
+            id: '__locked-media__',
+            label: `Play ${editNode.mediaType}`,
+            locked: true,
+            graph: {
+              nodes: [
+                { id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} },
+                { id: 'play-media-root', kind: 'play-media' as const, label: `Play ${editNode.mediaType}`, x: 300, y: 120, config: {} },
+              ],
+              edges: [{ from: '__entry__', to: 'play-media-root' }],
+            },
+          }
+        }
+        if (!editFx) return null
+        return (
+          <FlowEffectEditor
+            effect={editFx}
+            onSave={(updated) => {
+              if (!editNode) return
+              if (updated.id === '__locked-media__') {
+                // Materialise the locked effect into the flowEffects array
+                const existing = editNode.flowEffects ?? []
+                const lockedExists = existing.find(e => e.locked)
+                if (lockedExists) {
+                  updateNodeProps(frame.modelId, editNode.id, {
+                    flowEffects: existing.map(e => e.id === lockedExists.id ? { ...updated, id: lockedExists.id } : e),
+                  })
+                } else {
+                  const persisted = { ...updated, id: `fx-locked-${Date.now()}` }
+                  updateNodeProps(frame.modelId, editNode.id, {
+                    flowEffects: [persisted, ...existing],
+                  })
+                }
+              } else {
+                const existing = editNode.flowEffects ?? []
+                updateNodeProps(frame.modelId, editNode.id, {
+                  flowEffects: existing.map(e => e.id === updated.id ? updated : e),
+                })
+              }
+              setEditingEffect(null)
+            }}
+            onClose={() => setEditingEffect(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
@@ -1946,6 +2298,8 @@ function ModelSceneContent({
   onFinishEditing,
   onLiveEditLabel,
   connectionDraft,
+  flowAnimations,
+  flowActiveNodes,
   unzipGap,
   noTransition,
 }: {
@@ -1965,7 +2319,9 @@ function ModelSceneContent({
   editingNodeId: string | null
   onFinishEditing: (nodeId: string, label: string) => void
   onLiveEditLabel: (nodeId: string, label: string) => void
-  connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number } | null
+  connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number; connectionType?: ConnectionType } | null
+  flowAnimations: Map<string, number>
+  flowActiveNodes: Set<string>
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
 }) {
@@ -2056,6 +2412,9 @@ function ModelSceneContent({
           <marker id="arrowhead-evidence" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.65)" />
           </marker>
+          <marker id="arrowhead-flow" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+          </marker>
         </defs>
         {model.connections.map((c) => {
           const fromN = model.nodes.find((n) => n.id === c.from)
@@ -2085,6 +2444,8 @@ function ModelSceneContent({
                 fromX={a.fx} fromY={a.fy}
                 toX={a.tx} toY={a.ty}
                 hasEvidence={hasEvidence}
+                connectionType={c.type}
+                flowProgress={flowAnimations.get(key)}
                 gapProgress={gapT}
                 vpSize={vpSize}
                 popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
@@ -2097,7 +2458,7 @@ function ModelSceneContent({
           <line
             x1={`${connectionDraft.fromX}%`} y1={`${connectionDraft.fromY}%`}
             x2={`${connectionDraft.toX}%`} y2={`${connectionDraft.toY}%`}
-            className="connection-draft"
+            className={connectionDraft.connectionType === 'flow' ? 'connection-draft flow' : 'connection-draft'}
           />
         )}
       </svg>
@@ -2121,6 +2482,7 @@ function ModelSceneContent({
             onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
             isDragging={node.id === draggingNodeId || (draggingMultiIds?.has(node.id) ?? false) || !!noTransition}
             isEditing={node.id === editingNodeId}
+            isFlowActive={flowActiveNodes.has(node.id)}
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
             onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
             onResize={(size) => handleNodeResize(node.id, size)}
@@ -2133,27 +2495,34 @@ function ModelSceneContent({
 
 /** Connection line that bows outward into a zipper-bag shape during unzip */
 function ConnectionLine({
-  fromX, fromY, toX, toY, hasEvidence, gapProgress, vpSize, popupSize, connectionAngle,
+  fromX, fromY, toX, toY, hasEvidence, connectionType, flowProgress, gapProgress, vpSize, popupSize, connectionAngle,
 }: {
   fromX: number; fromY: number
   toX: number; toY: number
   hasEvidence: boolean
+  connectionType?: ConnectionType
+  flowProgress?: number
   gapProgress: number
   vpSize: { w: number; h: number }
   popupSize: { w: number; h: number } | null
   connectionAngle: number
 }) {
-  const lineClass = hasEvidence ? 'connection-line has-evidence' : 'connection-line'
+  const isFlow = connectionType === 'flow'
+  const lineClass = isFlow
+    ? 'connection-line flow'
+    : hasEvidence ? 'connection-line has-evidence' : 'connection-line'
 
   if (gapProgress < 0.001) {
-    const marker = hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
+    const marker = isFlow
+      ? 'url(#arrowhead-flow)'
+      : hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
     // Shorten line so it ends at arrowhead base (refX=0).
     // Arrowhead extends forward from line endpoint to original target (node edge).
-    // Marker size: 8 markerUnits × strokeWidth(2) = 16px
+    // Marker size: 8 markerUnits × strokeWidth(2) = 16px (flow: 8×3 = 24px)
     const dxPx = (toX - fromX) * vpSize.w / 100
     const dyPx = (toY - fromY) * vpSize.h / 100
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
-    const arrowLenPx = 16
+    const arrowLenPx = isFlow ? 24 : 16
     let adjToX = toX, adjToY = toY
     if (lenPx > arrowLenPx * 2) {
       const ratio = arrowLenPx / lenPx
@@ -2161,12 +2530,23 @@ function ConnectionLine({
       adjToY = toY - (toY - fromY) * ratio
     }
     return (
-      <line
-        x1={`${fromX}%`} y1={`${fromY}%`}
-        x2={`${adjToX}%`} y2={`${adjToY}%`}
-        className={lineClass}
-        markerEnd={marker}
-      />
+      <>
+        <line
+          x1={`${fromX}%`} y1={`${fromY}%`}
+          x2={`${adjToX}%`} y2={`${adjToY}%`}
+          className={lineClass}
+          markerEnd={marker}
+        />
+        {isFlow && flowProgress != null && flowProgress > 0 && (
+          <line
+            x1={`${fromX}%`} y1={`${fromY}%`}
+            x2={`${adjToX}%`} y2={`${adjToY}%`}
+            className="connection-line flow-anim"
+            strokeDasharray={`${lenPx}`}
+            strokeDashoffset={`${lenPx * (1 - flowProgress)}`}
+          />
+        )}
+      </>
     )
   }
 
@@ -2316,7 +2696,9 @@ function ConnectionLine({
   const d1 = hasPopup ? buildTrackForPopup(+1) : buildFallbackTrack(+1)
   const d2 = hasPopup ? buildTrackForPopup(-1) : buildFallbackTrack(-1)
 
-  const marker = hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
+  const marker = isFlow
+    ? 'url(#arrowhead-flow)'
+    : hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
 
   return (
     <>
@@ -2343,6 +2725,7 @@ function SceneNode({
   onConnectionDragStart,
   isDragging,
   isEditing,
+  isFlowActive,
   onFinishEditing,
   onLiveEditLabel,
   onResize,
@@ -2362,6 +2745,7 @@ function SceneNode({
   onConnectionDragStart: (e: React.PointerEvent) => void
   isDragging: boolean
   isEditing: boolean
+  isFlowActive: boolean
   onFinishEditing: (label: string) => void
   onLiveEditLabel: (label: string) => void
   onResize: (size: { w: number; h: number }) => void
@@ -2704,7 +3088,7 @@ function SceneNode({
           </svg>
         )}
         <article
-          className={`host-node${isSelected ? ' focused' : ''}`}
+          className={`host-node${isSelected ? ' focused' : ''}${isFlowActive ? ' flow-active' : ''}`}
           data-node-id={node.id}
           style={{
             ...vizStyle,
@@ -2725,7 +3109,7 @@ function SceneNode({
 
   return (
     <article
-      className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}`}
+      className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}${isFlowActive ? ' flow-active' : ''}`}
       data-node-id={node.id}
       style={{ ...positionStyle, ...vizStyle }}
       {...articleEventHandlers}

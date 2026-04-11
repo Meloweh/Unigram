@@ -4,6 +4,34 @@ export type NodeShape = 'rectangle' | 'rounded-rect' | 'oval' | 'circle' | 'diam
 
 export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video'
 
+export type ConnectionType = 'default' | 'flow'
+
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media'
+
+export interface EffectGraphNode {
+  id: string
+  kind: FlowEffectKind
+  label: string
+  x: number
+  y: number
+  config: Record<string, unknown>
+}
+
+export interface EffectGraphEdge {
+  from: string
+  to: string
+}
+
+export interface FlowEffect {
+  id: string
+  label: string
+  locked?: boolean
+  graph: {
+    nodes: EffectGraphNode[]
+    edges: EffectGraphEdge[]
+  }
+}
+
 export interface ModelNode {
   id: string
   label: string
@@ -42,6 +70,8 @@ export interface ModelNode {
   playEnd?: number
   /** Cover image data URL for audio nodes */
   audioCoverSrc?: string
+  /** Flow animation effects configured on this node */
+  flowEffects?: FlowEffect[]
 }
 
 export interface StudyEvidence {
@@ -54,6 +84,7 @@ export interface ModelConnection {
   from: string
   to: string
   evidence?: StudyEvidence[]
+  type?: ConnectionType
 }
 
 export interface Model {

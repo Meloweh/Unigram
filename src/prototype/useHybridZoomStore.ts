@@ -6,7 +6,7 @@ import {
   realignPanOffset,
   type HybridZoomSnapshot,
 } from './hybridZoom'
-import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape } from './sampleModels'
+import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape, type ConnectionType } from './sampleModels'
 
 /** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
 export const DEFAULT_GRID_SNAP = 4
@@ -97,6 +97,7 @@ interface HybridZoomState {
   removeNode: (modelId: string, nodeId: string) => void
   addConnection: (modelId: string, connection: ModelConnection) => void
   removeConnection: (modelId: string, from: string, to: string) => void
+  updateConnectionType: (modelId: string, from: string, to: string, type: ConnectionType) => void
   undo: (modelId: string) => void
   redo: (modelId: string) => void
   /** Clear lastChildModelId on the current frame (used when node-level MPD dial switches) */
@@ -510,6 +511,29 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             ...model,
             connections: model.connections.filter(
               (c) => !(c.from === from && c.to === to),
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  updateConnectionType: (modelId, from, to, type) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      const conn = model.connections.find(c => c.from === from && c.to === to)
+      if (!conn) return state
+      return {
+        ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            connections: model.connections.map(c =>
+              c.from === from && c.to === to
+                ? { ...c, type: type === 'default' ? undefined : type }
+                : c,
             ),
           },
         },

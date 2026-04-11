@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, FlowEffect } from './sampleModels'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -52,7 +52,7 @@ function ColorInput({ value, onChange, id }: { value: string; onChange: (v: stri
   )
 }
 
-export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, allModels, onRegisterModel, onUpdateModelLabel }: {
+export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onEditEffect }: {
   model: Model | undefined
   selectedNode: ModelNode | undefined
   selectedConnection: ModelConnection | undefined
@@ -63,6 +63,8 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
   allModels: Record<string, Model>
   onRegisterModel: (model: Model) => void
   onUpdateModelLabel: (modelId: string, label: string) => void
+  onUpdateConnectionType: (from: string, to: string, type: ConnectionType) => void
+  onEditEffect: (nodeId: string, effectId: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
 
@@ -86,9 +88,13 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
               allModels={allModels}
               onRegisterModel={onRegisterModel}
               onUpdateModelLabel={onUpdateModelLabel}
+              onEditEffect={(effectId) => onEditEffect(selectedNode.id, effectId)}
             />
           ) : selectedConnection ? (
-            <ConnectionSettings connection={selectedConnection} />
+            <ConnectionSettings
+              connection={selectedConnection}
+              onUpdateType={(type) => onUpdateConnectionType(selectedConnection.from, selectedConnection.to, type)}
+            />
           ) : (
             <DiagramSettings
               model={model}
@@ -138,13 +144,14 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
   )
 }
 
-function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegisterModel, onUpdateModelLabel }: {
+function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegisterModel, onUpdateModelLabel, onEditEffect }: {
   node: ModelNode
   onUpdateShape: (shape: NodeShape) => void
   onUpdateProps: (props: Partial<ModelNode>) => void
   allModels: Record<string, Model>
   onRegisterModel: (model: Model) => void
   onUpdateModelLabel: (modelId: string, label: string) => void
+  onEditEffect: (effectId: string) => void
 }) {
   const shapeOptions: NodeShape[] = ['rectangle', 'rounded-rect', 'oval', 'circle', 'diamond', 'hexagon', 'parallelogram', 'triangle']
 
@@ -350,6 +357,7 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
           </div>
         </div>
       </div>
+      <FlowAnimationsSection node={node} onUpdateProps={onUpdateProps} onEditEffect={onEditEffect} />
     </>
   )
 }
@@ -501,7 +509,116 @@ function MediaSettings({ node, onUpdateProps }: {
   )
 }
 
-function ConnectionSettings({ connection }: { connection: ModelConnection }) {
+const effectKindLabels: Record<string, string> = {
+  'wait': 'Wait',
+  'move': 'Move',
+  'color': 'Color',
+  'spawn': 'Spawn',
+  'play-media': 'Play media',
+}
+
+function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
+  node: ModelNode
+  onUpdateProps: (props: Partial<ModelNode>) => void
+  onEditEffect: (effectId: string) => void
+}) {
+  const effects = node.flowEffects ?? []
+  const hasLockedMedia = !!node.mediaType
+
+  const addEffect = () => {
+    const effect: FlowEffect = {
+      id: `fx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      label: `Effect ${effects.length + 1}`,
+      graph: {
+        nodes: [{ id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} }],
+        edges: [],
+      },
+    }
+    onUpdateProps({ flowEffects: [...effects, effect] })
+  }
+
+  const removeEffect = (id: string) => {
+    onUpdateProps({ flowEffects: effects.filter(e => e.id !== id) })
+  }
+
+  // Build display list: if media node, prepend a locked play-media entry
+  const displayEffects: (FlowEffect & { _locked?: boolean })[] = []
+  if (hasLockedMedia) {
+    // Find existing locked effect or create a virtual one
+    const existingLocked = effects.find(e => e.locked)
+    displayEffects.push(existingLocked ?? {
+      id: '__locked-media__',
+      label: `Play ${node.mediaType}`,
+      locked: true,
+      graph: {
+        nodes: [
+          { id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} },
+          { id: 'play-media-root', kind: 'play-media' as const, label: `Play ${node.mediaType}`, x: 300, y: 120, config: {} },
+        ],
+        edges: [{ from: '__entry__', to: 'play-media-root' }],
+      },
+      _locked: true,
+    })
+  }
+  for (const e of effects) {
+    if (!e.locked) displayEffects.push(e)
+  }
+
+  // Summarize graph contents for display
+  const summarize = (effect: FlowEffect) => {
+    const effectNodes = effect.graph.nodes.filter(n => n.kind !== 'entry')
+    if (effectNodes.length === 0) return 'Empty'
+    return effectNodes.map(n => effectKindLabels[n.kind] ?? n.kind).join(', ')
+  }
+
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-section-header static">Flow Animations</div>
+      <div className="sidebar-section-body">
+        {displayEffects.length === 0 && (
+          <div className="settings-row">
+            <span className="settings-value" style={{ opacity: 0.5, fontSize: '0.8rem' }}>No effects</span>
+          </div>
+        )}
+        {displayEffects.map((effect) => (
+          <div className="settings-row flow-effect-row" key={effect.id}>
+            <div className="flow-effect-info">
+              <span className={`flow-effect-label${effect.locked || (effect as { _locked?: boolean })._locked ? ' locked' : ''}`}>
+                {effect.label}
+              </span>
+              <span className="flow-effect-summary">{summarize(effect)}</span>
+            </div>
+            <span className="flow-effect-actions">
+              <button
+                type="button"
+                className="flow-effect-btn"
+                title="Edit effect graph"
+                onClick={() => onEditEffect(effect.id)}
+              >✎</button>
+              {!effect.locked && !(effect as { _locked?: boolean })._locked && (
+                <button
+                  type="button"
+                  className="settings-remove-btn"
+                  title="Remove effect"
+                  onClick={() => removeEffect(effect.id)}
+                >×</button>
+              )}
+            </span>
+          </div>
+        ))}
+        <div className="settings-row">
+          <span className="settings-label" />
+          <button type="button" className="settings-add-btn" onClick={addEffect}>+ Add Effect</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConnectionSettings({ connection, onUpdateType }: {
+  connection: ModelConnection
+  onUpdateType: (type: ConnectionType) => void
+}) {
   return (
     <>
       <div className="sidebar-title">Connection Settings</div>
@@ -509,8 +626,16 @@ function ConnectionSettings({ connection }: { connection: ModelConnection }) {
         <div className="sidebar-section-header static">Style</div>
         <div className="sidebar-section-body">
           <div className="settings-row">
-            <span className="settings-label">Line Type</span>
-            <span className="settings-value">Solid</span>
+            <label className="settings-label" htmlFor="conn-type">Line Type</label>
+            <select
+              id="conn-type"
+              className="settings-select"
+              value={connection.type ?? 'default'}
+              onChange={(e) => onUpdateType(e.target.value as ConnectionType)}
+            >
+              <option value="default">Default</option>
+              <option value="flow">Flow</option>
+            </select>
           </div>
           <div className="settings-row">
             <span className="settings-label">Arrow Head</span>

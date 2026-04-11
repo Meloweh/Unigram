@@ -1,4 +1,4 @@
-import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, ConnectionType, FlowEffect } from './sampleModels'
 import JSZip from 'jszip'
 
 // ---- JSON file schema (what's on disk) ----
@@ -23,12 +23,14 @@ interface ModelFileNode {
   playStart?: number
   playEnd?: number
   audioCoverFile?: string  // path to audio cover image inside the bundle
+  flowEffects?: FlowEffect[]
 }
 
 interface ModelFileConnection {
   from: string
   to: string
   evidence?: StudyEvidence[]
+  type?: ConnectionType
 }
 
 interface ModelFile {
@@ -219,12 +221,14 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>): Model
         mediaMap.set(path, n.audioCoverSrc)
         fileNode.audioCoverFile = path
       }
+      if (n.flowEffects?.length) fileNode.flowEffects = n.flowEffects
       return fileNode
     }),
     connections: model.connections.map((c) => ({
       from: c.from,
       to: c.to,
       ...(c.evidence ? { evidence: c.evidence } : {}),
+      ...(c.type ? { type: c.type } : {}),
     })),
   }
 }
@@ -393,7 +397,7 @@ export async function importBundle(
     const mf = fileData as {
       id: string; label: string
       nodes: ModelFileNode[]
-      connections: { from: string; to: string; evidence?: StudyEvidence[] }[]
+      connections: { from: string; to: string; evidence?: StudyEvidence[]; type?: ConnectionType }[]
     }
 
     registerModel({
@@ -427,6 +431,8 @@ export async function importBundle(
         if (n.audioCoverFile && mediaLookup.has(n.audioCoverFile)) {
           node.audioCoverSrc = mediaLookup.get(n.audioCoverFile)
         }
+        // Flow effects
+        if (n.flowEffects?.length) node.flowEffects = n.flowEffects
         return node
       }),
       connections: mf.connections,

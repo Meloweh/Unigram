@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { MediaNodeType } from './sampleModels'
+import type { ConnectionType, MediaNodeType } from './sampleModels'
 
 interface SectionItem {
   id: string
@@ -105,7 +105,51 @@ function NodeTypesSection() {
   )
 }
 
-export function LeftSidebar() {
+function ConnectionTypesSection({ value, onChange }: {
+  value: ConnectionType
+  onChange: (type: ConnectionType) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="sidebar-section">
+      <button
+        type="button"
+        className="sidebar-section-header"
+        onClick={() => setOpen(!open)}
+      >
+        <span className={`sidebar-chevron ${open ? 'open' : ''}`}>›</span>
+        Connection Types
+      </button>
+      {open && (
+        <div className="sidebar-section-body">
+          <label className="sidebar-radio-item">
+            <input
+              type="radio"
+              name="connection-type"
+              checked={value === 'default'}
+              onChange={() => onChange('default')}
+            />
+            <span className="sidebar-radio-label">Default</span>
+          </label>
+          <label className="sidebar-radio-item">
+            <input
+              type="radio"
+              name="connection-type"
+              checked={value === 'flow'}
+              onChange={() => onChange('flow')}
+            />
+            <span className="sidebar-radio-label">Flow</span>
+          </label>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function LeftSidebar({ connectionType, onConnectionTypeChange }: {
+  connectionType: ConnectionType
+  onConnectionTypeChange: (type: ConnectionType) => void
+}) {
   const [collapsed, setCollapsed] = useState(false)
 
   return (
@@ -123,6 +167,7 @@ export function LeftSidebar() {
           <div className="sidebar-title">Components</div>
           <SidebarSection title="Nodes" items={nodeShapes} defaultOpen />
           <NodeTypesSection />
+          <ConnectionTypesSection value={connectionType} onChange={onConnectionTypeChange} />
         </div>
       )}
     </div>

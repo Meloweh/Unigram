@@ -109,6 +109,14 @@
   background: #c4dcf4;
 }
 
+.toolbar-btn-play {
+  color: #16a34a;
+}
+
+.toolbar-btn-stop {
+  color: #dc2626;
+}
+
 .toolbar-btn:disabled {
   opacity: 0.35;
   cursor: default;
@@ -283,6 +291,17 @@
 .host-node.multi-selected {
   outline: 2px dashed rgba(37, 99, 235, 0.7);
   outline-offset: 3px;
+}
+
+.host-node.flow-active {
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.5), 0 0 16px rgba(245, 158, 11, 0.35);
+  animation: flow-pulse 0.5s ease-in-out;
+}
+
+@keyframes flow-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.3), 0 0 20px rgba(245, 158, 11, 0.4); }
+  100% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.5), 0 0 16px rgba(245, 158, 11, 0.35); }
 }
 
 /* ---- Media node content ---- */
@@ -482,11 +501,33 @@
   stroke: rgba(14, 79, 143, 0.9);
 }
 
+.child-scene-connections .connection-line.flow {
+  stroke: #f59e0b;
+  stroke-width: 3;
+}
+
+.child-scene-connections .connection-line.flow-anim {
+  stroke: #fbbf24;
+  stroke-width: 5;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.child-scene-connections .connection-hit-area:hover ~ .connection-line.flow {
+  stroke: #d97706;
+}
+
 .child-scene-connections .connection-draft {
   stroke: rgba(14, 79, 143, 0.5);
   stroke-width: 2;
   stroke-dasharray: 8 4;
   pointer-events: none;
+}
+
+.child-scene-connections .connection-draft.flow {
+  stroke: #f59e0b;
+  stroke-width: 3;
+  stroke-dasharray: 8 4;
 }
 
 .child-preview-connections {
@@ -879,6 +920,26 @@
   font-size: 0.82rem;
 }
 
+.sidebar-radio-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: #17314f;
+  user-select: none;
+}
+
+.sidebar-radio-item:hover {
+  background: rgba(44, 120, 188, 0.08);
+}
+
+.sidebar-radio-label {
+  font-size: 0.82rem;
+}
+
 /* Right sidebar settings */
 
 .settings-row {
@@ -1048,6 +1109,424 @@
   color: #ef4444;
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Flow animation effects */
+
+.flow-effect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.flow-effect-label {
+  font-size: 0.82rem;
+  color: #17314f;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-effect-label.locked {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.flow-effect-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.flow-effect-btn {
+  background: none;
+  border: 1px solid rgba(54, 95, 143, 0.15);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: #365f8f;
+  padding: 0;
+}
+
+.flow-effect-btn:hover:not(:disabled) {
+  background: rgba(44, 120, 188, 0.08);
+}
+
+.flow-effect-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.flow-effect-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.flow-effect-summary {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-add-effect {
+  flex: 1;
+}
+
+/* ---- Flow Effect Graph Editor ---- */
+
+.fxeditor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fxeditor-modal {
+  width: 90vw;
+  height: 80vh;
+  max-width: 1200px;
+  max-height: 800px;
+  background: #1e293b;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.fxeditor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #0f172a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.fxeditor-title {
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.fxeditor-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.fxeditor-save-btn {
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.fxeditor-save-btn:hover {
+  background: #2563eb;
+}
+
+.fxeditor-close-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fxeditor-close-btn:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fxeditor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.fxeditor-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  background: #151d2c;
+}
+
+.fxeditor-canvas:active {
+  cursor: grabbing;
+}
+
+.fxeditor-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fxeditor-pan {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.fxeditor-edges {
+  pointer-events: none;
+}
+
+.fxeditor-edge-g {
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.fxeditor-edge-g:hover path:first-child {
+  stroke: #ef4444;
+  stroke-width: 2.5;
+}
+
+/* ---- Graph nodes ---- */
+
+.fxeditor-node {
+  position: absolute;
+  background: #1e293b;
+  border: 2px solid;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: move;
+  user-select: none;
+  transition: box-shadow 0.15s;
+}
+
+.fxeditor-node.selected {
+  box-shadow: 0 0 0 2px #60a5fa, 0 4px 16px rgba(96, 165, 250, 0.25);
+}
+
+.fxeditor-node.locked {
+  border-style: dashed;
+}
+
+.fxeditor-node.entry {
+  border-radius: 28px;
+  background: linear-gradient(135deg, #0c1929 0%, #172540 100%);
+}
+
+.fxeditor-node-kind {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fxeditor-node-label {
+  font-size: 0.75rem;
+  color: #cbd5e1;
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fxeditor-lock-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  font-size: 0.65rem;
+}
+
+/* ---- Ports ---- */
+
+.fxeditor-port {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #0f172a;
+  z-index: 1;
+}
+
+.fxeditor-port.in {
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fxeditor-port.out {
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: crosshair;
+}
+
+.fxeditor-port:hover {
+  transform: translateX(-50%) scale(1.3);
+}
+
+/* ---- Context menu ---- */
+
+.fxeditor-context-menu {
+  position: absolute;
+  z-index: 100;
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.fxeditor-context-title {
+  font-size: 0.7rem;
+  color: #64748b;
+  padding: 4px 8px 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fxeditor-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fxeditor-context-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fxeditor-context-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ---- Properties panel ---- */
+
+.fxeditor-props {
+  width: 220px;
+  flex-shrink: 0;
+  background: #0f172a;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fxeditor-props-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fxeditor-props-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.fxeditor-props-empty {
+  color: #64748b;
+  font-size: 0.82rem;
+  text-align: center;
+  padding-top: 40px;
+}
+
+.fxeditor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fxeditor-field > span {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.fxeditor-field > input {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+}
+
+.fxeditor-field > input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.fxeditor-field > input[type="color"] {
+  padding: 2px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.fxeditor-field-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+.fxeditor-delete-btn {
+  margin-top: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.fxeditor-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
 }
 
 @media (max-width: 900px) {
