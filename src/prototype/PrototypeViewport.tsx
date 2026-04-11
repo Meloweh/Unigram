@@ -7,7 +7,7 @@ import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState
 import { MpdDial } from './MpdDial'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidebar } from './RightSidebar'
-import { loadModel, loadModelById, exportAllModels, registerModelUrl, clearLoaderCache } from './modelLoader'
+import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -1304,13 +1304,12 @@ export function PrototypeViewport() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleSave = useCallback(() => {
-    const files = exportAllModels(storeModels)
-    const blob = new Blob([JSON.stringify(files, null, 2)], { type: 'application/json' })
+  const handleSave = useCallback(async () => {
+    const blob = await exportBundle(storeModels)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'unigram-project.json'
+    a.download = 'unigram-project.unigram'
     a.click()
     URL.revokeObjectURL(url)
   }, [storeModels])
@@ -1318,59 +1317,57 @@ export function PrototypeViewport() {
   const handleLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result as string)
-        // data is Record<filename, ModelFile> — we need to import them
-        clearLoaderCache()
-        const basePath = '/models/'
-        for (const [filename, fileData] of Object.entries(data)) {
-          const modelFile = fileData as { id: string; label: string; nodes: unknown[]; connections: unknown[] }
-          registerModelUrl(modelFile.id, basePath + filename)
-        }
-        // Second pass: resolve references and register models
-        for (const [filename, fileData] of Object.entries(data)) {
-          const mf = fileData as {
-            id: string; label: string
-            nodes: { id: string; label: string; x: number; y: number; childModel?: string; mpdModels?: string[] }[]
-            connections: { from: string; to: string; evidence?: { title: string; citation: string; url: string }[] }[]
+
+    if (file.name.endsWith('.unigram') || file.name.endsWith('.zip')) {
+      // Bundle format
+      importBundle(file, registerModel, resetToRoot).catch((err) => {
+        console.error('Failed to load bundle:', err)
+      })
+    } else {
+      // Legacy JSON format
+      const reader = new FileReader()
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(reader.result as string)
+          clearLoaderCache()
+          const basePath = '/models/'
+          for (const [filename, fileData] of Object.entries(data)) {
+            const modelFile = fileData as { id: string }
+            registerModelUrl(modelFile.id, basePath + filename)
           }
-          // Resolve file refs to model IDs
-          const idLookup = new Map<string, string>()
-          for (const [fn, fd] of Object.entries(data)) {
-            const m = fd as { id: string }
-            // Handle both relative and bare filename refs
-            idLookup.set('./' + fn, m.id)
-            idLookup.set(fn, m.id)
-          }
-          // Preserve childModelId/mpdIds from existing store when save file lacks them
-          const existingModel = storeGetModel(mf.id)
-          const existingNodeMap = new Map(existingModel?.nodes.map(n => [n.id, n]) ?? [])
-          registerModel({
-            id: mf.id,
-            label: mf.label,
-            nodes: mf.nodes.map((n) => {
-              const existing = existingNodeMap.get(n.id)
-              return {
+          for (const [, fileData] of Object.entries(data)) {
+            const mf = fileData as {
+              id: string; label: string
+              nodes: { id: string; label: string; x: number; y: number; childModel?: string; mpdModels?: string[] }[]
+              connections: { from: string; to: string; evidence?: { title: string; citation: string; url: string }[] }[]
+            }
+            const idLookup = new Map<string, string>()
+            for (const [fn, fd] of Object.entries(data)) {
+              const m = fd as { id: string }
+              idLookup.set('./' + fn, m.id)
+              idLookup.set(fn, m.id)
+            }
+            registerModel({
+              id: mf.id,
+              label: mf.label,
+              nodes: mf.nodes.map((n) => ({
                 id: n.id, label: n.label, x: n.x, y: n.y,
-                childModelId: n.childModel ? idLookup.get(n.childModel) : existing?.childModelId,
+                childModelId: n.childModel ? idLookup.get(n.childModel) : undefined,
                 mpdIds: n.mpdModels?.length
                   ? n.mpdModels.map((p) => idLookup.get(p)).filter(Boolean) as string[]
-                  : existing?.mpdIds,
-              }
-            }),
-            connections: mf.connections,
-          })
+                  : undefined,
+              })),
+              connections: mf.connections,
+            })
+          }
+          resetToRoot()
+        } catch (err) {
+          console.error('Failed to load project file:', err)
         }
-        // Reset zoom stack to root so stale frames don't reference old state
-        resetToRoot()
-      } catch (err) {
-        console.error('Failed to load project file:', err)
       }
+      reader.readAsText(file)
     }
-    reader.readAsText(file)
-    e.target.value = '' // reset so the same file can be re-loaded
+    e.target.value = ''
   }, [registerModel, resetToRoot])
 
   // ---- Auto-untangle animation ----
@@ -1731,12 +1728,12 @@ export function PrototypeViewport() {
           type="button"
           className="toolbar-btn"
           onClick={() => fileInputRef.current?.click()}
-          title="Load project (JSON)"
+          title="Load project"
         >&#x1F4C2; Load</button>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".json"
+          accept=".unigram,.zip,.json"
           style={{ display: 'none' }}
           onChange={handleLoad}
         />
@@ -2576,7 +2573,7 @@ function SceneNode({
                 controls
                 preload="metadata"
                 onTimeUpdate={handleMediaTimeUpdate}
-                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               />
             </div>
           )}
@@ -2588,7 +2585,7 @@ function SceneNode({
               preload="metadata"
               draggable={false}
               onTimeUpdate={handleMediaTimeUpdate}
-              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
             />
           )}
         </div>
