@@ -70,6 +70,28 @@ function useUnzipAnim(popupKey: string | null) {
 const NODE_MIN_W = 80
 const NODE_MIN_H = 40
 
+/** Auto-expand grid chunk size in percentage units */
+const GRID_CHUNK = 20
+
+/** Compute the dynamic grid extent from node positions (draw.io-style auto-expand).
+ *  Extends in GRID_CHUNK increments beyond 0-100 when nodes are outside, shrinks when freed. */
+function computeGridExtent(nodes: ModelNode[]): { minX: number; minY: number; maxX: number; maxY: number } {
+  if (nodes.length === 0) return { minX: 0, minY: 0, maxX: 100, maxY: 100 }
+  let nMinX = Infinity, nMinY = Infinity, nMaxX = -Infinity, nMaxY = -Infinity
+  for (const n of nodes) {
+    nMinX = Math.min(nMinX, n.x)
+    nMinY = Math.min(nMinY, n.y)
+    nMaxX = Math.max(nMaxX, n.x)
+    nMaxY = Math.max(nMaxY, n.y)
+  }
+  return {
+    minX: Math.min(0, Math.floor(nMinX / GRID_CHUNK) * GRID_CHUNK),
+    minY: Math.min(0, Math.floor(nMinY / GRID_CHUNK) * GRID_CHUNK),
+    maxX: Math.max(100, Math.ceil(nMaxX / GRID_CHUNK) * GRID_CHUNK),
+    maxY: Math.max(100, Math.ceil(nMaxY / GRID_CHUNK) * GRID_CHUNK),
+  }
+}
+
 /* ---- Edge-anchored connection helpers ---- */
 
 type Edge = 'top' | 'right' | 'bottom' | 'left'
@@ -884,7 +906,10 @@ export function PrototypeViewport() {
   // Effective camera scale = RMM zoom × free zoom
   const effectiveScale = frame.snapshot.cameraScale * frame.freeScale
 
-  const { sceneStyle, sceneTx, sceneTy } = useMemo(() => {
+  // Dynamic grid extent — auto-expands/contracts in GRID_CHUNK increments based on node positions
+  const gridExtent = useMemo(() => computeGridExtent(model?.nodes ?? []), [model?.nodes])
+
+  const { sceneStyle, sceneTx, sceneTy, gridPxW, gridPxH } = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
     // At nodeProgress=0, no centering. At nodeProgress=1, node is centered.
     // Formula: centering = nodeProgress × (0.5 − node.x/100) × vpSize × effectiveScale
@@ -902,10 +927,11 @@ export function PrototypeViewport() {
     return {
       sceneStyle: {
         transform: `translate(${tx}px, ${ty}px) scale(${effectiveScale})`,
-        backgroundSize: `${gridPxW}px ${gridPxH}px`,
       },
       sceneTx: tx,
       sceneTy: ty,
+      gridPxW,
+      gridPxH,
     }
   }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
 
@@ -1938,18 +1964,29 @@ export function PrototypeViewport() {
           } else {
             zoomOut()
           }
-        } else if (zoomingIn) {
-          adjustFreeScale(1)
         } else {
-          // Zooming out with no selection
-          if (frame.freeScale > 1) {
-            // Zoomed past default — reduce free scale toward 1.0 first
-            adjustFreeScale(-1)
-          } else if (canRmmOut) {
-            // RMM zoom-out directly (reduces progress or pops stack)
+          // Free zoom — anchor to cursor position
+          const doFreeZoom = zoomingIn || frame.freeScale > 1 || !canRmmOut
+          if (!doFreeZoom) {
             zoomOut()
           } else {
-            adjustFreeScale(-1)
+            const rect = viewportRef.current?.getBoundingClientRect()
+            if (rect) {
+              // Cursor position relative to viewport center
+              const cx = event.clientX - rect.left - rect.width / 2
+              const cy = event.clientY - rect.top - rect.height / 2
+              const oldScale = effectiveScale
+              const factor = zoomingIn ? 1.08 : 1 / 1.08
+              const newFreeScale = Math.min(5, Math.max(0.2, frame.freeScale * factor))
+              const newScale = frame.snapshot.cameraScale * newFreeScale
+              // Adjust pan so the scene point under the cursor stays fixed
+              const newPanX = cx - (cx - frame.panOffset.x) * newScale / oldScale
+              const newPanY = cy - (cy - frame.panOffset.y) * newScale / oldScale
+              setFreeScale(newFreeScale)
+              setPanOffset(newPanX, newPanY)
+            } else {
+              adjustFreeScale(zoomingIn ? 1 : -1)
+            }
           }
         }
       }}
@@ -2037,8 +2074,9 @@ export function PrototypeViewport() {
           justFinishedSelectionRef.current = false
           return
         }
+        // Deselect when clicking empty space — anything that isn't a node or interactive child
         const el = event.target as HTMLElement
-        if (el === event.currentTarget || el.classList.contains('scene')) {
+        if (!el.closest('.host-node') && !el.closest('.connection-line') && !el.closest('.unzip-popup')) {
           clearSelection()
           setSelectedNodeIds(new Set())
           closeUnzip()
@@ -2075,6 +2113,7 @@ export function PrototypeViewport() {
           sceneTy={sceneTy}
           sceneScale={effectiveScale}
           vpSize={vpSize}
+          gridExtent={gridExtent}
         />
       )}
 
@@ -2352,6 +2391,17 @@ export function PrototypeViewport() {
         className="scene"
         style={sceneStyle}
       >
+        {/* Dynamic grid dots — auto-extends with node positions */}
+        <div style={{
+          position: 'absolute',
+          left: `${gridExtent.minX}%`,
+          top: `${gridExtent.minY}%`,
+          width: `${gridExtent.maxX - gridExtent.minX}%`,
+          height: `${gridExtent.maxY - gridExtent.minY}%`,
+          backgroundImage: 'radial-gradient(circle, var(--ug-grid-dot) 1px, transparent 1px)',
+          backgroundSize: `${gridPxW}px ${gridPxH}px`,
+          pointerEvents: 'none',
+        }} />
         <ModelSceneContent
           model={model}
           selectedNodeId={frame.selectedNodeId}
@@ -2403,6 +2453,10 @@ export function PrototypeViewport() {
               return Math.atan2((tn.y - fn.y) * vpSize.h, (tn.x - fn.x) * vpSize.w)
             })()
           } : null}
+          onSetMedia={(nodeId, src, name) => {
+            beginEditNode(frame.modelId)
+            updateNodeProps(frame.modelId, nodeId, { mediaSrc: src, mediaFileName: name })
+          }}
         />
         {activeUnzipPopup && (() => {
           const conn = model.connections.find(
@@ -2582,6 +2636,7 @@ function ModelSceneContent({
   flowActiveNodes,
   unzipGap,
   noTransition,
+  onSetMedia,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -2604,6 +2659,7 @@ function ModelSceneContent({
   flowActiveNodes: Set<string>
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
+  onSetMedia?: (nodeId: string, mediaSrc: string, mediaFileName: string) => void
 }) {
   // Theme palette for node default colors
   const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
@@ -2839,6 +2895,7 @@ function ModelSceneContent({
             onResize={(size) => handleNodeResize(node.id, size)}
             defaultCellColor={palette.nodeCell}
             defaultMembraneColor={palette.nodeMembrane}
+            onSetMedia={onSetMedia ? (src, name) => onSetMedia(node.id, src, name) : undefined}
           />
         )
       })}
@@ -3106,6 +3163,7 @@ function SceneNode({
   onResize,
   defaultCellColor,
   defaultMembraneColor,
+  onSetMedia,
 }: {
   node: ModelNode
   posX: number
@@ -3128,11 +3186,48 @@ function SceneNode({
   onResize: (size: { w: number; h: number }) => void
   defaultCellColor: string
   defaultMembraneColor: string
+  onSetMedia?: (mediaSrc: string, mediaFileName: string) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const finishedRef = useRef(false)
   const [baseSize, setBaseSize] = useState({ w: NODE_MIN_W, h: NODE_MIN_H })
+
+  // Audio recording state
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      const chunks: BlobPart[] = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        const reader = new FileReader()
+        reader.onload = () => {
+          if (reader.result && onSetMedia) {
+            onSetMedia(reader.result as string, 'recording.webm')
+          }
+        }
+        reader.readAsDataURL(blob)
+        setIsRecording(false)
+      }
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      setIsRecording(true)
+    } catch {
+      // Microphone access denied or unavailable
+    }
+  }, [onSetMedia])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+  }, [])
 
   // Measure label size (both for display and editing)
   const measureLabel = useCallback(() => {
@@ -3357,11 +3452,20 @@ function SceneNode({
       {node.mediaType && !node.mediaSrc && chromeFade > 0.01 && (
         <div className="media-node-placeholder" style={{ opacity: chromeFade }}>
           <span className="media-node-placeholder-icon">
-            {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? '🔊' : '🎬'}
+            {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? (isRecording ? '⏺' : '🔊') : '🎬'}
           </span>
           <span className="media-node-placeholder-text">
-            Drop {node.mediaType} here
+            {isRecording ? 'Recording…' : `Drop ${node.mediaType} here`}
           </span>
+          {node.mediaType === 'audio' && onSetMedia && (
+            <button
+              className="media-record-btn"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); isRecording ? stopRecording() : startRecording() }}
+            >
+              {isRecording ? '⏹ Stop' : '⏺ Record'}
+            </button>
+          )}
         </div>
       )}
       {isEditing ? (

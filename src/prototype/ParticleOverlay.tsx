@@ -120,19 +120,23 @@ interface ParticleOverlayProps {
   sceneScale: number
   /** Viewport dimensions in pixels */
   vpSize: { w: number; h: number }
+  /** Dynamic grid extent in percentage units */
+  gridExtent: { minX: number; minY: number; maxX: number; maxY: number }
 }
 
-export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize }: ParticleOverlayProps) {
+export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize, gridExtent }: ParticleOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Store scene transform in refs so the ticker can access latest values
   const sceneTxRef = useRef(sceneTx)
   const sceneTyRef = useRef(sceneTy)
   const sceneScaleRef = useRef(sceneScale)
   const vpSizeRef = useRef(vpSize)
+  const gridExtentRef = useRef(gridExtent)
   sceneTxRef.current = sceneTx
   sceneTyRef.current = sceneTy
   sceneScaleRef.current = sceneScale
   vpSizeRef.current = vpSize
+  gridExtentRef.current = gridExtent
 
   // Single effect that owns the full PixiJS lifecycle.
   // Keyed on presetId so a new app is created whenever the preset changes,
@@ -161,13 +165,23 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
         const cfg = preset.config
         const vpW = app.screen.width
         const vpH = app.screen.height
-        // Grid bounds in world (scene) coords: 0 to vpW, 0 to vpH
-        const gridW = vpSizeRef.current.w
-        const gridH = vpSizeRef.current.h
+        // Grid bounds in world (scene) coords — 2× the actual grid extent for large render distance
+        const ext = gridExtentRef.current
+        const vpW2 = vpSizeRef.current.w
+        const vpH2 = vpSizeRef.current.h
+        const gridBaseW = (ext.maxX - ext.minX) / 100 * vpW2
+        const gridBaseH = (ext.maxY - ext.minY) / 100 * vpH2
+        const gridW = gridBaseW * 2
+        const gridH = gridBaseH * 2
+        // Origin offset so the 2× area is centered on the grid extent
+        const originX = ext.minX / 100 * vpW2 - gridBaseW / 2
+        const originY = ext.minY / 100 * vpH2 - gridBaseH / 2
 
         for (let i = 0; i < cfg.count; i++) {
           const introDelay = Math.floor(Math.random() * STAGGER_FRAMES)
           const data = createParticle(cfg, gridW, gridH, introDelay)
+          data.x += originX
+          data.y += originY
           const gfx = new Graphics()
           const color = pickColor(cfg.color)
           drawShape(gfx, cfg, data.size, color)
@@ -197,9 +211,16 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
         if (!preset) return
         const cfg = preset.config
 
-        // Grid bounds for wrapping — particles stay within the grid area (0 to vpSize)
-        const gridW = vpSizeRef.current.w
-        const gridH = vpSizeRef.current.h
+        // Grid bounds for wrapping — particles stay within 2× grid area
+        const ext2 = gridExtentRef.current
+        const vpW3 = vpSizeRef.current.w
+        const vpH3 = vpSizeRef.current.h
+        const gridBaseW2 = (ext2.maxX - ext2.minX) / 100 * vpW3
+        const gridBaseH2 = (ext2.maxY - ext2.minY) / 100 * vpH3
+        const gridW = gridBaseW2 * 2
+        const gridH = gridBaseH2 * 2
+        const oX = ext2.minX / 100 * vpW3 - gridBaseW2 / 2
+        const oY = ext2.minY / 100 * vpH3 - gridBaseH2 / 2
         const margin = 20 // small margin in world px
 
         for (const p of particles) {
@@ -235,11 +256,11 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
           p.y += p.vy
           p.phase += p.phaseSpeed
 
-          // Wrap around within grid bounds (0 to gridW/gridH).
+          // Wrap around within grid bounds (origin-offset).
           // Use modular wrap so particles stranded outside after a
-          // viewport resize are immediately repositioned.
-          if (p.x < -margin || p.x > gridW + margin) p.x = ((p.x % gridW) + gridW) % gridW
-          if (p.y < -margin || p.y > gridH + margin) p.y = ((p.y % gridH) + gridH) % gridH
+          // viewport resize or grid extent change are immediately repositioned.
+          if (p.x < oX - margin || p.x > oX + gridW + margin) p.x = oX + (((p.x - oX) % gridW) + gridW) % gridW
+          if (p.y < oY - margin || p.y > oY + gridH + margin) p.y = oY + (((p.y - oY) % gridH) + gridH) % gridH
 
           // Update graphics
           p.gfx.x = p.x

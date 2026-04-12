@@ -266,10 +266,6 @@
   inset: 0;
   transform-origin: center;
   overflow: visible;
-  /* Dot grid — moves with pan/zoom since it's on the scene layer */
-  background-image:
-    radial-gradient(circle, var(--ug-grid-dot) 1px, transparent 1px);
-  /* background-size set inline based on gridSnap */
 }
 
 .host-node {
@@ -377,6 +373,24 @@
   font-size: 0.7rem;
   color: var(--ug-text-muted);
   font-weight: 500;
+}
+
+.media-record-btn {
+  pointer-events: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--ug-border);
+  border-radius: 6px;
+  background: var(--ug-surface);
+  color: var(--ug-primary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.media-record-btn:hover {
+  background: var(--ug-accent-bg);
+  border-color: var(--ug-accent);
 }
 
 /* ---- Media settings (right sidebar) ---- */
