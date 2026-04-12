@@ -712,6 +712,8 @@ export function PrototypeViewport() {
   const [debugOpen, setDebugOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const [vpSize, setVpSize] = useState({ w: 1400, h: 900 })
+  const vpSizeRef = useRef(vpSize)
+  vpSizeRef.current = vpSize
   const {
     stack,
     currentFrame,
@@ -769,6 +771,10 @@ export function PrototypeViewport() {
   const model = storeGetModel(frame.modelId)!
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const panOffsetRef = useRef(frame.panOffset)
+  panOffsetRef.current = frame.panOffset
+  const freeScaleRef = useRef(frame.freeScale)
+  freeScaleRef.current = frame.freeScale
 
   // Apply theme palette to DOM whenever appThemeMode changes
   useEffect(() => {
@@ -905,6 +911,11 @@ export function PrototypeViewport() {
 
   // Effective camera scale = RMM zoom × free zoom
   const effectiveScale = frame.snapshot.cameraScale * frame.freeScale
+  const effectiveScaleRef = useRef(effectiveScale)
+  effectiveScaleRef.current = effectiveScale
+
+  // Flow rotation ref — updated later by flowRotation state, used by sceneStyle
+  const flowRotationRef = useRef(0)
 
   // Dynamic grid extent — auto-expands/contracts in GRID_CHUNK increments based on node positions
   const gridExtent = useMemo(() => computeGridExtent(model?.nodes ?? []), [model?.nodes])
@@ -924,9 +935,12 @@ export function PrototypeViewport() {
     const ty = cy + frame.panOffset.y
     const gridPxW = vpSize.w * gridSnap / 100
     const gridPxH = vpSize.h * gridSnap / 100
+    const rot = flowRotationRef.current
+    const rotateStr = rot !== 0 ? ` rotate(${rot}deg)` : ''
     return {
       sceneStyle: {
-        transform: `translate(${tx}px, ${ty}px) scale(${effectiveScale})`,
+        transform: `translate(${tx}px, ${ty}px) scale(${effectiveScale})${rotateStr}`,
+        transformOrigin: rotateStr ? '50% 50%' : undefined,
       },
       sceneTx: tx,
       sceneTy: ty,
@@ -1140,19 +1154,71 @@ export function PrototypeViewport() {
   // ---- Flow effect editor state ----
   const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
 
-  type FlowStep = { kind: 'node'; nodeId: string; durationMs: number } | { kind: 'wire'; connectionKey: string; durationMs: number }
+  type FlowTask =
+    | { id: string; kind: 'node'; nodeId: string; durationMs: number; dependsOn: string[]; startTime: number }
+    | { id: string; kind: 'wire'; connectionKey: string; durationMs: number; dependsOn: string[]; startTime: number }
 
-  const flowQueueRef = useRef<{ steps: FlowStep[]; currentIdx: number; startTime: number } | null>(null)
+  type FlowDAG = {
+    tasks: Map<string, FlowTask>
+    activeTasks: Set<string>
+    completedTasks: Set<string>
+    untrackedPaths: Set<string>
+  }
+
+  const flowDAGRef = useRef<FlowDAG | null>(null)
+
+  // Camera tracking state for flow-follow
+  const flowCameraRef = useRef<{
+    preFlowPan: { x: number; y: number }
+    preFlowScale: number
+    lastTrackedCenter: { x: number; y: number } | null
+    active: boolean
+  } | null>(null)
+
+  // Camera effect override (from 'camera' effect node)
+  const flowCameraOverrideRef = useRef<{
+    panX: number; panY: number; zoom: number; rotation: number
+    durationMs: number; startTime: number
+  } | null>(null)
+  const [flowRotation, setFlowRotation] = useState(0)
+  flowRotationRef.current = flowRotation
+  const [shakeOffset, setShakeOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
 
   const stopFlowAnimation = useCallback(() => {
     if (flowAnimRef.current != null) cancelAnimationFrame(flowAnimRef.current)
     if (flowTimeoutRef.current != null) clearTimeout(flowTimeoutRef.current)
     flowAnimRef.current = null
     flowTimeoutRef.current = null
-    flowQueueRef.current = null
+    flowCameraOverrideRef.current = null
+    // Animate camera back to pre-flow position
+    const cam = flowCameraRef.current
+    if (cam?.active) {
+      const startPan = { x: panOffsetRef.current.x, y: panOffsetRef.current.y }
+      const startScale = freeScaleRef.current
+      const targetPan = cam.preFlowPan
+      const targetScale = cam.preFlowScale
+      const startTime = performance.now()
+      const duration = 500
+      const animateBack = (now: number) => {
+        const t = Math.min((now - startTime) / duration, 1)
+        const ease = 1 - (1 - t) * (1 - t) // ease-out quad
+        setPanOffset(
+          startPan.x + (targetPan.x - startPan.x) * ease,
+          startPan.y + (targetPan.y - startPan.y) * ease,
+        )
+        setFreeScale(startScale + (targetScale - startScale) * ease)
+        setFlowRotation(prev => prev * (1 - ease))
+        if (t < 1) requestAnimationFrame(animateBack)
+      }
+      requestAnimationFrame(animateBack)
+    } else {
+      setFlowRotation(0)
+    }
+    flowCameraRef.current = null
+    flowDAGRef.current = null
     setFlowAnimations(new Map())
     setFlowActiveNodes(new Set())
-  }, [])
+  }, [setPanOffset, setFreeScale])
 
   // Trigger media playback on a node via DOM
   const triggerMediaPlay = useCallback((nodeId: string) => {
@@ -1417,6 +1483,103 @@ export function PrototypeViewport() {
               }
               case 'entry':
                 break
+              case 'camera': {
+                const panX = (gNode.config.panX as number) ?? 0
+                const panY = (gNode.config.panY as number) ?? 0
+                const zoom = (gNode.config.zoom as number) ?? 1
+                const rotation = (gNode.config.rotation as number) ?? 0
+                const camDur = (gNode.config.durationMs as number) ?? 1000
+                setTimeout(() => {
+                  flowCameraOverrideRef.current = {
+                    panX, panY, zoom, rotation,
+                    durationMs: camDur,
+                    startTime: performance.now(),
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, camDur)
+                break
+              }
+              case 'break': {
+                const shakeIntensity = (gNode.config.shakeIntensity as number) ?? 8
+                const shakeDurationMs = (gNode.config.shakeDurationMs as number) ?? 300
+                const fallDurationMs = (gNode.config.fallDurationMs as number) ?? 600
+                const totalBreakDur = Math.max(shakeDurationMs, fallDurationMs)
+                setTimeout(() => {
+                  const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!article) return
+
+                  // Clone the node and create two halves
+                  const rect = article.getBoundingClientRect()
+                  const clone1 = article.cloneNode(true) as HTMLElement
+                  const clone2 = article.cloneNode(true) as HTMLElement
+
+                  // Position clones absolutely in the viewport
+                  for (const clone of [clone1, clone2]) {
+                    clone.style.position = 'fixed'
+                    clone.style.left = `${rect.left}px`
+                    clone.style.top = `${rect.top}px`
+                    clone.style.width = `${rect.width}px`
+                    clone.style.height = `${rect.height}px`
+                    clone.style.zIndex = '10000'
+                    clone.style.pointerEvents = 'none'
+                    clone.style.transition = 'none'
+                    clone.removeAttribute('data-node-id')
+                  }
+                  // Top half
+                  clone1.style.clipPath = 'inset(0 0 50% 0)'
+                  // Bottom half
+                  clone2.style.clipPath = 'inset(50% 0 0 0)'
+
+                  document.body.appendChild(clone1)
+                  document.body.appendChild(clone2)
+
+                  // Hide original
+                  article.style.opacity = '0'
+
+                  // Animate fall + fade
+                  const fallStart = performance.now()
+                  const animateFall = (now: number) => {
+                    const t = Math.min((now - fallStart) / fallDurationMs, 1)
+                    const ease = t * t // ease-in (gravity)
+                    const fadeOut = Math.max(0, 1 - t * 1.5)
+
+                    // Top half moves up and left
+                    clone1.style.transform = `translate(${-20 * ease}px, ${-80 * ease}px) rotate(${-15 * ease}deg)`
+                    clone1.style.opacity = `${fadeOut}`
+
+                    // Bottom half falls down and right
+                    clone2.style.transform = `translate(${20 * ease}px, ${120 * ease}px) rotate(${10 * ease}deg)`
+                    clone2.style.opacity = `${fadeOut}`
+
+                    if (t < 1) {
+                      requestAnimationFrame(animateFall)
+                    } else {
+                      clone1.remove()
+                      clone2.remove()
+                    }
+                  }
+                  requestAnimationFrame(animateFall)
+
+                  // Screen shake
+                  const shakeStart = performance.now()
+                  const animateShake = (now: number) => {
+                    const t = Math.min((now - shakeStart) / shakeDurationMs, 1)
+                    if (t < 1) {
+                      const decay = 1 - t
+                      setShakeOffset({
+                        x: (Math.random() * 2 - 1) * shakeIntensity * decay,
+                        y: (Math.random() * 2 - 1) * shakeIntensity * decay,
+                      })
+                      requestAnimationFrame(animateShake)
+                    } else {
+                      setShakeOffset({ x: 0, y: 0 })
+                    }
+                  }
+                  requestAnimationFrame(animateShake)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, totalBreakDur)
+                break
+              }
             }
           }
         }
@@ -1444,103 +1607,345 @@ export function PrototypeViewport() {
 
   const startFlowAnimation = useCallback((startNodeId: string) => {
     stopFlowAnimation()
-    // BFS from startNodeId following flow connections
+    // Build DAG from flow connections
     const flowConns = model.connections.filter(c => c.type === 'flow')
     if (flowConns.length === 0) return
 
-    // Build adjacency
+    // Build adjacency (outgoing) and incoming maps
     const outgoing = new Map<string, ModelConnection[]>()
+    const incoming = new Map<string, ModelConnection[]>()
     for (const c of flowConns) {
       if (!outgoing.has(c.from)) outgoing.set(c.from, [])
       outgoing.get(c.from)!.push(c)
+      if (!incoming.has(c.to)) incoming.set(c.to, [])
+      incoming.get(c.to)!.push(c)
     }
 
-    // BFS to build interleaved steps: node → wires → node → wires → ...
-    const steps: FlowStep[] = []
-    const visited = new Set<string>([startNodeId])
+    // BFS to discover all reachable nodes
+    const reachableNodes = new Set<string>([startNodeId])
+    const reachableConns: ModelConnection[] = []
     let frontier = [startNodeId]
-
-    // Compute node step duration from effect graph
-    const nodeDuration = (nodeId: string) => {
-      const node = model.nodes.find(n => n.id === nodeId)
-      const hasEffects = node && ((node.flowEffects?.length ?? 0) > 0 || !!node.mediaType)
-      return hasEffects ? 0 : 100 // 0 = will be computed at execution time
-    }
-
-    steps.push({ kind: 'node', nodeId: startNodeId, durationMs: nodeDuration(startNodeId) })
-
     while (frontier.length > 0) {
       const nextFrontier: string[] = []
       for (const nodeId of frontier) {
-        const conns = outgoing.get(nodeId) ?? []
-        for (const c of conns) {
-          steps.push({ kind: 'wire', connectionKey: `${c.from}->${c.to}`, durationMs: 600 })
-          if (!visited.has(c.to)) {
-            visited.add(c.to)
+        for (const c of outgoing.get(nodeId) ?? []) {
+          reachableConns.push(c)
+          if (!reachableNodes.has(c.to)) {
+            reachableNodes.add(c.to)
             nextFrontier.push(c.to)
-            steps.push({ kind: 'node', nodeId: c.to, durationMs: nodeDuration(c.to) })
           }
         }
       }
       frontier = nextFrontier
     }
 
-    if (steps.length === 0) return
+    // Build tasks
+    const tasks = new Map<string, FlowTask>()
 
-    flowQueueRef.current = { steps, currentIdx: 0, startTime: performance.now() }
+    // Compute node duration hint from effect graph
+    const nodeDuration = (nodeId: string) => {
+      const node = model.nodes.find(n => n.id === nodeId)
+      const hasEffects = node && ((node.flowEffects?.length ?? 0) > 0 || !!node.mediaType)
+      return hasEffects ? 0 : 100 // 0 = will be computed at execution time
+    }
 
-    // Execute the first step's side effects
-    const firstStep = steps[0]
-    if (firstStep.kind === 'node') {
-      setFlowActiveNodes(new Set([firstStep.nodeId]))
-      // Execute graph effects and set the actual duration
-      const dur = executeNodeEffects(firstStep.nodeId)
-      if (firstStep.durationMs === 0) firstStep.durationMs = Math.max(dur + 100, 200)
+    // Create node tasks
+    for (const nodeId of reachableNodes) {
+      const taskId = `node:${nodeId}`
+      // Node depends on all incoming wire tasks from reachable connections
+      const incomingWireDeps = (nodeId === startNodeId)
+        ? []
+        : reachableConns
+            .filter(c => c.to === nodeId)
+            .map(c => `wire:${c.from}->${c.to}`)
+      tasks.set(taskId, {
+        id: taskId,
+        kind: 'node',
+        nodeId,
+        durationMs: nodeDuration(nodeId),
+        dependsOn: incomingWireDeps,
+        startTime: 0,
+      })
+    }
+
+    // Create wire tasks
+    for (const c of reachableConns) {
+      const taskId = `wire:${c.from}->${c.to}`
+      tasks.set(taskId, {
+        id: taskId,
+        kind: 'wire',
+        connectionKey: `${c.from}->${c.to}`,
+        durationMs: 600,
+        dependsOn: [`node:${c.from}`],
+        startTime: 0,
+      })
+    }
+
+    if (tasks.size === 0) return
+
+    const dag: FlowDAG = {
+      tasks,
+      activeTasks: new Set<string>(),
+      completedTasks: new Set<string>(),
+      untrackedPaths: new Set<string>(),
+    }
+    flowDAGRef.current = dag
+
+    // Check if any reachable node has cameraTracked — if so, enable flow camera
+    const anyTracked = [...reachableNodes].some(nid => {
+      const n = model.nodes.find(nn => nn.id === nid)
+      return n?.cameraTracked === true
+    })
+    if (anyTracked) {
+      flowCameraRef.current = {
+        preFlowPan: { x: panOffsetRef.current.x, y: panOffsetRef.current.y },
+        preFlowScale: freeScaleRef.current,
+        lastTrackedCenter: null,
+        active: true,
+      }
+    }
+
+    // Helper: mark a task as untracked and propagate
+    const markUntracked = (taskId: string) => {
+      dag.untrackedPaths.add(taskId)
+    }
+
+    // Helper: check & set tracking status for a newly activated task
+    const resolveTracking = (taskId: string, task: FlowTask) => {
+      if (task.kind === 'wire') {
+        // Wire inherits from its source node task
+        if (dag.untrackedPaths.has(task.dependsOn[0])) markUntracked(taskId)
+      } else {
+        // Node: untracked if node.cameraTracked !== true, OR all incoming wires are untracked
+        const nodeModel = model.nodes.find(n => n.id === task.nodeId)
+        if (nodeModel?.cameraTracked !== true) {
+          markUntracked(taskId)
+        } else if (task.dependsOn.length > 0 && task.dependsOn.every(dep => dag.untrackedPaths.has(dep))) {
+          markUntracked(taskId)
+        }
+      }
+    }
+
+    // Activate tasks with no dependencies (just the start node)
+    const now = performance.now()
+    for (const [id, task] of tasks) {
+      if (task.dependsOn.length === 0) {
+        task.startTime = now
+        dag.activeTasks.add(id)
+        resolveTracking(id, task)
+        if (task.kind === 'node') {
+          setFlowActiveNodes(prev => new Set([...prev, task.nodeId]))
+          const dur = executeNodeEffects(task.nodeId)
+          if (task.durationMs === 0) task.durationMs = Math.max(dur + 100, 200)
+        }
+      }
+    }
+
+    // Build a node-position lookup for camera focus computation
+    const nodePositions = new Map<string, { x: number; y: number }>()
+    for (const n of model.nodes) {
+      nodePositions.set(n.id, { x: n.x, y: n.y })
     }
 
     const tick = (now: number) => {
-      const q = flowQueueRef.current
-      if (!q) return
-      const step = q.steps[q.currentIdx]
-      const elapsed = now - q.startTime
-      const progress = Math.min(elapsed / step.durationMs, 1)
+      const d = flowDAGRef.current
+      if (!d) return
 
-      if (step.kind === 'wire') {
+      // Advance all active tasks
+      const justCompleted: string[] = []
+      const wireUpdates = new Map<string, number>()
+
+      for (const taskId of d.activeTasks) {
+        const task = d.tasks.get(taskId)!
+        const elapsed = now - task.startTime
+        const progress = Math.min(elapsed / task.durationMs, 1)
+
+        if (task.kind === 'wire') {
+          wireUpdates.set(task.connectionKey, progress)
+        }
+
+        if (progress >= 1) {
+          justCompleted.push(taskId)
+        }
+      }
+
+      // Batch wire animation updates
+      if (wireUpdates.size > 0) {
         setFlowAnimations(prev => {
           const next = new Map(prev)
-          next.set(step.connectionKey, progress)
+          for (const [key, prog] of wireUpdates) next.set(key, prog)
           return next
         })
       }
 
-      if (progress >= 1) {
-        // Move to next step
-        if (q.currentIdx < q.steps.length - 1) {
-          q.currentIdx++
-          q.startTime = now
-          const nextStep = q.steps[q.currentIdx]
-          // Execute side effects for the new step
-          if (nextStep.kind === 'node') {
-            setFlowActiveNodes(prev => new Set([...prev, nextStep.nodeId]))
-            const dur = executeNodeEffects(nextStep.nodeId)
-            if (nextStep.durationMs === 0) nextStep.durationMs = Math.max(dur + 100, 200)
-          }
-          flowAnimRef.current = requestAnimationFrame(tick)
-        } else {
-          // All done — keep final state briefly then clear
-          flowTimeoutRef.current = setTimeout(() => {
-            setFlowAnimations(new Map())
-            setFlowActiveNodes(new Set())
-            flowQueueRef.current = null
-          }, 400)
+      // Process completions and activate dependents
+      if (justCompleted.length > 0) {
+        for (const taskId of justCompleted) {
+          d.activeTasks.delete(taskId)
+          d.completedTasks.add(taskId)
         }
+
+        // Check all pending tasks — activate any whose ALL deps are now met
+        for (const [id, task] of d.tasks) {
+          if (d.activeTasks.has(id) || d.completedTasks.has(id)) continue
+          if (task.dependsOn.every(dep => d.completedTasks.has(dep))) {
+            task.startTime = now
+            d.activeTasks.add(id)
+            resolveTracking(id, task)
+            if (task.kind === 'node') {
+              setFlowActiveNodes(prev => new Set([...prev, task.nodeId]))
+              const dur = executeNodeEffects(task.nodeId)
+              if (task.durationMs === 0) task.durationMs = Math.max(dur + 100, 200)
+            }
+          }
+        }
+      }
+
+      // ---- Camera tracking ----
+      const cam = flowCameraRef.current
+      const override = flowCameraOverrideRef.current
+      if (cam?.active) {
+        const vp = vpSizeRef.current
+        const scale = effectiveScaleRef.current
+        const curPanX = panOffsetRef.current.x
+        const curPanY = panOffsetRef.current.y
+        const lerpFactor = 0.08
+
+        if (override) {
+          // Camera effect override active — interpolate toward override transform
+          const elapsed = now - override.startTime
+          const progress = Math.min(elapsed / override.durationMs, 1)
+
+          // Override target: base pan + offset
+          const baseFocus = cam.lastTrackedCenter ?? { x: 50, y: 50 }
+          const targetFocusX = baseFocus.x + override.panX
+          const targetFocusY = baseFocus.y + override.panY
+          const targetPanX = vp.w / 2 - (targetFocusX / 100) * vp.w * scale
+          const targetPanY = vp.h / 2 - (targetFocusY / 100) * vp.h * scale
+
+          const newPanX = curPanX + (targetPanX - curPanX) * lerpFactor
+          const newPanY = curPanY + (targetPanY - curPanY) * lerpFactor
+          setPanOffset(newPanX, newPanY)
+
+          // Rotation: lerp toward target
+          const targetRotation = override.rotation * (1 - Math.max(0, (progress - 0.7) / 0.3)) // start unwinding at 70%
+          setFlowRotation(prev => prev + (targetRotation - prev) * lerpFactor)
+
+          // Zoom override
+          const targetZoom = override.zoom
+          const curScale = freeScaleRef.current
+          setFreeScale(curScale + (targetZoom - curScale) * lerpFactor)
+
+          if (progress >= 1) {
+            // Override expired — 1000ms assimilation back
+            flowCameraOverrideRef.current = null
+            // Start assimilation: rotation unwinds to 0, zoom returns to 1
+            const assimStart = performance.now()
+            const assimDuration = 1000
+            const startRot = targetRotation
+            const startZoom = freeScaleRef.current
+            const assimilate = (t: number) => {
+              if (!flowCameraRef.current?.active) {
+                setFlowRotation(0)
+                return
+              }
+              const p = Math.min((t - assimStart) / assimDuration, 1)
+              const ease = 1 - (1 - p) * (1 - p)
+              setFlowRotation(startRot * (1 - ease))
+              setFreeScale(startZoom + (1 - startZoom) * ease)
+              if (p < 1) requestAnimationFrame(assimilate)
+            }
+            requestAnimationFrame(assimilate)
+          }
+        } else {
+          // Auto-tracking from tracked tasks
+          const trackedPoints: { x: number; y: number }[] = []
+          for (const taskId of d.activeTasks) {
+            if (d.untrackedPaths.has(taskId)) continue
+            const task = d.tasks.get(taskId)!
+            if (task.kind === 'node') {
+              const pos = nodePositions.get(task.nodeId)
+              if (pos) trackedPoints.push(pos)
+            } else {
+              // Wire: interpolate between source and target
+              const [fromId, toId] = task.connectionKey.split('->')
+              const fromPos = nodePositions.get(fromId)
+              const toPos = nodePositions.get(toId)
+              if (fromPos && toPos) {
+                const elapsed = now - task.startTime
+                const progress = Math.min(elapsed / task.durationMs, 1)
+                trackedPoints.push({
+                  x: fromPos.x + (toPos.x - fromPos.x) * progress,
+                  y: fromPos.y + (toPos.y - fromPos.y) * progress,
+                })
+              }
+            }
+          }
+
+          if (trackedPoints.length > 0) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+            for (const p of trackedPoints) {
+              if (p.x < minX) minX = p.x
+              if (p.y < minY) minY = p.y
+              if (p.x > maxX) maxX = p.x
+              if (p.y > maxY) maxY = p.y
+            }
+            const focusX = (minX + maxX) / 2
+            const focusY = (minY + maxY) / 2
+            cam.lastTrackedCenter = { x: focusX, y: focusY }
+
+            const targetPanX = vp.w / 2 - (focusX / 100) * vp.w * scale
+            const targetPanY = vp.h / 2 - (focusY / 100) * vp.h * scale
+
+            const newPanX = curPanX + (targetPanX - curPanX) * lerpFactor
+            const newPanY = curPanY + (targetPanY - curPanY) * lerpFactor
+            setPanOffset(newPanX, newPanY)
+          }
+        }
+      }
+
+      // Check if all tasks are complete
+      if (d.activeTasks.size === 0 && d.completedTasks.size === d.tasks.size) {
+        // All done — keep final state briefly then clear
+        flowTimeoutRef.current = setTimeout(() => {
+          setFlowAnimations(new Map())
+          setFlowActiveNodes(new Set())
+          flowDAGRef.current = null
+          flowCameraOverrideRef.current = null
+          // Camera return animation
+          const c = flowCameraRef.current
+          if (c?.active) {
+            const startPan = { x: panOffsetRef.current.x, y: panOffsetRef.current.y }
+            const startScale = freeScaleRef.current
+            const startRot = flowRotation
+            const targetPan = c.preFlowPan
+            const targetScale = c.preFlowScale
+            const animStart = performance.now()
+            const duration = 500
+            const animateBack = (t: number) => {
+              const p = Math.min((t - animStart) / duration, 1)
+              const ease = 1 - (1 - p) * (1 - p)
+              setPanOffset(
+                startPan.x + (targetPan.x - startPan.x) * ease,
+                startPan.y + (targetPan.y - startPan.y) * ease,
+              )
+              setFreeScale(startScale + (targetScale - startScale) * ease)
+              setFlowRotation(startRot * (1 - ease))
+              if (p < 1) requestAnimationFrame(animateBack)
+            }
+            requestAnimationFrame(animateBack)
+            flowCameraRef.current = null
+          } else {
+            setFlowRotation(0)
+          }
+        }, 400)
       } else {
         flowAnimRef.current = requestAnimationFrame(tick)
       }
     }
 
     flowAnimRef.current = requestAnimationFrame(tick)
-  }, [model.connections, model.nodes, stopFlowAnimation, executeNodeEffects])
+  }, [model.connections, model.nodes, stopFlowAnimation, executeNodeEffects, setPanOffset, setFreeScale, flowRotation])
 
   // Keep a stable ref so async RMM handoff callbacks can call the latest version
   const startFlowAnimationRef = useRef(startFlowAnimation)
@@ -2076,7 +2481,7 @@ export function PrototypeViewport() {
         }
         // Deselect when clicking empty space — anything that isn't a node or interactive child
         const el = event.target as HTMLElement
-        if (!el.closest('.host-node') && !el.closest('.connection-line') && !el.closest('.unzip-popup')) {
+        if (!el.closest('.host-node') && !el.closest('.connection-line') && !el.closest('.unzip-popup') && !el.closest('.sidebar') && !el.closest('.toolbar')) {
           clearSelection()
           setSelectedNodeIds(new Set())
           closeUnzip()
@@ -2303,7 +2708,7 @@ export function PrototypeViewport() {
         {selectedNodeIsInFlow && (
           <>
             <span className="toolbar-sep" />
-            {flowQueueRef.current ? (
+            {flowDAGRef.current ? (
               <button
                 type="button"
                 className="toolbar-btn toolbar-btn-stop"
@@ -2389,7 +2794,12 @@ export function PrototypeViewport() {
       }}>
       <div
         className="scene"
-        style={sceneStyle}
+        style={{
+          ...sceneStyle,
+          ...(shakeOffset.x !== 0 || shakeOffset.y !== 0
+            ? { marginLeft: shakeOffset.x, marginTop: shakeOffset.y }
+            : {}),
+        }}
       >
         {/* Dynamic grid dots — auto-extends with node positions */}
         <div style={{

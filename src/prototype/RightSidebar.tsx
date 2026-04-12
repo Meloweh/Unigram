@@ -734,6 +734,8 @@ const effectKindLabels: Record<string, string> = {
   'color': 'Color',
   'spawn': 'Spawn',
   'play-media': 'Play media',
+  'camera': 'Camera',
+  'break': 'Break Apart',
 }
 
 function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
@@ -828,6 +830,16 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
         <div className="settings-row">
           <span className="settings-label" />
           <button type="button" className="settings-add-btn" onClick={addEffect}>+ Add Effect</button>
+        </div>
+        <div className="settings-row">
+          <label className="settings-label" htmlFor="node-camera-tracked">Camera Tracked</label>
+          <input
+            id="node-camera-tracked"
+            type="checkbox"
+            className="settings-checkbox"
+            checked={node.cameraTracked === true}
+            onChange={(e) => onUpdateProps({ cameraTracked: e.target.checked })}
+          />
         </div>
       </div>
     </div>

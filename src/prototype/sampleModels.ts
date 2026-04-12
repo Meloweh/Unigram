@@ -6,7 +6,7 @@ export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video'
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break'
 
 export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
 export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
@@ -94,6 +94,8 @@ export interface ModelNode {
   flowEffects?: FlowEffect[]
   /** Whether this node is invisible while a flow animation is running */
   hideDuringFlow?: boolean
+  /** Whether the camera tracks this node during flow animation */
+  cameraTracked?: boolean
 }
 
 export interface StudyEvidence {

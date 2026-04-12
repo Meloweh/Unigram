@@ -47,6 +47,8 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'handoff-rmm': 'Handoff to RMM',
   'return-rmm': 'Return from RMM',
   'handoff-mpd': 'Handoff to MPD',
+  'camera': 'Camera',
+  'break': 'Break Apart',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -90,6 +92,8 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'handoff-rmm': return {}
     case 'return-rmm': return {}
     case 'handoff-mpd': return { targetMpdId: '' }
+    case 'camera': return { panX: 0, panY: 0, zoom: 1, rotation: 0, durationMs: 1000 }
+    case 'break': return { shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
   }
 }
 
@@ -125,7 +129,7 @@ export function FlowEffectEditor({
 }) {
   // Build the addable kinds based on host context
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'play-media',
+    'wait', 'move', 'color', 'spawn', 'play-media', 'camera', 'break',
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
     ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
@@ -723,6 +727,68 @@ export function FlowEffectEditor({
                           <option key={id} value={id}>{hostContext.mpdLabels[id] ?? id}</option>
                         ))}
                       </select>
+                    </label>
+                  </>
+                )}
+                {selectedNode.kind === 'camera' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Overrides camera position during flow. Pan, zoom, and rotation unwind back after duration.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Pan X (%)</span>
+                      <input type="number" min={-50} max={50} step={1}
+                        value={(selectedNode.config.panX as number) ?? 0}
+                        onChange={(e) => updateNodeConfig('panX', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Pan Y (%)</span>
+                      <input type="number" min={-50} max={50} step={1}
+                        value={(selectedNode.config.panY as number) ?? 0}
+                        onChange={(e) => updateNodeConfig('panY', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Zoom</span>
+                      <input type="number" min={0.2} max={5} step={0.1}
+                        value={(selectedNode.config.zoom as number) ?? 1}
+                        onChange={(e) => updateNodeConfig('zoom', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Rotation (°)</span>
+                      <input type="number" min={-180} max={180} step={1}
+                        value={(selectedNode.config.rotation as number) ?? 0}
+                        onChange={(e) => updateNodeConfig('rotation', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {selectedNode.kind === 'break' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Splits the node into halves that fall apart with screen shake.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Shake Intensity (px)</span>
+                      <input type="number" min={1} max={20} step={1}
+                        value={(selectedNode.config.shakeIntensity as number) ?? 8}
+                        onChange={(e) => updateNodeConfig('shakeIntensity', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Shake Duration (ms)</span>
+                      <input type="number" min={100} max={1000} step={50}
+                        value={(selectedNode.config.shakeDurationMs as number) ?? 300}
+                        onChange={(e) => updateNodeConfig('shakeDurationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Fall Duration (ms)</span>
+                      <input type="number" min={200} max={2000} step={50}
+                        value={(selectedNode.config.fallDurationMs as number) ?? 600}
+                        onChange={(e) => updateNodeConfig('fallDurationMs', Number(e.target.value))} />
                     </label>
                   </>
                 )}
