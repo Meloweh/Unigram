@@ -1,5 +1,8 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode } from './sampleModels'
+import { useHybridZoomStore } from './useHybridZoomStore'
+import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
+import { PARTICLE_PRESETS } from './particles'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -115,6 +118,15 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
   gridSnap: number
   onSetGridSnap: (size: number) => void
 }) {
+  const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
+  const setAppThemeMode = useHybridZoomStore((s) => s.setAppThemeMode)
+  const modelCosmetics = useHybridZoomStore((s) => model ? s.modelCosmetics[model.id] : undefined)
+  const setModelCosmetics = useHybridZoomStore((s) => s.setModelCosmetics)
+  const bgImageInputRef = useRef<HTMLInputElement>(null)
+
+  const effectiveBg = modelCosmetics?.background
+  const effectiveParticle = modelCosmetics?.particleEffect ?? null
+
   return (
     <>
       <div className="sidebar-title">Diagram Settings</div>
@@ -140,6 +152,201 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
               ))}
             </select>
           </div>
+        </div>
+      </div>
+
+      {/* Appearance section */}
+      <div className="sidebar-section">
+        <div className="sidebar-section-header static">Appearance</div>
+        <div className="sidebar-section-body">
+          {/* Theme mode */}
+          <div className="settings-row">
+            <span className="settings-label">Theme</span>
+            <div className="settings-segmented">
+              {(['light', 'dark', 'grey'] as ThemeMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`settings-segmented-btn${appThemeMode === mode ? ' active' : ''}`}
+                  onClick={() => setAppThemeMode(mode)}
+                >
+                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Background */}
+          {model && (
+            <>
+              <div className="settings-row">
+                <label className="settings-label" htmlFor="bg-type">Background</label>
+                <select
+                  id="bg-type"
+                  className="settings-select"
+                  value={effectiveBg?.type ?? 'none'}
+                  onChange={(e) => {
+                    const t = e.target.value
+                    if (t === 'none') {
+                      setModelCosmetics(model.id, { background: undefined })
+                    } else if (t === 'gradient') {
+                      setModelCosmetics(model.id, { background: { type: 'gradient', value: GRADIENT_PRESETS[0].value } })
+                    } else if (t === 'solid') {
+                      setModelCosmetics(model.id, { background: { type: 'solid', value: '#ffffff' } })
+                    } else if (t === 'pattern') {
+                      setModelCosmetics(model.id, { background: { type: 'pattern', value: PATTERN_PRESETS[0].value } })
+                    } else if (t === 'image') {
+                      bgImageInputRef.current?.click()
+                    }
+                  }}
+                >
+                  <option value="none">Default</option>
+                  <option value="gradient">Gradient</option>
+                  <option value="solid">Solid Color</option>
+                  <option value="pattern">Pattern</option>
+                  <option value="image">Image</option>
+                </select>
+              </div>
+
+              {/* Gradient preset picker */}
+              {effectiveBg?.type === 'gradient' && (
+                <div className="settings-row">
+                  <span className="settings-label">Preset</span>
+                  <div className="settings-preset-grid">
+                    {GRADIENT_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`settings-preset-swatch${effectiveBg.value === p.value ? ' active' : ''}`}
+                        style={{ background: p.value }}
+                        title={p.name}
+                        onClick={() => setModelCosmetics(model.id, { background: { type: 'gradient', value: p.value } })}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Solid color */}
+              {effectiveBg?.type === 'solid' && (
+                <div className="settings-row">
+                  <label className="settings-label" htmlFor="bg-solid-color">Color</label>
+                  <ColorInput
+                    id="bg-solid-color"
+                    value={effectiveBg.value || '#ffffff'}
+                    onChange={(v) => setModelCosmetics(model.id, { background: { type: 'solid', value: v } })}
+                  />
+                </div>
+              )}
+
+              {/* Pattern preset picker */}
+              {effectiveBg?.type === 'pattern' && (
+                <div className="settings-row">
+                  <span className="settings-label">Pattern</span>
+                  <select
+                    className="settings-select"
+                    value={PATTERN_PRESETS.find(p => p.value === effectiveBg.value)?.id ?? PATTERN_PRESETS[0].id}
+                    onChange={(e) => {
+                      const preset = PATTERN_PRESETS.find(p => p.id === e.target.value)
+                      if (preset) setModelCosmetics(model.id, { background: { type: 'pattern', value: preset.value } })
+                    }}
+                  >
+                    {PATTERN_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Image upload (hidden input) */}
+              <input
+                ref={bgImageInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (!file) return
+                  const reader = new FileReader()
+                  reader.onload = () => {
+                    setModelCosmetics(model.id, { background: { type: 'image', value: reader.result as string } })
+                  }
+                  reader.readAsDataURL(file)
+                  e.target.value = ''
+                }}
+              />
+
+              {/* Image controls when image bg is selected */}
+              {effectiveBg?.type === 'image' && (
+                <>
+                  <div className="settings-row">
+                    <span className="settings-label">Image</span>
+                    <button type="button" className="settings-add-btn" onClick={() => bgImageInputRef.current?.click()}>
+                      Change
+                    </button>
+                  </div>
+                  <div className="settings-row">
+                    <label className="settings-label" htmlFor="bg-opacity">Opacity</label>
+                    <input
+                      id="bg-opacity"
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      className="settings-range"
+                      value={effectiveBg.opacity ?? 1}
+                      onChange={(e) => setModelCosmetics(model.id, { background: { ...effectiveBg, opacity: Number(e.target.value) } })}
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <label className="settings-label" htmlFor="bg-blur">Blur</label>
+                    <input
+                      id="bg-blur"
+                      type="range"
+                      min={0}
+                      max={20}
+                      step={1}
+                      className="settings-range"
+                      value={effectiveBg.blur ?? 0}
+                      onChange={(e) => setModelCosmetics(model.id, { background: { ...effectiveBg, blur: Number(e.target.value) } })}
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <label className="settings-label" htmlFor="bg-fit">Fit</label>
+                    <select
+                      id="bg-fit"
+                      className="settings-select"
+                      value={effectiveBg.fit ?? 'cover'}
+                      onChange={(e) => setModelCosmetics(model.id, { background: { ...effectiveBg, fit: e.target.value as 'cover' | 'contain' | 'tile' } })}
+                    >
+                      <option value="cover">Cover</option>
+                      <option value="contain">Contain</option>
+                      <option value="tile">Tile</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {/* Particle effect */}
+              <div className="settings-row">
+                <label className="settings-label" htmlFor="particle-effect">Particles</label>
+                <select
+                  id="particle-effect"
+                  className="settings-select"
+                  value={effectiveParticle ?? 'none'}
+                  onChange={(e) => {
+                    const val = e.target.value === 'none' ? null : e.target.value
+                    setModelCosmetics(model.id, { particleEffect: val })
+                  }}
+                >
+                  <option value="none">None</option>
+                  {PARTICLE_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </>

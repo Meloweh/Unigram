@@ -9,6 +9,9 @@ import { LeftSidebar } from './LeftSidebar'
 import { RightSidebar } from './RightSidebar'
 import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
+import { applyThemeToDOM, resolvePalette } from './themes'
+import { resolveBackground } from './backgrounds'
+import { ParticleOverlay } from './ParticleOverlay'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -733,12 +736,25 @@ export function PrototypeViewport() {
     gridSnap,
     setGridSnap,
     updateConnectionEvidence,
+    appThemeMode,
+    modelCosmetics,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
   const model = storeGetModel(frame.modelId)!
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+
+  // Apply theme palette to DOM whenever appThemeMode changes
+  useEffect(() => {
+    applyThemeToDOM(resolvePalette(appThemeMode))
+  }, [appThemeMode])
+
+  // Resolve per-model cosmetics
+  const currentCosmetics = model ? modelCosmetics[model.id] : undefined
+  const bgConfig = currentCosmetics?.background
+  const bgStyle = bgConfig ? resolveBackground(bgConfig) : undefined
+  const particlePresetId = currentCosmetics?.particleEffect ?? null
 
   useEffect(() => {
     const el = viewportRef.current
@@ -1858,6 +1874,7 @@ export function PrototypeViewport() {
     <div
       ref={viewportRef}
       className={`viewport ${isDragging ? 'dragging' : ''}${selectMode ? ' select-mode' : ''}`}
+      style={bgConfig?.type !== 'image' ? bgStyle : undefined}
       onWheel={(event) => {
         event.preventDefault()
         // Cancel any running untangle animation before zooming
@@ -1967,6 +1984,27 @@ export function PrototypeViewport() {
       onDrop={handleDrop}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Image background layer */}
+      {bgConfig?.type === 'image' && bgConfig.value && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 0,
+            backgroundImage: `url(${bgConfig.value})`,
+            backgroundSize: bgConfig.fit === 'tile' ? 'auto' : (bgConfig.fit ?? 'cover'),
+            backgroundPosition: 'center',
+            backgroundRepeat: bgConfig.fit === 'tile' ? 'repeat' : 'no-repeat',
+            opacity: bgConfig.opacity ?? 1,
+            filter: bgConfig.blur ? `blur(${bgConfig.blur}px)` : undefined,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
+      {/* Ambient particle overlay */}
+      {particlePresetId && <ParticleOverlay presetId={particlePresetId} />}
+
       <div className="debug-overlay">
         <div className="prototype-stats compact">
           <span>Selection: {frame.selectedNodeId ?? 'none'}</span>

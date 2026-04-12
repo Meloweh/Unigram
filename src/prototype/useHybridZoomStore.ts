@@ -6,7 +6,8 @@ import {
   realignPanOffset,
   type HybridZoomSnapshot,
 } from './hybridZoom'
-import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape, type ConnectionType } from './sampleModels'
+import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape, type ConnectionType, type ThemeMode, type ModelCosmetics } from './sampleModels'
+import { applyThemeToDOM, resolvePalette } from './themes'
 
 /** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
 export const DEFAULT_GRID_SNAP = 4
@@ -120,6 +121,12 @@ interface HybridZoomState {
   setGridSnap: (size: number) => void
   /** Update evidence on a connection */
   updateConnectionEvidence: (modelId: string, from: string, to: string, evidence: import('./sampleModels').StudyEvidence[]) => void
+
+  // ---- Cosmetic / theme state (outside undo) ----
+  appThemeMode: ThemeMode
+  modelCosmetics: Record<string, ModelCosmetics>
+  setAppThemeMode: (mode: ThemeMode) => void
+  setModelCosmetics: (modelId: string, cosmetics: Partial<ModelCosmetics>) => void
 }
 
 const MAX_UNDO = 50
@@ -169,6 +176,10 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   isPaused: false,
   unzipPopup: null,
   gridSnap: DEFAULT_GRID_SNAP,
+
+  // Cosmetics — not part of undo
+  appThemeMode: 'light' as ThemeMode,
+  modelCosmetics: {} as Record<string, ModelCosmetics>,
 
   currentFrame: () => {
     const { stack } = get()
@@ -713,6 +724,20 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         },
       }
     })
+  },
+
+  setAppThemeMode: (mode) => {
+    set({ appThemeMode: mode })
+    applyThemeToDOM(resolvePalette(mode))
+  },
+
+  setModelCosmetics: (modelId, cosmetics) => {
+    set((state) => ({
+      modelCosmetics: {
+        ...state.modelCosmetics,
+        [modelId]: { ...state.modelCosmetics[modelId], ...cosmetics },
+      },
+    }))
   },
 }
 })

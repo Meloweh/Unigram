@@ -11,6 +11,23 @@ export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'pl
 export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
 export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
 
+export type ThemeMode = 'light' | 'dark' | 'grey'
+export type BackgroundType = 'gradient' | 'solid' | 'image' | 'pattern'
+
+export interface BackgroundConfig {
+  type: BackgroundType
+  value: string
+  opacity?: number
+  blur?: number
+  fit?: 'cover' | 'contain' | 'tile'
+}
+
+export interface ModelCosmetics {
+  themeMode?: ThemeMode
+  background?: BackgroundConfig
+  particleEffect?: string | null
+}
+
 export interface EffectGraphNode {
   id: string
   kind: FlowEffectKind
