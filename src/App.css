@@ -285,7 +285,13 @@
 }
 
 .host-node.focused {
-  box-shadow: 0 0 0 4px var(--ug-node-focus-ring), 0 12px 28px var(--ug-node-shadow);
+  box-shadow: 0 0 0 3px var(--ug-flow-glow), 0 0 16px var(--ug-flow-glow);
+  animation: selection-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes selection-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--ug-flow-glow), 0 0 12px var(--ug-flow-glow); }
+  50% { box-shadow: 0 0 0 6px var(--ug-flow-glow), 0 0 24px var(--ug-flow-glow); }
 }
 
 .host-node.multi-selected {

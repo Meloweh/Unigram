@@ -13,6 +13,10 @@ interface Particle {
   size: number
   phase: number
   phaseSpeed: number
+  /** Frames remaining before this particle begins appearing */
+  introDelay: number
+  /** Current intro fade progress 0→1 */
+  introAlpha: number
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -32,12 +36,34 @@ function hexToNum(hex: string): number {
   return parseInt(hex.replace('#', ''), 16)
 }
 
-function createParticle(config: ParticleConfig, w: number, h: number): Omit<Particle, 'gfx'> {
+/** Intro stagger duration in frames (~60fps). Particles spread their entry over this window. */
+const STAGGER_FRAMES = 150 // ~2.5 seconds
+/** Per-particle fade-in speed (alpha increment per frame) */
+const INTRO_FADE_SPEED = 0.025 // ~40 frames = ~0.67s to full opacity
+
+/**
+ * Compute the PixiJS stage transform that replicates the CSS scene transform.
+ *
+ * CSS: transform-origin: center; transform: translate(tx, ty) scale(s)
+ * PixiJS: stage.position = (stageX, stageY), stage.scale = s
+ *
+ * Mapping: stageX = vpW/2 * (1 - s) + tx,  stageY = vpH/2 * (1 - s) + ty
+ */
+function computeStageTransform(vpW: number, vpH: number, tx: number, ty: number, s: number) {
+  return {
+    x: (vpW / 2) * (1 - s) + tx,
+    y: (vpH / 2) * (1 - s) + ty,
+  }
+}
+
+function createParticle(config: ParticleConfig, gridW: number, gridH: number, introDelay: number): Omit<Particle, 'gfx'> {
   const size = rand(config.size[0], config.size[1])
   const speed = rand(config.speed[0], config.speed[1])
   const opacity = rand(config.opacity[0], config.opacity[1])
 
   let vx = 0, vy = 0
+  const x = Math.random() * gridW
+  const y = Math.random() * gridH
   switch (config.behavior) {
     case 'fall':
       vy = speed
@@ -62,37 +88,59 @@ function createParticle(config: ParticleConfig, w: number, h: number): Omit<Part
   }
 
   return {
-    x: Math.random() * w,
-    y: Math.random() * h,
-    vx,
-    vy,
+    x, y, vx, vy,
     baseOpacity: opacity,
     size,
     phase: Math.random() * Math.PI * 2,
     phaseSpeed: 0.01 + Math.random() * 0.03,
+    introDelay,
+    introAlpha: 0,
   }
 }
 
 function drawShape(gfx: Graphics, config: ParticleConfig, size: number, color: string) {
   gfx.clear()
   const c = hexToNum(color.startsWith('#') ? color : '#94a3b8')
+  // Ensure minimum visible radius of 1px
+  const effectiveSize = Math.max(size, 2)
   if (config.shape === 'square') {
-    gfx.rect(-size / 2, -size / 2, size, size).fill({ color: c })
+    gfx.rect(-effectiveSize / 2, -effectiveSize / 2, effectiveSize, effectiveSize).fill({ color: c })
   } else {
-    // circle (default for all shapes — star/snowflake could be custom sprites later)
-    gfx.circle(0, 0, size / 2).fill({ color: c })
+    gfx.circle(0, 0, effectiveSize / 2).fill({ color: c })
   }
 }
 
-export function ParticleOverlay({ presetId }: { presetId: string | null }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const appRef = useRef<Application | null>(null)
-  const particlesRef = useRef<Particle[]>([])
-  const presetRef = useRef<string | null>(null)
+interface ParticleOverlayProps {
+  presetId: string | null
+  /** CSS translate-x of the scene (cx + panOffset.x) */
+  sceneTx: number
+  /** CSS translate-y of the scene (cy + panOffset.y) */
+  sceneTy: number
+  /** Camera zoom scale */
+  sceneScale: number
+  /** Viewport dimensions in pixels */
+  vpSize: { w: number; h: number }
+}
 
+export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize }: ParticleOverlayProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  // Store scene transform in refs so the ticker can access latest values
+  const sceneTxRef = useRef(sceneTx)
+  const sceneTyRef = useRef(sceneTy)
+  const sceneScaleRef = useRef(sceneScale)
+  const vpSizeRef = useRef(vpSize)
+  sceneTxRef.current = sceneTx
+  sceneTyRef.current = sceneTy
+  sceneScaleRef.current = sceneScale
+  vpSizeRef.current = vpSize
+
+  // Single effect that owns the full PixiJS lifecycle.
+  // Keyed on presetId so a new app is created whenever the preset changes,
+  // eliminating the race between async app.init() and preset state.
   useEffect(() => {
-    if (!containerRef.current) return
+    if (!presetId || !containerRef.current) return
     const container = containerRef.current
+    const particles: Particle[] = []
 
     const app = new Application()
     let destroyed = false
@@ -106,22 +154,67 @@ export function ParticleOverlay({ presetId }: { presetId: string | null }) {
     }).then(() => {
       if (destroyed) { app.destroy(true); return }
       container.appendChild(app.canvas as HTMLCanvasElement)
-      appRef.current = app
 
-      // Spawn initial particles if preset is already set
-      if (presetRef.current) {
-        spawnParticles(app, presetRef.current)
+      // Spawn particles for _this_ preset (captured in closure — no race)
+      const preset = getParticlePreset(presetId)
+      if (preset) {
+        const cfg = preset.config
+        const vpW = app.screen.width
+        const vpH = app.screen.height
+        // Grid bounds in world (scene) coords: 0 to vpW, 0 to vpH
+        const gridW = vpSizeRef.current.w
+        const gridH = vpSizeRef.current.h
+
+        for (let i = 0; i < cfg.count; i++) {
+          const introDelay = Math.floor(Math.random() * STAGGER_FRAMES)
+          const data = createParticle(cfg, gridW, gridH, introDelay)
+          const gfx = new Graphics()
+          const color = pickColor(cfg.color)
+          drawShape(gfx, cfg, data.size, color)
+          gfx.x = data.x
+          gfx.y = data.y
+          gfx.alpha = 0
+          app.stage.addChild(gfx)
+          particles.push({ ...data, gfx })
+        }
       }
 
       // Animation loop
       app.ticker.add(() => {
-        const w = app.screen.width
-        const h = app.screen.height
-        const preset = presetRef.current ? getParticlePreset(presetRef.current) : null
+        const vpW = app.screen.width
+        const vpH = app.screen.height
+        const tx = sceneTxRef.current
+        const ty = sceneTyRef.current
+        const s = sceneScaleRef.current
+
+        // Apply scene transform to the PixiJS stage so particles are in world space
+        const st = computeStageTransform(vpW, vpH, tx, ty, s)
+        app.stage.x = st.x
+        app.stage.y = st.y
+        app.stage.scale.set(s)
+
+        const preset = getParticlePreset(presetId)
         if (!preset) return
         const cfg = preset.config
 
-        for (const p of particlesRef.current) {
+        // Grid bounds for wrapping — particles stay within the grid area (0 to vpSize)
+        const gridW = vpSizeRef.current.w
+        const gridH = vpSizeRef.current.h
+        const margin = 20 // small margin in world px
+
+        for (const p of particles) {
+          // Intro delay countdown
+          if (p.introDelay > 0) {
+            p.introDelay--
+            p.gfx.alpha = 0
+            continue
+          }
+
+          // Fade in
+          if (p.introAlpha < 1) {
+            p.introAlpha = Math.min(1, p.introAlpha + INTRO_FADE_SPEED)
+          }
+
           // Update position
           if (cfg.behavior === 'wander') {
             p.vx += (Math.random() - 0.5) * 0.02
@@ -133,28 +226,35 @@ export function ParticleOverlay({ presetId }: { presetId: string | null }) {
 
           if (cfg.gravity) p.vy += cfg.gravity
 
+          // Terminal velocity — cap speed to prevent unbounded acceleration
+          const maxSpeed = cfg.speed[1] * 3
+          if (Math.abs(p.vy) > maxSpeed) p.vy = Math.sign(p.vy) * maxSpeed
+          if (Math.abs(p.vx) > maxSpeed) p.vx = Math.sign(p.vx) * maxSpeed
+
           p.x += p.vx
           p.y += p.vy
           p.phase += p.phaseSpeed
 
-          // Wrap around
-          if (p.x < -20) p.x = w + 20
-          if (p.x > w + 20) p.x = -20
-          if (p.y < -20) p.y = h + 20
-          if (p.y > h + 20) p.y = -20
+          // Wrap around within grid bounds (0 to gridW/gridH).
+          // Use modular wrap so particles stranded outside after a
+          // viewport resize are immediately repositioned.
+          if (p.x < -margin || p.x > gridW + margin) p.x = ((p.x % gridW) + gridW) % gridW
+          if (p.y < -margin || p.y > gridH + margin) p.y = ((p.y % gridH) + gridH) % gridH
 
           // Update graphics
           p.gfx.x = p.x
           p.gfx.y = p.y
 
-          // Twinkle / opacity oscillation
+          // Compute base alpha from behavior
+          let alpha: number
           if (cfg.behavior === 'twinkle') {
-            p.gfx.alpha = lerp(cfg.opacity[0], cfg.opacity[1], (Math.sin(p.phase) + 1) / 2)
-          } else if (cfg.behavior === 'wander' || cfg.behavior === 'fireflies' as string) {
-            p.gfx.alpha = p.baseOpacity * (0.7 + 0.3 * Math.sin(p.phase))
+            alpha = lerp(cfg.opacity[0], cfg.opacity[1], (Math.sin(p.phase) + 1) / 2)
+          } else if (cfg.behavior === 'wander') {
+            alpha = p.baseOpacity * (0.7 + 0.3 * Math.sin(p.phase))
           } else {
-            p.gfx.alpha = p.baseOpacity
+            alpha = p.baseOpacity
           }
+          p.gfx.alpha = alpha * p.introAlpha
         }
       })
     })
@@ -162,54 +262,11 @@ export function ParticleOverlay({ presetId }: { presetId: string | null }) {
     return () => {
       destroyed = true
       initPromise.then(() => {
-        clearParticles()
-        if (appRef.current) {
-          appRef.current.destroy(true)
-          appRef.current = null
-        }
+        for (const p of particles) p.gfx.destroy()
+        app.destroy(true)
       })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Respond to preset changes
-  useEffect(() => {
-    presetRef.current = presetId
-    if (appRef.current) {
-      clearParticles()
-      if (presetId) spawnParticles(appRef.current, presetId)
-    }
   }, [presetId])
-
-  function clearParticles() {
-    for (const p of particlesRef.current) {
-      p.gfx.destroy()
-    }
-    particlesRef.current = []
-  }
-
-  function spawnParticles(app: Application, id: string) {
-    const preset = getParticlePreset(id)
-    if (!preset) return
-    const cfg = preset.config
-    const w = app.screen.width
-    const h = app.screen.height
-    const particles: Particle[] = []
-
-    for (let i = 0; i < cfg.count; i++) {
-      const data = createParticle(cfg, w, h)
-      const gfx = new Graphics()
-      const color = pickColor(cfg.color)
-      drawShape(gfx, cfg, data.size, color)
-      gfx.x = data.x
-      gfx.y = data.y
-      gfx.alpha = data.baseOpacity
-      app.stage.addChild(gfx)
-      particles.push({ ...data, gfx })
-    }
-
-    particlesRef.current = particles
-  }
 
   return (
     <div

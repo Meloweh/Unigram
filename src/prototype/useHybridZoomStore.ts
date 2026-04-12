@@ -32,6 +32,8 @@ export interface ZoomStackFrame {
   snapshot: HybridZoomSnapshot
   selectedNodeId: string | null
   panOffset: PanOffset
+  /** Independent camera zoom multiplier (Google Maps-style, default 1) */
+  freeScale: number
   /** The child model ID that was actually displayed (may differ from node.childModelId after MPD switch) */
   lastChildModelId?: string
   /** Original modelId before a node-level MPD switch (so we can switch back) */
@@ -74,6 +76,13 @@ interface HybridZoomState {
   beginDrag: () => void
   endDrag: () => void
   panBy: (dx: number, dy: number) => void
+  /** Adjust the independent camera zoom (Google Maps-style).
+   *  delta > 0 zooms in, delta < 0 zooms out. */
+  adjustFreeScale: (delta: number) => void
+  /** Set freeScale to an exact value on the current frame */
+  setFreeScale: (value: number) => void
+  /** Set panOffset to an exact value on the current frame */
+  setPanOffset: (x: number, y: number) => void
 
   openUnzip: (connectionKey: string, anchorX: number, anchorY: number) => void
   closeUnzip: () => void
@@ -138,6 +147,7 @@ function makeRootFrame(): ZoomStackFrame {
     snapshot: createInitialSnapshot(),
     selectedNodeId: null,
     panOffset: { x: 0, y: 0 },
+    freeScale: 1,
   }
 }
 
@@ -270,6 +280,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             snapshot: createInitialSnapshot(),
             selectedNodeId: null,
             panOffset: { x: 0, y: 0 },
+            freeScale: 1,
           },
         ],
         isPaused: true,
@@ -298,6 +309,28 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         })),
       }
     })
+  },
+
+  adjustFreeScale: (delta) => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, (frame) => {
+        const factor = delta > 0 ? 1.08 : 1 / 1.08
+        const next = Math.min(5, Math.max(0.2, frame.freeScale * factor))
+        return { freeScale: next }
+      }),
+    }))
+  },
+
+  setFreeScale: (value) => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, () => ({ freeScale: value })),
+    }))
+  },
+
+  setPanOffset: (x, y) => {
+    set((state) => ({
+      stack: updateTopFrame(state.stack, () => ({ panOffset: { x, y } })),
+    }))
   },
 
   openUnzip: (connectionKey, anchorX, anchorY) => {

@@ -707,6 +707,9 @@ export function PrototypeViewport() {
     beginDrag,
     endDrag,
     panBy,
+    adjustFreeScale,
+    setFreeScale,
+    setPanOffset,
     getModel: storeGetModel,
     moveNode,
     moveNodes,
@@ -755,6 +758,8 @@ export function PrototypeViewport() {
   const bgConfig = currentCosmetics?.background
   const bgStyle = bgConfig ? resolveBackground(bgConfig) : undefined
   const particlePresetId = currentCosmetics?.particleEffect ?? null
+
+
 
   useEffect(() => {
     const el = viewportRef.current
@@ -876,24 +881,33 @@ export function PrototypeViewport() {
     return Math.max(0, liveMpdIds!.indexOf(frame.modelId))
   }, [mpdOptions, isNodeLevelMpd, frame.modelId, frame.nodeMpdOriginalModelId, nodeDialIds, liveMpdIds])
 
-  const sceneStyle = useMemo(() => {
+  // Effective camera scale = RMM zoom × free zoom
+  const effectiveScale = frame.snapshot.cameraScale * frame.freeScale
+
+  const { sceneStyle, sceneTx, sceneTy } = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
     // At nodeProgress=0, no centering. At nodeProgress=1, node is centered.
-    // Formula: centering = nodeProgress × (0.5 − node.x/100) × vpSize × cameraScale
+    // Formula: centering = nodeProgress × (0.5 − node.x/100) × vpSize × effectiveScale
     let cx = 0
     let cy = 0
     if (selectedNode) {
       const np = frame.snapshot.nodeProgress
-      cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * frame.snapshot.cameraScale
-      cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * frame.snapshot.cameraScale
+      cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * effectiveScale
+      cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * effectiveScale
     }
+    const tx = cx + frame.panOffset.x
+    const ty = cy + frame.panOffset.y
     const gridPxW = vpSize.w * gridSnap / 100
     const gridPxH = vpSize.h * gridSnap / 100
     return {
-      transform: `translate(${cx + frame.panOffset.x}px, ${cy + frame.panOffset.y}px) scale(${frame.snapshot.cameraScale})`,
-      backgroundSize: `${gridPxW}px ${gridPxH}px`,
+      sceneStyle: {
+        transform: `translate(${tx}px, ${ty}px) scale(${effectiveScale})`,
+        backgroundSize: `${gridPxW}px ${gridPxH}px`,
+      },
+      sceneTx: tx,
+      sceneTy: ty,
     }
-  }, [selectedNode, frame.snapshot.nodeProgress, frame.snapshot.cameraScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
+  }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
 
   // At handoff, push into child model (prefer lastChildModelId to preserve MPD switch)
   useEffect(() => {
@@ -907,7 +921,7 @@ export function PrototypeViewport() {
   const handleSelectNode = (nodeId: string) => {
     if (selectedNode && frame.snapshot.nodeProgress > 0) {
       const np = frame.snapshot.nodeProgress
-      const cs = frame.snapshot.cameraScale
+      const cs = effectiveScale
       const residual = {
         x: np * (0.5 - selectedNode.x / 100) * vpSize.w * cs,
         y: np * (0.5 - selectedNode.y / 100) * vpSize.h * cs,
@@ -936,6 +950,36 @@ export function PrototypeViewport() {
   // Clear multi-selection when model changes (e.g. MPD switch)
   useEffect(() => { setSelectedNodeIds(new Set()) }, [frame.modelId])
 
+  // Reset free zoom when a node is selected (animated transition + pan toward node)
+  useEffect(() => {
+    if (!frame.selectedNodeId || frame.freeScale === 1) return
+    const node = model?.nodes.find((n) => n.id === frame.selectedNodeId)
+    if (!node) return
+    const startScale = frame.freeScale
+    const startPanX = frame.panOffset.x
+    const startPanY = frame.panOffset.y
+    const cs = frame.snapshot.cameraScale
+    const targetPanX = (0.5 - node.x / 100) * vpSize.w * cs
+    const targetPanY = (0.5 - node.y / 100) * vpSize.h * cs
+    const duration = 300 // ms
+    let t0: number | null = null
+    let raf = 0
+    const step = (ts: number) => {
+      if (t0 === null) t0 = ts
+      const elapsed = ts - t0
+      const t = Math.min(elapsed / duration, 1)
+      const eased = 1 - (1 - t) * (1 - t) // ease-out quad
+      setFreeScale(startScale + (1 - startScale) * eased)
+      setPanOffset(
+        startPanX + (targetPanX - startPanX) * eased,
+        startPanY + (targetPanY - startPanY) * eased,
+      )
+      if (t < 1) raf = requestAnimationFrame(step)
+    }
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [frame.selectedNodeId])
+
   // MPD curtain transition state
   const [mpdCurtain, setMpdCurtain] = useState<{
     oldModel: Model
@@ -951,7 +995,7 @@ export function PrototypeViewport() {
     if (!el) return { x: 50, y: 50 }
     const rect = el.getBoundingClientRect()
     // Account for scene transform: translate + scale
-    const cs = frame.snapshot.cameraScale
+    const cs = effectiveScale
     let cx = 0, cy = 0
     if (selectedNode) {
       const np = frame.snapshot.nodeProgress
@@ -967,7 +1011,7 @@ export function PrototypeViewport() {
       x: (localX / rect.width) * 100,
       y: (localY / rect.height) * 100,
     }
-  }, [frame.snapshot.cameraScale, frame.snapshot.nodeProgress, frame.panOffset.x, frame.panOffset.y, selectedNode, vpSize.w, vpSize.h])
+  }, [effectiveScale, frame.snapshot.nodeProgress, frame.panOffset.x, frame.panOffset.y, selectedNode, vpSize.w, vpSize.h])
 
   const handleNodeDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
     e.stopPropagation()
@@ -1882,10 +1926,31 @@ export function PrototypeViewport() {
           cancelAnimationFrame(untangleRaf.current)
           setIsUntangling(false)
         }
-        if (event.deltaY < 0) {
-          zoomIn()
+        const zoomingIn = event.deltaY < 0
+        const hasSelection = !!frame.selectedNodeId
+        const canRmmIn = selectedNode && selectedNode.childModelId
+        const canRmmOut = stack.length > 1 || frame.snapshot.progress > 0
+
+        if (hasSelection) {
+          // With a selection: use default RMM zoom only, no free zoom
+          if (zoomingIn) {
+            zoomIn()
+          } else {
+            zoomOut()
+          }
+        } else if (zoomingIn) {
+          adjustFreeScale(1)
         } else {
-          zoomOut()
+          // Zooming out with no selection
+          if (frame.freeScale > 1) {
+            // Zoomed past default — reduce free scale toward 1.0 first
+            adjustFreeScale(-1)
+          } else if (canRmmOut) {
+            // RMM zoom-out directly (reduces progress or pops stack)
+            zoomOut()
+          } else {
+            adjustFreeScale(-1)
+          }
         }
       }}
       onPointerDown={(event) => {
@@ -2002,8 +2067,16 @@ export function PrototypeViewport() {
         />
       )}
 
-      {/* Ambient particle overlay */}
-      {particlePresetId && <ParticleOverlay presetId={particlePresetId} />}
+      {/* Ambient particle overlay — rendered in scene space */}
+      {particlePresetId && (
+        <ParticleOverlay
+          presetId={particlePresetId}
+          sceneTx={sceneTx}
+          sceneTy={sceneTy}
+          sceneScale={effectiveScale}
+          vpSize={vpSize}
+        />
+      )}
 
       <div className="debug-overlay">
         <div className="prototype-stats compact">
@@ -2022,7 +2095,7 @@ export function PrototypeViewport() {
         {debugOpen && (
           <div className="prototype-stats details">
             <span>Mode: {frame.snapshot.handoffMode}</span>
-            <span>Camera: {frame.snapshot.cameraScale.toFixed(2)}</span>
+            <span>Camera: {effectiveScale.toFixed(2)}</span>
             <span>Inflation: {frame.snapshot.nodeInflation.toFixed(2)}</span>
             <span>Paused: {isPaused ? 'yes' : 'no'}</span>
           </div>
@@ -2059,7 +2132,7 @@ export function PrototypeViewport() {
                 const newModel = storeGetModel(targetId)
                 const twinNode = newModel?.nodes.find((n) => n.id === frame.selectedNodeId)
                 if (oldNode && twinNode) {
-                  const cs = frame.snapshot.cameraScale
+                  const cs = effectiveScale
                   const np = frame.snapshot.nodeProgress
                   const dx = (twinNode.x - oldNode.x) / 100 * vpSize.w * cs * (np - 1)
                   const dy = (twinNode.y - oldNode.y) / 100 * vpSize.h * cs * (np - 1)
@@ -2103,7 +2176,7 @@ export function PrototypeViewport() {
               const newModel = storeGetModel(newModelId)
               const twinNode = newModel?.nodes.find((n) => n.id === frame.selectedNodeId)
               if (oldNode && twinNode) {
-                const cs = frame.snapshot.cameraScale
+                const cs = effectiveScale
                 const np = frame.snapshot.nodeProgress
                 let cx = 0, cy = 0
                 if (selectedNode) {
@@ -2377,7 +2450,7 @@ export function PrototypeViewport() {
       {selectionRect && (() => {
         const rect = viewportRef.current?.getBoundingClientRect()
         if (!rect) return null
-        const cs = frame.snapshot.cameraScale
+        const cs = effectiveScale
         let cx = 0, cy = 0
         if (selectedNode) {
           const np = frame.snapshot.nodeProgress
@@ -2532,6 +2605,10 @@ function ModelSceneContent({
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
 }) {
+  // Theme palette for node default colors
+  const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
+  const palette = resolvePalette(appThemeMode)
+
   // Track actual measured node sizes for accurate anchor placement
   const nodeSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map())
   const [sizeGen, setSizeGen] = useState(0)
@@ -2760,6 +2837,8 @@ function ModelSceneContent({
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
             onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
             onResize={(size) => handleNodeResize(node.id, size)}
+            defaultCellColor={palette.nodeCell}
+            defaultMembraneColor={palette.nodeMembrane}
           />
         )
       })}
@@ -3025,6 +3104,8 @@ function SceneNode({
   onFinishEditing,
   onLiveEditLabel,
   onResize,
+  defaultCellColor,
+  defaultMembraneColor,
 }: {
   node: ModelNode
   posX: number
@@ -3045,6 +3126,8 @@ function SceneNode({
   onFinishEditing: (label: string) => void
   onLiveEditLabel: (label: string) => void
   onResize: (size: { w: number; h: number }) => void
+  defaultCellColor: string
+  defaultMembraneColor: string
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -3097,9 +3180,9 @@ function SceneNode({
 
   const chromeFade = progress > 0.7 ? 1 - (progress - 0.7) / 0.3 : 1
 
-  // Node style properties with defaults
-  const cellColor = node.cellColor ?? '#f4f8fd'
-  const membraneColor = node.membraneColor ?? '#365f8f'
+  // Node style properties with theme-aware defaults
+  const cellColor = node.cellColor ?? defaultCellColor
+  const membraneColor = node.membraneColor ?? defaultMembraneColor
   const membraneVisible = node.membraneVisible !== false
 
   // Parse hex to rgb components for alpha blending with chromeFade
@@ -3163,7 +3246,7 @@ function SceneNode({
       : 'transparent',
     boxShadow: clipPath ? 'none' : shadow,
     filter: clipPath && chromeFade > 0.01
-      ? `drop-shadow(${shadow})${isSelected ? ' drop-shadow(0 0 3px rgba(44, 120, 188, 0.6))' : ''}`
+      ? `drop-shadow(${shadow})${isSelected ? ' drop-shadow(0 0 8px var(--ug-flow-glow)) drop-shadow(0 0 16px var(--ug-flow-glow))' : ''}`
       : undefined,
     borderRadius,
     clipPath,
@@ -3313,15 +3396,38 @@ function SceneNode({
           ) : '\u00A0'}
         </div>
       )}
-      {isZooming && childModel && (
-        <div className="child-model">
-          <ChildModelPreview
-            model={childModel}
-            scale={nodeW / vpSize.w}
-            vpSize={vpSize}
-          />
-        </div>
-      )}
+      {isZooming && childModel && (() => {
+        const childCosmetics = useHybridZoomStore.getState().modelCosmetics[childModel.id]
+        const childBg = childCosmetics?.background
+        const childBgStyle = childBg ? resolveBackground(childBg) : undefined
+        return (
+          <div className="child-model" style={childBg?.type !== 'image' ? childBgStyle : undefined}>
+            {childBg?.type === 'image' && childBg.value && (
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 0,
+                  backgroundImage: `url(${childBg.value})`,
+                  backgroundSize: childBg.fit === 'tile' ? 'auto' : (childBg.fit ?? 'cover'),
+                  backgroundPosition: 'center',
+                  backgroundRepeat: childBg.fit === 'tile' ? 'repeat' : 'no-repeat',
+                  opacity: childBg.opacity ?? 1,
+                  filter: childBg.blur ? `blur(${childBg.blur}px)` : undefined,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+            {/* Particles omitted in mini-view — PixiJS can't reliably resize inside an animating container.
+                Full particle effect activates after RMM handoff. */}
+            <ChildModelPreview
+              model={childModel}
+              scale={nodeW / vpSize.w}
+              vpSize={vpSize}
+            />
+          </div>
+        )
+      })()}
     </>
   )
 
@@ -3417,6 +3523,8 @@ function SceneNode({
 
 /** Preview of child model content inside a node canvas */
 function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: number; vpSize: { w: number; h: number } }) {
+  const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
+  const palette = resolvePalette(appThemeMode)
   const identity = (n: ModelNode) => ({ x: n.x, y: n.y })
   const anchors = useMemo(
     () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, identity),
@@ -3472,8 +3580,8 @@ function ChildModelPreview({ model, scale, vpSize }: { model: Model; scale: numb
         if (shape === 'rectangle') pRadius = 0
         else if (shape === 'oval' || shape === 'circle') pRadius = '50%'
 
-        const cellColor = node.cellColor ?? '#f4f8fd'
-        const memColor = node.membraneColor ?? '#365f8f'
+        const cellColor = node.cellColor ?? palette.nodeCell
+        const memColor = node.membraneColor ?? palette.nodeMembrane
         const memVisible = node.membraneVisible !== false
 
         const hexToRgb = (hex: string) => {

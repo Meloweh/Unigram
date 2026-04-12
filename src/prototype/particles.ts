@@ -25,8 +25,8 @@ export const PARTICLE_PRESETS: ParticlePreset[] = [
     config: {
       count: 60,
       speed: [0.1, 0.4],
-      size: [1, 3],
-      opacity: [0.15, 0.35],
+      size: [2, 5],
+      opacity: [0.2, 0.45],
       color: '#94a3b8',
       shape: 'circle',
       behavior: 'drift',
