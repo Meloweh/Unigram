@@ -1529,6 +1529,82 @@
   background: rgba(239, 68, 68, 0.2);
 }
 
+/* Checkbox field */
+.fxeditor-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+.fxeditor-checkbox input[type="checkbox"] {
+  accent-color: #60a5fa;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* Spawn section */
+.fxeditor-spawn-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fxeditor-spawn-item {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fxeditor-spawn-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.fxeditor-spawn-item-num {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-weight: 600;
+}
+.fxeditor-spawn-remove {
+  background: none;
+  border: none;
+  color: #f87171;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.fxeditor-spawn-add {
+  background: rgba(255,255,255,0.05);
+  border: 1px dashed rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.fxeditor-spawn-add:hover {
+  background: rgba(255,255,255,0.08);
+  color: #cbd5e1;
+}
+.fxeditor-field-row {
+  display: flex;
+  gap: 6px;
+}
+.fxeditor-field select {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.82rem;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     padding: 12px;

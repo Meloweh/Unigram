@@ -7,7 +7,7 @@ import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState
 import { MpdDial } from './MpdDial'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidebar } from './RightSidebar'
-import { FlowEffectEditor } from './FlowEffectEditor'
+import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
@@ -1144,41 +1144,190 @@ export function PrototypeViewport() {
                 break
               case 'color': {
                 const color = (gNode.config.color as string) ?? '#f59e0b'
+                const permanent = !!gNode.config.permanent
                 setTimeout(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (el) {
                     el.style.transition = `background ${dur}ms ease`
                     el.style.background = color
-                    // Revert after duration
-                    setTimeout(() => {
-                      el.style.background = ''
-                      el.style.transition = ''
-                    }, dur)
+                    if (!permanent) {
+                      setTimeout(() => {
+                        el.style.background = ''
+                        el.style.transition = ''
+                      }, dur)
+                    }
                   }
                 }, delay)
                 layerMaxDuration = Math.max(layerMaxDuration, dur)
                 break
               }
               case 'move': {
-                const dx = (gNode.config.dx as number) ?? 0
-                const dy = (gNode.config.dy as number) ?? 0
+                const waypoints = (gNode.config.waypoints as Array<{dx: number; dy: number; durationMs: number}>) ?? []
+                const roundtrip = !!gNode.config.roundtrip
+                // Compute total duration across all waypoints
+                let totalWpDur = 0
+                for (const wp of waypoints) totalWpDur += (wp.durationMs ?? 500)
+                if (roundtrip) totalWpDur += (waypoints.length > 0 ? (waypoints[waypoints.length - 1].durationMs ?? 500) : 500)
                 setTimeout(() => {
-                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
-                  if (el) {
-                    el.style.transition = `transform ${dur}ms ease`
-                    el.style.transform = `translate(${dx}px, ${dy}px)`
+                  if (!node) return
+                  let wpDelay = 0
+                  let cumDx = 0
+                  let cumDy = 0
+                  for (const wp of waypoints) {
+                    const wpDur = wp.durationMs ?? 500
+                    const dx = wp.dx ?? 0
+                    const dy = wp.dy ?? 0
+                    cumDx += dx
+                    cumDy += dy
+                    const targetX = node.x + cumDx
+                    const targetY = node.y + cumDy
                     setTimeout(() => {
-                      el.style.transform = ''
-                      el.style.transition = ''
-                    }, dur)
+                      updateNodeProps(frame.modelId, nodeId, { x: targetX, y: targetY })
+                    }, wpDelay)
+                    wpDelay += wpDur
+                  }
+                  if (roundtrip) {
+                    // Return directly to the original position
+                    const lastWpDur = waypoints.length > 0 ? (waypoints[waypoints.length - 1].durationMs ?? 500) : 500
+                    setTimeout(() => {
+                      updateNodeProps(frame.modelId, nodeId, { x: node.x, y: node.y })
+                    }, wpDelay)
+                    wpDelay += lastWpDur
                   }
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                layerMaxDuration = Math.max(layerMaxDuration, totalWpDur)
                 break
               }
-              case 'spawn':
-                // placeholder for future
+              case 'spawn': {
+                const spawnItems = (gNode.config.spawnItems as Array<{
+                  label: string; offsetX: number; offsetY: number;
+                  animation: string; connectionType: string
+                }>) ?? []
+                setTimeout(() => {
+                  if (!node) return
+                  for (const item of spawnItems) {
+                    const newId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+                    const spawnX = node.x + item.offsetX
+                    const spawnY = node.y + item.offsetY
+                    addNode(frame.modelId, { id: newId, label: item.label, x: spawnX, y: spawnY })
+                    if (item.connectionType !== 'none') {
+                      addConnection(frame.modelId, {
+                        from: nodeId, to: newId,
+                        type: item.connectionType === 'flow' ? 'flow' : 'default',
+                      })
+                    }
+                    // Spawn animation on the DOM element
+                    requestAnimationFrame(() => {
+                      const el = document.querySelector(`[data-node-id="${CSS.escape(newId)}"]`) as HTMLElement | null
+                      if (el) {
+                        if (item.animation === 'zip-in') {
+                          el.style.opacity = '0'
+                          el.style.transform = 'scale(0.3)'
+                          el.style.transition = 'opacity 300ms ease, transform 300ms ease'
+                          requestAnimationFrame(() => {
+                            el.style.opacity = '1'
+                            el.style.transform = 'scale(1)'
+                          })
+                        } else {
+                          // emerge: scale from 0 at source, then move to position
+                          el.style.transform = 'scale(0)'
+                          el.style.transition = 'transform 400ms ease'
+                          requestAnimationFrame(() => {
+                            el.style.transform = 'scale(1)'
+                          })
+                        }
+                      }
+                    })
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, 400)
                 break
+              }
+              case 'handoff-rmm': {
+                setTimeout(() => {
+                  if (!node?.childModelId) {
+                    console.warn('[Flow] Handoff to RMM: node has no childModelId')
+                    return
+                  }
+                  // Select the node so zoomIn() targets it, then animate zoom
+                  selectNode(nodeId)
+                  const targetChildModelId = node.childModelId
+                  const zoomInterval = setInterval(() => {
+                    const curFrame = currentFrame()
+                    // Once we've pushed into the child model, stop zooming and trigger child effects
+                    if (curFrame.modelId === targetChildModelId) {
+                      clearInterval(zoomInterval)
+                      // Read fresh model data from the store (not the stale closure)
+                      const freshModels = useHybridZoomStore.getState().models
+                      const childModel = freshModels[targetChildModelId]
+                      if (childModel) {
+                        for (const childNode of childModel.nodes) {
+                          const effects = childNode.flowEffects ?? []
+                          for (const fx of effects) {
+                            const rmmEntry = fx.graph.nodes.find(
+                              gn => gn.kind === 'entry' && gn.config.triggeredByRmmParent
+                            )
+                            if (rmmEntry) {
+                              // Delay to let the freshly-rendered child model settle,
+                              // then call via ref to get the latest startFlowAnimation (which now sees child model)
+                              setTimeout(() => {
+                                startFlowAnimationRef.current(childNode.id)
+                              }, 300)
+                              return
+                            }
+                          }
+                        }
+                        console.warn('[Flow] Handoff to RMM: no entry with "Triggered by RMM Parent" found in child model')
+                      }
+                      return
+                    }
+                    zoomIn()
+                  }, 50)
+                  // Safety: clear after 5s in case something goes wrong
+                  setTimeout(() => clearInterval(zoomInterval), 5000)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, 1200)
+                break
+              }
+              case 'return-rmm': {
+                setTimeout(() => {
+                  if (stack.length <= 1) {
+                    console.warn('[Flow] Return from RMM: already at root level')
+                    return
+                  }
+                  const parentModelId = stack[stack.length - 2].modelId
+                  const zoomInterval = setInterval(() => {
+                    const freshState = useHybridZoomStore.getState()
+                    const curFrame = freshState.stack[freshState.stack.length - 1]
+                    // Keep zooming out until we're back in the parent AND progress is at 0
+                    if (curFrame.modelId === parentModelId && curFrame.snapshot.progress <= 0) {
+                      clearInterval(zoomInterval)
+                      return
+                    }
+                    zoomOut()
+                  }, 50)
+                  // Safety: clear after 5s
+                  setTimeout(() => clearInterval(zoomInterval), 5000)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, 1200)
+                break
+              }
+              case 'handoff-mpd': {
+                const targetMpdId = (gNode.config.targetMpdId as string) ?? ''
+                setTimeout(() => {
+                  if (!targetMpdId) {
+                    console.warn('[Flow] Handoff to MPD: no target MPD selected')
+                    return
+                  }
+                  if (node?.mpdIds && node.mpdIds.length > 1) {
+                    switchNodeMpd(targetMpdId, node.mpdIds)
+                  } else {
+                    switchFrameMpd(targetMpdId)
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, 400)
+                break
+              }
               case 'entry':
                 break
             }
@@ -1199,7 +1348,12 @@ export function PrototypeViewport() {
     }
 
     return maxDuration > 0 ? maxDuration : 100
-  }, [model.nodes, triggerMediaPlay])
+  }, [model.nodes, triggerMediaPlay, frame.modelId, updateNodeProps, addNode, addConnection, pushModel, storeModels, stack, zoomIn, zoomOut, selectNode, currentFrame, switchNodeMpd, switchFrameMpd])
+
+  // Keep a ref to the latest executeNodeEffects so async callbacks (e.g. RMM handoff)
+  // can call the current version after a model change triggers a re-render.
+  const executeNodeEffectsRef = useRef(executeNodeEffects)
+  executeNodeEffectsRef.current = executeNodeEffects
 
   const startFlowAnimation = useCallback((startNodeId: string) => {
     stopFlowAnimation()
@@ -1300,6 +1454,10 @@ export function PrototypeViewport() {
 
     flowAnimRef.current = requestAnimationFrame(tick)
   }, [model.connections, model.nodes, stopFlowAnimation, executeNodeEffects])
+
+  // Keep a stable ref so async RMM handoff callbacks can call the latest version
+  const startFlowAnimationRef = useRef(startFlowAnimation)
+  startFlowAnimationRef.current = startFlowAnimation
 
   // Cleanup on unmount
   useEffect(() => () => {
@@ -2244,9 +2402,18 @@ export function PrototypeViewport() {
           }
         }
         if (!editFx) return null
+        const hostCtx: EffectEditorHostContext = {
+          hasChildModel: !!editNode?.childModelId,
+          isInsideChildModel: stack.length > 1,
+          mpdIds: editNode?.mpdIds ?? [],
+          mpdLabels: Object.fromEntries(
+            (editNode?.mpdIds ?? []).map(id => [id, storeModels[id]?.label ?? id])
+          ),
+        }
         return (
           <FlowEffectEditor
             effect={editFx}
+            hostContext={hostCtx}
             onSave={(updated) => {
               if (!editNode) return
               if (updated.id === '__locked-media__') {

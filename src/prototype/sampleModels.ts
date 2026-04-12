@@ -6,7 +6,7 @@ export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video'
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd'
 
 export interface EffectGraphNode {
   id: string

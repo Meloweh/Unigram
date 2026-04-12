@@ -1,6 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge } from './sampleModels'
 
+// ---- Host context passed from viewport ----
+
+export interface EffectEditorHostContext {
+  /** Whether the host diagram node has a childModelId (can RMM-zoom into it) */
+  hasChildModel: boolean
+  /** Whether we're currently inside a child model (stack depth > 1) */
+  isInsideChildModel: boolean
+  /** MPD IDs available on the host node (empty if none) */
+  mpdIds: string[]
+  /** Labels for MPD models keyed by model ID */
+  mpdLabels: Record<string, string>
+}
+
+// ---- Spawn item type ----
+
+export interface MoveWaypoint {
+  dx: number
+  dy: number
+  durationMs: number
+}
+
+export interface SpawnItem {
+  label: string
+  offsetX: number
+  offsetY: number
+  animation: 'emerge' | 'zip-in'
+  connectionType: 'none' | 'default' | 'flow'
+}
+
 // ---- Constants ----
 
 const NODE_W = 160
@@ -15,6 +44,9 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'color': 'Color',
   'spawn': 'Spawn',
   'play-media': 'Play media',
+  'handoff-rmm': 'Handoff to RMM',
+  'return-rmm': 'Return from RMM',
+  'handoff-mpd': 'Handoff to MPD',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -24,9 +56,10 @@ const kindColors: Record<FlowEffectKind, string> = {
   'color': '#f59e0b',
   'spawn': '#ec4899',
   'play-media': '#f97316',
+  'handoff-rmm': '#a78bfa',
+  'return-rmm': '#c084fc',
+  'handoff-mpd': '#2dd4bf',
 }
-
-const addableKinds: FlowEffectKind[] = ['wait', 'move', 'color', 'spawn', 'play-media']
 
 const ENTRY_NODE_ID = '__entry__'
 
@@ -48,12 +81,15 @@ function ensureEntryNode(nodes: EffectGraphNode[], edges: EffectGraphEdge[]): [E
 
 function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
   switch (kind) {
-    case 'entry': return {}
+    case 'entry': return { triggeredByRmmParent: false }
     case 'wait': return { durationMs: 500 }
-    case 'move': return { dx: 0, dy: 0, durationMs: 500 }
-    case 'color': return { color: '#f59e0b', durationMs: 300 }
-    case 'spawn': return {}
+    case 'move': return { waypoints: [{ dx: 0, dy: 0, durationMs: 500 }], roundtrip: false }
+    case 'color': return { color: '#f59e0b', durationMs: 300, permanent: false }
+    case 'spawn': return { spawnItems: [] }
     case 'play-media': return {}
+    case 'handoff-rmm': return {}
+    case 'return-rmm': return {}
+    case 'handoff-mpd': return { targetMpdId: '' }
   }
 }
 
@@ -78,13 +114,23 @@ function uid() {
 
 export function FlowEffectEditor({
   effect,
+  hostContext,
   onSave,
   onClose,
 }: {
   effect: FlowEffect
+  hostContext: EffectEditorHostContext
   onSave: (updated: FlowEffect) => void
   onClose: () => void
 }) {
+  // Build the addable kinds based on host context
+  const addableKinds: FlowEffectKind[] = [
+    'wait', 'move', 'color', 'spawn', 'play-media',
+    ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
+    ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
+    ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
+  ]
+
   // Local working copy of the graph — ensure entry node exists
   const [nodes, setNodes] = useState<EffectGraphNode[]>(() => {
     const [n] = ensureEntryNode(effect.graph.nodes, effect.graph.edges)
@@ -442,7 +488,23 @@ export function FlowEffectEditor({
                     ))}
                   />
                 </label>
-                {/* Kind-specific config */}
+                {/* ---- Entry node ---- */}
+                {selectedNode.kind === 'entry' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Flow signal arrives here. Connect to effect nodes below.
+                    </div>
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.triggeredByRmmParent}
+                        onChange={(e) => updateNodeConfig('triggeredByRmmParent', e.target.checked)}
+                      />
+                      <span>Triggered by RMM Parent</span>
+                    </label>
+                  </>
+                )}
+                {/* ---- Wait ---- */}
                 {selectedNode.kind === 'wait' && (
                   <label className="fxeditor-field">
                     <span>Duration (ms)</span>
@@ -451,28 +513,71 @@ export function FlowEffectEditor({
                       onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
                   </label>
                 )}
-                {selectedNode.kind === 'move' && (
-                  <>
-                    <label className="fxeditor-field">
-                      <span>ΔX</span>
-                      <input type="number" step={1}
-                        value={(selectedNode.config.dx as number) ?? 0}
-                        onChange={(e) => updateNodeConfig('dx', Number(e.target.value))} />
-                    </label>
-                    <label className="fxeditor-field">
-                      <span>ΔY</span>
-                      <input type="number" step={1}
-                        value={(selectedNode.config.dy as number) ?? 0}
-                        onChange={(e) => updateNodeConfig('dy', Number(e.target.value))} />
-                    </label>
-                    <label className="fxeditor-field">
-                      <span>Duration (ms)</span>
-                      <input type="number" min={0} step={50}
-                        value={(selectedNode.config.durationMs as number) ?? 500}
-                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
-                    </label>
-                  </>
-                )}
+                {/* ---- Move ---- */}
+                {selectedNode.kind === 'move' && (() => {
+                  const waypoints: MoveWaypoint[] = (selectedNode.config.waypoints as MoveWaypoint[] | undefined) ?? []
+                  const updateWaypoints = (items: MoveWaypoint[]) => updateNodeConfig('waypoints', items)
+                  return (
+                    <div className="fxeditor-spawn-section">
+                      <div className="fxeditor-field-hint">
+                        Define waypoints the node will move through sequentially.
+                      </div>
+                      {waypoints.map((wp, idx) => (
+                        <div key={idx} className="fxeditor-spawn-item">
+                          <div className="fxeditor-spawn-item-header">
+                            <span className="fxeditor-spawn-item-num">#{idx + 1}</span>
+                            {waypoints.length > 1 && (
+                              <button type="button" className="fxeditor-spawn-remove"
+                                onClick={() => updateWaypoints(waypoints.filter((_, i) => i !== idx))}>×</button>
+                            )}
+                          </div>
+                          <div className="fxeditor-field-row">
+                            <label className="fxeditor-field" style={{ flex: 1 }}>
+                              <span>ΔX (%)</span>
+                              <input type="number" step={1} value={wp.dx}
+                                onChange={(e) => {
+                                  const next = [...waypoints]
+                                  next[idx] = { ...wp, dx: Number(e.target.value) }
+                                  updateWaypoints(next)
+                                }} />
+                            </label>
+                            <label className="fxeditor-field" style={{ flex: 1 }}>
+                              <span>ΔY (%)</span>
+                              <input type="number" step={1} value={wp.dy}
+                                onChange={(e) => {
+                                  const next = [...waypoints]
+                                  next[idx] = { ...wp, dy: Number(e.target.value) }
+                                  updateWaypoints(next)
+                                }} />
+                            </label>
+                          </div>
+                          <label className="fxeditor-field">
+                            <span>Duration (ms)</span>
+                            <input type="number" min={0} step={50} value={wp.durationMs}
+                              onChange={(e) => {
+                                const next = [...waypoints]
+                                next[idx] = { ...wp, durationMs: Number(e.target.value) }
+                                updateWaypoints(next)
+                              }} />
+                          </label>
+                        </div>
+                      ))}
+                      <button type="button" className="fxeditor-spawn-add"
+                        onClick={() => updateWaypoints([...waypoints, { dx: 0, dy: 0, durationMs: 500 }])}>
+                        + Add waypoint
+                      </button>
+                      <label className="fxeditor-checkbox" style={{ marginTop: 4 }}>
+                        <input
+                          type="checkbox"
+                          checked={!!selectedNode.config.roundtrip}
+                          onChange={(e) => updateNodeConfig('roundtrip', e.target.checked)}
+                        />
+                        <span>Roundtrip (return to start)</span>
+                      </label>
+                    </div>
+                  )
+                })()}
+                {/* ---- Color ---- */}
                 {selectedNode.kind === 'color' && (
                   <>
                     <label className="fxeditor-field">
@@ -481,28 +586,145 @@ export function FlowEffectEditor({
                         value={(selectedNode.config.color as string) ?? '#f59e0b'}
                         onChange={(e) => updateNodeConfig('color', e.target.value)} />
                     </label>
-                    <label className="fxeditor-field">
-                      <span>Duration (ms)</span>
-                      <input type="number" min={0} step={50}
-                        value={(selectedNode.config.durationMs as number) ?? 300}
-                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.permanent}
+                        onChange={(e) => updateNodeConfig('permanent', e.target.checked)}
+                      />
+                      <span>Permanent</span>
                     </label>
+                    {!selectedNode.config.permanent && (
+                      <label className="fxeditor-field">
+                        <span>Duration (ms)</span>
+                        <input type="number" min={0} step={50}
+                          value={(selectedNode.config.durationMs as number) ?? 300}
+                          onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                      </label>
+                    )}
                   </>
                 )}
+                {/* ---- Play media ---- */}
                 {selectedNode.kind === 'play-media' && (
                   <div className="fxeditor-field-hint">
                     Triggers media playback on the host node.
                   </div>
                 )}
-                {selectedNode.kind === 'spawn' && (
+                {/* ---- Spawn ---- */}
+                {selectedNode.kind === 'spawn' && (() => {
+                  const spawnItems: SpawnItem[] = (selectedNode.config.spawnItems as SpawnItem[] | undefined) ?? []
+                  const updateSpawnItems = (items: SpawnItem[]) => updateNodeConfig('spawnItems', items)
+                  return (
+                    <div className="fxeditor-spawn-section">
+                      <div className="fxeditor-field-hint">
+                        Define nodes to spawn when this effect runs.
+                      </div>
+                      {spawnItems.map((item, idx) => (
+                        <div key={idx} className="fxeditor-spawn-item">
+                          <div className="fxeditor-spawn-item-header">
+                            <span className="fxeditor-spawn-item-num">#{idx + 1}</span>
+                            <button type="button" className="fxeditor-spawn-remove"
+                              onClick={() => updateSpawnItems(spawnItems.filter((_, i) => i !== idx))}>×</button>
+                          </div>
+                          <label className="fxeditor-field">
+                            <span>Label</span>
+                            <input type="text" value={item.label}
+                              onChange={(e) => {
+                                const next = [...spawnItems]
+                                next[idx] = { ...item, label: e.target.value }
+                                updateSpawnItems(next)
+                              }} />
+                          </label>
+                          <div className="fxeditor-field-row">
+                            <label className="fxeditor-field" style={{ flex: 1 }}>
+                              <span>ΔX (%)</span>
+                              <input type="number" step={1} value={item.offsetX}
+                                onChange={(e) => {
+                                  const next = [...spawnItems]
+                                  next[idx] = { ...item, offsetX: Number(e.target.value) }
+                                  updateSpawnItems(next)
+                                }} />
+                            </label>
+                            <label className="fxeditor-field" style={{ flex: 1 }}>
+                              <span>ΔY (%)</span>
+                              <input type="number" step={1} value={item.offsetY}
+                                onChange={(e) => {
+                                  const next = [...spawnItems]
+                                  next[idx] = { ...item, offsetY: Number(e.target.value) }
+                                  updateSpawnItems(next)
+                                }} />
+                            </label>
+                          </div>
+                          <label className="fxeditor-field">
+                            <span>Animation</span>
+                            <select value={item.animation}
+                              onChange={(e) => {
+                                const next = [...spawnItems]
+                                next[idx] = { ...item, animation: e.target.value as SpawnItem['animation'] }
+                                updateSpawnItems(next)
+                              }}>
+                              <option value="emerge">Emerge from source</option>
+                              <option value="zip-in">Zip-in</option>
+                            </select>
+                          </label>
+                          <label className="fxeditor-field">
+                            <span>Connection</span>
+                            <select value={item.connectionType}
+                              onChange={(e) => {
+                                const next = [...spawnItems]
+                                next[idx] = { ...item, connectionType: e.target.value as SpawnItem['connectionType'] }
+                                updateSpawnItems(next)
+                              }}>
+                              <option value="none">No connection</option>
+                              <option value="default">Default connection</option>
+                              <option value="flow">Flow connection</option>
+                            </select>
+                          </label>
+                        </div>
+                      ))}
+                      <button type="button" className="fxeditor-spawn-add"
+                        onClick={() => updateSpawnItems([...spawnItems, {
+                          label: `Node ${spawnItems.length + 1}`,
+                          offsetX: 10, offsetY: 10,
+                          animation: 'emerge',
+                          connectionType: 'none',
+                        }])}>
+                        + Add spawn item
+                      </button>
+                    </div>
+                  )
+                })()}
+                {/* ---- Handoff to RMM ---- */}
+                {selectedNode.kind === 'handoff-rmm' && (
                   <div className="fxeditor-field-hint">
-                    Spawns a child node (configurable later).
+                    Zooms into this node's RMM child dimension and resumes the effect graph entry that has "Triggered by RMM Parent" checked.
                   </div>
                 )}
-                {selectedNode.kind === 'entry' && (
+                {/* ---- Return from RMM ---- */}
+                {selectedNode.kind === 'return-rmm' && (
                   <div className="fxeditor-field-hint">
-                    Flow signal arrives here. Connect to effect nodes below.
+                    Zooms out from this RMM child dimension and resumes the parent's flow.
                   </div>
+                )}
+                {/* ---- Handoff to MPD ---- */}
+                {selectedNode.kind === 'handoff-mpd' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Switches to a target MPD. The twin node in the target dimension will be triggered.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Target MPD</span>
+                      <select
+                        value={(selectedNode.config.targetMpdId as string) ?? ''}
+                        onChange={(e) => updateNodeConfig('targetMpdId', e.target.value)}
+                      >
+                        <option value="" disabled>Select dimension…</option>
+                        {hostContext.mpdIds.map(id => (
+                          <option key={id} value={id}>{hostContext.mpdLabels[id] ?? id}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
                 )}
                 {/* Delete button */}
                 {!isNodeLocked(selectedNode) && (
