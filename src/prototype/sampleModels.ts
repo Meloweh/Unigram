@@ -8,6 +8,9 @@ export type ConnectionType = 'default' | 'flow'
 
 export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd'
 
+export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
+export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
+
 export interface EffectGraphNode {
   id: string
   kind: FlowEffectKind
@@ -72,6 +75,8 @@ export interface ModelNode {
   audioCoverSrc?: string
   /** Flow animation effects configured on this node */
   flowEffects?: FlowEffect[]
+  /** Whether this node is invisible while a flow animation is running */
+  hideDuringFlow?: boolean
 }
 
 export interface StudyEvidence {
@@ -85,6 +90,16 @@ export interface ModelConnection {
   to: string
   evidence?: StudyEvidence[]
   type?: ConnectionType
+  /** Whether this connection is invisible while a flow animation is running */
+  hideDuringFlow?: boolean
+  /** Custom stroke color (overrides default) */
+  strokeColor?: string
+  /** Custom stroke width in px (default: 2 for normal, 3 for flow) */
+  strokeWidth?: number
+  /** Line dash style */
+  strokeDash?: ConnectionDashStyle
+  /** Arrowhead style at the target end */
+  arrowStyle?: ConnectionArrowStyle
 }
 
 export interface Model {

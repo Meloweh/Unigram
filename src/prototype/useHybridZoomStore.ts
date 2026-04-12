@@ -98,6 +98,8 @@ interface HybridZoomState {
   addConnection: (modelId: string, connection: ModelConnection) => void
   removeConnection: (modelId: string, from: string, to: string) => void
   updateConnectionType: (modelId: string, from: string, to: string, type: ConnectionType) => void
+  /** Update arbitrary properties on a connection */
+  updateConnectionProps: (modelId: string, from: string, to: string, props: Partial<ModelConnection>) => void
   undo: (modelId: string) => void
   redo: (modelId: string) => void
   /** Clear lastChildModelId on the current frame (used when node-level MPD dial switches) */
@@ -533,6 +535,29 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             connections: model.connections.map(c =>
               c.from === from && c.to === to
                 ? { ...c, type: type === 'default' ? undefined : type }
+                : c,
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  updateConnectionProps: (modelId, from, to, props) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      const conn = model.connections.find(c => c.from === from && c.to === to)
+      if (!conn) return state
+      return {
+        ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            connections: model.connections.map(c =>
+              c.from === from && c.to === to
+                ? { ...c, ...props }
                 : c,
             ),
           },

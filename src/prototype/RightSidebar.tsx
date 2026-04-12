@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, FlowEffect } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect } from './sampleModels'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -52,7 +52,7 @@ function ColorInput({ value, onChange, id }: { value: string; onChange: (v: stri
   )
 }
 
-export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onEditEffect }: {
+export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect }: {
   model: Model | undefined
   selectedNode: ModelNode | undefined
   selectedConnection: ModelConnection | undefined
@@ -64,6 +64,7 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
   onRegisterModel: (model: Model) => void
   onUpdateModelLabel: (modelId: string, label: string) => void
   onUpdateConnectionType: (from: string, to: string, type: ConnectionType) => void
+  onUpdateConnectionProps: (from: string, to: string, props: Partial<ModelConnection>) => void
   onEditEffect: (nodeId: string, effectId: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
@@ -94,6 +95,7 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
             <ConnectionSettings
               connection={selectedConnection}
               onUpdateType={(type) => onUpdateConnectionType(selectedConnection.from, selectedConnection.to, type)}
+              onUpdateProps={(props) => onUpdateConnectionProps(selectedConnection.from, selectedConnection.to, props)}
             />
           ) : (
             <DiagramSettings
@@ -260,6 +262,16 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
               className="settings-checkbox"
               checked={node.locked === true}
               onChange={(e) => onUpdateProps({ locked: e.target.checked })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="node-hide-flow">Hide in Flow</label>
+            <input
+              id="node-hide-flow"
+              type="checkbox"
+              className="settings-checkbox"
+              checked={node.hideDuringFlow === true}
+              onChange={(e) => onUpdateProps({ hideDuringFlow: e.target.checked })}
             />
           </div>
           <div className="settings-row">
@@ -615,9 +627,10 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
   )
 }
 
-function ConnectionSettings({ connection, onUpdateType }: {
+function ConnectionSettings({ connection, onUpdateType, onUpdateProps }: {
   connection: ModelConnection
   onUpdateType: (type: ConnectionType) => void
+  onUpdateProps: (props: Partial<ModelConnection>) => void
 }) {
   return (
     <>
@@ -638,8 +651,64 @@ function ConnectionSettings({ connection, onUpdateType }: {
             </select>
           </div>
           <div className="settings-row">
-            <span className="settings-label">Arrow Head</span>
-            <span className="settings-value">Standard</span>
+            <label className="settings-label" htmlFor="conn-color">Color</label>
+            <ColorInput
+              id="conn-color"
+              value={connection.strokeColor ?? (connection.type === 'flow' ? '#f59e0b' : '#256095')}
+              onChange={(v) => onUpdateProps({ strokeColor: v })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="conn-width">Width</label>
+            <input
+              id="conn-width"
+              type="number"
+              className="settings-number-input"
+              min={1}
+              max={12}
+              step={0.5}
+              value={connection.strokeWidth ?? (connection.type === 'flow' ? 3 : 2)}
+              onChange={(e) => onUpdateProps({ strokeWidth: Number(e.target.value) })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="conn-dash">Line Style</label>
+            <select
+              id="conn-dash"
+              className="settings-select"
+              value={connection.strokeDash ?? 'solid'}
+              onChange={(e) => onUpdateProps({ strokeDash: e.target.value as ConnectionDashStyle })}
+            >
+              <option value="solid">Solid</option>
+              <option value="dashed">Dashed</option>
+              <option value="dotted">Dotted</option>
+              <option value="dash-dot">Dash-Dot</option>
+            </select>
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="conn-arrow">Arrow Head</label>
+            <select
+              id="conn-arrow"
+              className="settings-select"
+              value={connection.arrowStyle ?? 'standard'}
+              onChange={(e) => onUpdateProps({ arrowStyle: e.target.value as ConnectionArrowStyle })}
+            >
+              <option value="standard">Standard</option>
+              <option value="triangle">Triangle (filled)</option>
+              <option value="diamond">Diamond</option>
+              <option value="circle">Circle</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="conn-hide-flow">Hide in Flow</label>
+            <input
+              id="conn-hide-flow"
+              type="checkbox"
+              className="settings-checkbox"
+              checked={connection.hideDuringFlow === true}
+              onChange={(e) => onUpdateProps({ hideDuringFlow: e.target.checked })}
+            />
           </div>
         </div>
       </div>

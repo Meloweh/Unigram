@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
@@ -717,6 +717,7 @@ export function PrototypeViewport() {
     removeNode,
     addConnection,
     updateConnectionType,
+    updateConnectionProps,
     undo,
     redo,
     undoStacks,
@@ -2379,6 +2380,7 @@ export function PrototypeViewport() {
         onRegisterModel={registerModel}
         onUpdateModelLabel={updateModelLabel}
         onUpdateConnectionType={(from, to, type) => updateConnectionType(frame.modelId, from, to, type)}
+        onUpdateConnectionProps={(from, to, props) => updateConnectionProps(frame.modelId, from, to, props)}
         onEditEffect={(nodeId, effectId) => setEditingEffect({ nodeId, effectId })}
       />
 
@@ -2582,11 +2584,72 @@ function ModelSceneContent({
           <marker id="arrowhead-flow" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
           </marker>
+          {/* Dynamic markers for custom arrow styles and colors */}
+          {(() => {
+            const markers: React.ReactNode[] = []
+            const seen = new Set<string>()
+            for (const c of model.connections) {
+              const color = c.strokeColor || (c.type === 'flow' ? '#f59e0b' : (c.evidence?.length ? 'rgba(37, 96, 149, 0.65)' : 'rgba(37, 96, 149, 0.45)'))
+              const style = c.arrowStyle ?? 'standard'
+              // Custom-color standard arrowhead
+              if (c.strokeColor && (style === 'standard' || !c.arrowStyle)) {
+                const id = `arrowhead-custom-${CSS.escape(c.strokeColor)}`
+                if (!seen.has(id)) {
+                  seen.add(id)
+                  markers.push(
+                    <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill={c.strokeColor} />
+                    </marker>
+                  )
+                }
+              }
+              // Triangle (filled, same as standard but distinct id for non-custom-color cases)
+              if (style === 'triangle') {
+                const id = `arrowhead-triangle-${CSS.escape(color)}`
+                if (!seen.has(id)) {
+                  seen.add(id)
+                  markers.push(
+                    <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill={color} stroke={color} strokeWidth="0.5" />
+                    </marker>
+                  )
+                }
+              }
+              // Diamond
+              if (style === 'diamond') {
+                const id = `arrowhead-diamond-${CSS.escape(color)}`
+                if (!seen.has(id)) {
+                  seen.add(id)
+                  markers.push(
+                    <marker key={id} id={id} markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto">
+                      <polygon points="0 4, 5 0, 10 4, 5 8" fill={color} />
+                    </marker>
+                  )
+                }
+              }
+              // Circle
+              if (style === 'circle') {
+                const id = `arrowhead-circle-${CSS.escape(color)}`
+                if (!seen.has(id)) {
+                  seen.add(id)
+                  markers.push(
+                    <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="0" refY="4" orient="auto">
+                      <circle cx="4" cy="4" r="3.5" fill={color} />
+                    </marker>
+                  )
+                }
+              }
+            }
+            return markers
+          })()}
         </defs>
         {model.connections.map((c) => {
           const fromN = model.nodes.find((n) => n.id === c.from)
           const toN = model.nodes.find((n) => n.id === c.to)
           if (!fromN || !toN) return null
+          // Hide during flow if flagged
+          const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
+          if (c.hideDuringFlow && isFlowRunning) return null
           const key = `${c.from}->${c.to}`
           const hasEvidence = !!c.evidence?.length
           const a = anchors[key]
@@ -2617,6 +2680,10 @@ function ModelSceneContent({
                 vpSize={vpSize}
                 popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
                 connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
+                strokeColor={c.strokeColor}
+                strokeWidth={c.strokeWidth}
+                strokeDash={c.strokeDash}
+                arrowStyle={c.arrowStyle}
               />
             </g>
           )
@@ -2630,6 +2697,8 @@ function ModelSceneContent({
         )}
       </svg>
       {model.nodes.map((node) => {
+        const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
+        if (node.hideDuringFlow && isFlowRunning) return null
         const p = pos(node)
         return (
           <SceneNode
@@ -2663,6 +2732,7 @@ function ModelSceneContent({
 /** Connection line that bows outward into a zipper-bag shape during unzip */
 function ConnectionLine({
   fromX, fromY, toX, toY, hasEvidence, connectionType, flowProgress, gapProgress, vpSize, popupSize, connectionAngle,
+  strokeColor, strokeWidth: customStrokeWidth, strokeDash, arrowStyle,
 }: {
   fromX: number; fromY: number
   toX: number; toY: number
@@ -2673,23 +2743,47 @@ function ConnectionLine({
   vpSize: { w: number; h: number }
   popupSize: { w: number; h: number } | null
   connectionAngle: number
+  strokeColor?: string
+  strokeWidth?: number
+  strokeDash?: ConnectionDashStyle
+  arrowStyle?: ConnectionArrowStyle
 }) {
   const isFlow = connectionType === 'flow'
   const lineClass = isFlow
     ? 'connection-line flow'
     : hasEvidence ? 'connection-line has-evidence' : 'connection-line'
 
+  // Custom style overrides
+  const customStyle: React.CSSProperties = {}
+  if (strokeColor) customStyle.stroke = strokeColor
+  if (customStrokeWidth != null) customStyle.strokeWidth = customStrokeWidth
+  if (strokeDash && strokeDash !== 'solid') {
+    const dashMap: Record<string, string> = { dashed: '8 4', dotted: '2 4', 'dash-dot': '8 4 2 4' }
+    customStyle.strokeDasharray = dashMap[strokeDash]
+  }
+
+  // Resolve marker
+  function resolveMarker(): string {
+    const style = arrowStyle ?? 'standard'
+    if (style === 'none') return ''
+    if (style === 'standard') {
+      if (strokeColor) return `url(#arrowhead-custom-${CSS.escape(strokeColor)})`
+      return isFlow ? 'url(#arrowhead-flow)' : hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
+    }
+    const color = strokeColor || (isFlow ? '#f59e0b' : hasEvidence ? 'rgba(37, 96, 149, 0.65)' : 'rgba(37, 96, 149, 0.45)')
+    return `url(#arrowhead-${style}-${CSS.escape(color)})`
+  }
+  const marker = resolveMarker()
+
   if (gapProgress < 0.001) {
-    const marker = isFlow
-      ? 'url(#arrowhead-flow)'
-      : hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
     // Shorten line so it ends at arrowhead base (refX=0).
     // Arrowhead extends forward from line endpoint to original target (node edge).
     // Marker size: 8 markerUnits × strokeWidth(2) = 16px (flow: 8×3 = 24px)
+    const effStrokeWidth = customStrokeWidth ?? (isFlow ? 3 : 2)
     const dxPx = (toX - fromX) * vpSize.w / 100
     const dyPx = (toY - fromY) * vpSize.h / 100
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
-    const arrowLenPx = isFlow ? 24 : 16
+    const arrowLenPx = 8 * effStrokeWidth
     let adjToX = toX, adjToY = toY
     if (lenPx > arrowLenPx * 2) {
       const ratio = arrowLenPx / lenPx
@@ -2702,7 +2796,8 @@ function ConnectionLine({
           x1={`${fromX}%`} y1={`${fromY}%`}
           x2={`${adjToX}%`} y2={`${adjToY}%`}
           className={lineClass}
-          markerEnd={marker}
+          markerEnd={marker || undefined}
+          style={customStyle}
         />
         {isFlow && flowProgress != null && flowProgress > 0 && (
           <line
@@ -2863,14 +2958,10 @@ function ConnectionLine({
   const d1 = hasPopup ? buildTrackForPopup(+1) : buildFallbackTrack(+1)
   const d2 = hasPopup ? buildTrackForPopup(-1) : buildFallbackTrack(-1)
 
-  const marker = isFlow
-    ? 'url(#arrowhead-flow)'
-    : hasEvidence ? 'url(#arrowhead-evidence)' : 'url(#arrowhead)'
-
   return (
     <>
-      <path d={d1} className={lineClass} fill="none" markerEnd={marker} />
-      <path d={d2} className={lineClass} fill="none" />
+      <path d={d1} className={lineClass} fill="none" markerEnd={marker || undefined} style={customStyle} />
+      <path d={d2} className={lineClass} fill="none" style={customStyle} />
     </>
   )
 }
