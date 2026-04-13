@@ -55,14 +55,17 @@ function ColorInput({ value, onChange, id }: { value: string; onChange: (v: stri
   )
 }
 
-export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect }: {
+export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, onBulkUpdateNodeProps, onBulkUpdateNodeShape, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect }: {
   model: Model | undefined
   selectedNode: ModelNode | undefined
+  selectedNodeIds: Set<string>
   selectedConnection: ModelConnection | undefined
   gridSnap: number
   onSetGridSnap: (size: number) => void
   onUpdateNodeShape: (nodeId: string, shape: NodeShape) => void
   onUpdateNodeProps: (nodeId: string, props: Partial<ModelNode>) => void
+  onBulkUpdateNodeProps: (nodeIds: Set<string>, props: Partial<ModelNode>) => void
+  onBulkUpdateNodeShape: (nodeIds: Set<string>, shape: NodeShape) => void
   allModels: Record<string, Model>
   onRegisterModel: (model: Model) => void
   onUpdateModelLabel: (modelId: string, label: string) => void
@@ -71,6 +74,10 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
   onEditEffect: (nodeId: string, effectId: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
+
+  const multiNodes = selectedNodeIds.size > 1 && model
+    ? model.nodes.filter(n => selectedNodeIds.has(n.id))
+    : []
 
   return (
     <div className={`sidebar sidebar-right ${collapsed ? 'collapsed' : ''}`}>
@@ -84,7 +91,13 @@ export function RightSidebar({ model, selectedNode, selectedConnection, gridSnap
       </button>
       {!collapsed && (
         <div className="sidebar-content">
-          {selectedNode ? (
+          {multiNodes.length > 1 ? (
+            <MultiNodeSettings
+              nodes={multiNodes}
+              onUpdateProps={(props) => onBulkUpdateNodeProps(selectedNodeIds, props)}
+              onUpdateShape={(shape) => onBulkUpdateNodeShape(selectedNodeIds, shape)}
+            />
+          ) : selectedNode ? (
             <NodeSettings
               node={selectedNode}
               onUpdateShape={(shape) => onUpdateNodeShape(selectedNode.id, shape)}
@@ -347,6 +360,129 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
               </div>
             </>
           )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+function MultiNodeSettings({ nodes, onUpdateProps, onUpdateShape }: {
+  nodes: ModelNode[]
+  onUpdateProps: (props: Partial<ModelNode>) => void
+  onUpdateShape: (shape: NodeShape) => void
+}) {
+  const shapeOptions: NodeShape[] = ['rectangle', 'rounded-rect', 'oval', 'circle', 'diamond', 'hexagon', 'parallelogram', 'triangle']
+
+  // Compute "mixed" state: if all nodes share the same value, show it; otherwise show placeholder
+  const allSame = <K extends keyof ModelNode>(key: K): ModelNode[K] | undefined => {
+    const first = nodes[0]?.[key]
+    return nodes.every(n => n[key] === first) ? first : undefined
+  }
+
+  const sharedShape = allSame('shape') ?? (nodes.every(n => (n.shape ?? 'rounded-rect') === (nodes[0].shape ?? 'rounded-rect')) ? (nodes[0].shape ?? 'rounded-rect') : undefined)
+  const sharedCellColor = allSame('cellColor') ?? (nodes.every(n => (n.cellColor ?? '#f4f8fd') === (nodes[0].cellColor ?? '#f4f8fd')) ? (nodes[0].cellColor ?? '#f4f8fd') : undefined)
+  const sharedMembraneColor = allSame('membraneColor') ?? (nodes.every(n => (n.membraneColor ?? '#365f8f') === (nodes[0].membraneColor ?? '#365f8f')) ? (nodes[0].membraneColor ?? '#365f8f') : undefined)
+  const sharedBorder = nodes.every(n => n.membraneVisible !== false) ? true : nodes.every(n => n.membraneVisible === false) ? false : undefined
+  const sharedLocked = nodes.every(n => n.locked === true) ? true : nodes.every(n => n.locked !== true) ? false : undefined
+  const sharedHideFlow = nodes.every(n => n.hideDuringFlow === true) ? true : nodes.every(n => n.hideDuringFlow !== true) ? false : undefined
+  const sharedCameraTracked = nodes.every(n => n.cameraTracked === true) ? true : nodes.every(n => n.cameraTracked !== true) ? false : undefined
+
+  return (
+    <>
+      <div className="sidebar-title">{nodes.length} Nodes Selected</div>
+      <div className="sidebar-section">
+        <div className="sidebar-section-header static">Appearance</div>
+        <div className="sidebar-section-body">
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-label">Label</label>
+            <input
+              id="multi-label"
+              type="text"
+              className="settings-text-input"
+              placeholder="(mixed)"
+              defaultValue=""
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const v = (e.target as HTMLInputElement).value
+                  if (v) onUpdateProps({ label: v })
+                }
+              }}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-shape">Shape</label>
+            <select
+              id="multi-shape"
+              className="settings-select"
+              value={sharedShape ?? ''}
+              onChange={(e) => onUpdateShape(e.target.value as NodeShape)}
+            >
+              {!sharedShape && <option value="" disabled>(mixed)</option>}
+              {shapeOptions.map((s) => (
+                <option key={s} value={s}>{s.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
+              ))}
+            </select>
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-cell-color">Cell Color</label>
+            <ColorInput
+              id="multi-cell-color"
+              value={sharedCellColor ?? '#f4f8fd'}
+              onChange={(v) => onUpdateProps({ cellColor: v })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-membrane-color">Membrane</label>
+            <ColorInput
+              id="multi-membrane-color"
+              value={sharedMembraneColor ?? '#365f8f'}
+              onChange={(v) => onUpdateProps({ membraneColor: v })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-border">Border</label>
+            <input
+              id="multi-border"
+              type="checkbox"
+              className="settings-checkbox"
+              ref={(el) => { if (el) el.indeterminate = sharedBorder === undefined }}
+              checked={sharedBorder === true}
+              onChange={(e) => onUpdateProps({ membraneVisible: e.target.checked })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-locked">Lock</label>
+            <input
+              id="multi-locked"
+              type="checkbox"
+              className="settings-checkbox"
+              ref={(el) => { if (el) el.indeterminate = sharedLocked === undefined }}
+              checked={sharedLocked === true}
+              onChange={(e) => onUpdateProps({ locked: e.target.checked })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-hide-flow">Hide in Flow</label>
+            <input
+              id="multi-hide-flow"
+              type="checkbox"
+              className="settings-checkbox"
+              ref={(el) => { if (el) el.indeterminate = sharedHideFlow === undefined }}
+              checked={sharedHideFlow === true}
+              onChange={(e) => onUpdateProps({ hideDuringFlow: e.target.checked })}
+            />
+          </div>
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="multi-camera-tracked">Camera Tracked</label>
+            <input
+              id="multi-camera-tracked"
+              type="checkbox"
+              className="settings-checkbox"
+              ref={(el) => { if (el) el.indeterminate = sharedCameraTracked === undefined }}
+              checked={sharedCameraTracked === true}
+              onChange={(e) => onUpdateProps({ cameraTracked: e.target.checked })}
+            />
+          </div>
         </div>
       </div>
     </>

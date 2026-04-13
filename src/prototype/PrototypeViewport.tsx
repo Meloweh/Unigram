@@ -1183,6 +1183,14 @@ export function PrototypeViewport() {
   const [flowRotation, setFlowRotation] = useState(0)
   flowRotationRef.current = flowRotation
   const [shakeOffset, setShakeOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const brokenNodeElementsRef = useRef<HTMLElement[]>([])
+
+  const restoreBrokenNodes = useCallback(() => {
+    for (const el of brokenNodeElementsRef.current) {
+      el.style.opacity = ''
+    }
+    brokenNodeElementsRef.current = []
+  }, [])
 
   const stopFlowAnimation = useCallback(() => {
     if (flowAnimRef.current != null) cancelAnimationFrame(flowAnimRef.current)
@@ -1218,7 +1226,8 @@ export function PrototypeViewport() {
     flowDAGRef.current = null
     setFlowAnimations(new Map())
     setFlowActiveNodes(new Set())
-  }, [setPanOffset, setFreeScale])
+    restoreBrokenNodes()
+  }, [setPanOffset, setFreeScale, restoreBrokenNodes])
 
   // Trigger media playback on a node via DOM
   const triggerMediaPlay = useCallback((nodeId: string) => {
@@ -1500,6 +1509,7 @@ export function PrototypeViewport() {
                 break
               }
               case 'break': {
+                const axis = (gNode.config.axis as string) ?? 'horizontal'
                 const shakeIntensity = (gNode.config.shakeIntensity as number) ?? 8
                 const shakeDurationMs = (gNode.config.shakeDurationMs as number) ?? 300
                 const fallDurationMs = (gNode.config.fallDurationMs as number) ?? 600
@@ -1525,16 +1535,23 @@ export function PrototypeViewport() {
                     clone.style.transition = 'none'
                     clone.removeAttribute('data-node-id')
                   }
-                  // Top half
-                  clone1.style.clipPath = 'inset(0 0 50% 0)'
-                  // Bottom half
-                  clone2.style.clipPath = 'inset(50% 0 0 0)'
+
+                  if (axis === 'vertical') {
+                    // Left half / right half
+                    clone1.style.clipPath = 'inset(0 50% 0 0)'
+                    clone2.style.clipPath = 'inset(0 0 0 50%)'
+                  } else {
+                    // Top half / bottom half
+                    clone1.style.clipPath = 'inset(0 0 50% 0)'
+                    clone2.style.clipPath = 'inset(50% 0 0 0)'
+                  }
 
                   document.body.appendChild(clone1)
                   document.body.appendChild(clone2)
 
-                  // Hide original
+                  // Hide original and track it for restoration
                   article.style.opacity = '0'
+                  brokenNodeElementsRef.current.push(article)
 
                   // Animate fall + fade
                   const fallStart = performance.now()
@@ -1543,13 +1560,21 @@ export function PrototypeViewport() {
                     const ease = t * t // ease-in (gravity)
                     const fadeOut = Math.max(0, 1 - t * 1.5)
 
-                    // Top half moves up and left
-                    clone1.style.transform = `translate(${-20 * ease}px, ${-80 * ease}px) rotate(${-15 * ease}deg)`
-                    clone1.style.opacity = `${fadeOut}`
-
-                    // Bottom half falls down and right
-                    clone2.style.transform = `translate(${20 * ease}px, ${120 * ease}px) rotate(${10 * ease}deg)`
-                    clone2.style.opacity = `${fadeOut}`
+                    if (axis === 'vertical') {
+                      // Left half goes left
+                      clone1.style.transform = `translate(${-80 * ease}px, ${20 * ease}px) rotate(${-15 * ease}deg)`
+                      clone1.style.opacity = `${fadeOut}`
+                      // Right half goes right
+                      clone2.style.transform = `translate(${80 * ease}px, ${20 * ease}px) rotate(${15 * ease}deg)`
+                      clone2.style.opacity = `${fadeOut}`
+                    } else {
+                      // Top half moves up and left
+                      clone1.style.transform = `translate(${-20 * ease}px, ${-80 * ease}px) rotate(${-15 * ease}deg)`
+                      clone1.style.opacity = `${fadeOut}`
+                      // Bottom half falls down and right
+                      clone2.style.transform = `translate(${20 * ease}px, ${120 * ease}px) rotate(${10 * ease}deg)`
+                      clone2.style.opacity = `${fadeOut}`
+                    }
 
                     if (t < 1) {
                       requestAnimationFrame(animateFall)
@@ -1912,6 +1937,7 @@ export function PrototypeViewport() {
           setFlowActiveNodes(new Set())
           flowDAGRef.current = null
           flowCameraOverrideRef.current = null
+          restoreBrokenNodes()
           // Camera return animation
           const c = flowCameraRef.current
           if (c?.active) {
@@ -2397,9 +2423,10 @@ export function PrototypeViewport() {
       }}
       onPointerDown={(event) => {
         if (event.button !== 0) return
+        const el = event.target as HTMLElement
+        if (el.closest('.sidebar') || el.closest('.toolbar')) return
         // Selection-rectangle mode: start rubber band on empty space
         if (selectMode && !draggingNodeRef.current && !connectionDraft) {
-          const el = event.target as HTMLElement
           if (!el.closest('.host-node')) {
             selectionStartRef.current = { clientX: event.clientX, clientY: event.clientY }
             const pos = clientToScene(event.clientX, event.clientY)
@@ -2943,6 +2970,7 @@ export function PrototypeViewport() {
       <RightSidebar
         model={model}
         selectedNode={selectedNode}
+        selectedNodeIds={selectedNodeIds}
         selectedConnection={selectedNode ? undefined : (unzipPopup
           ? model?.connections.find(c => `${c.from}->${c.to}` === unzipPopup.connectionKey)
           : undefined
@@ -2951,6 +2979,12 @@ export function PrototypeViewport() {
         onSetGridSnap={setGridSnap}
         onUpdateNodeShape={(nodeId, shape) => updateNodeShape(frame.modelId, nodeId, shape)}
         onUpdateNodeProps={(nodeId, props) => updateNodeProps(frame.modelId, nodeId, props)}
+        onBulkUpdateNodeProps={(nodeIds, props) => {
+          for (const id of nodeIds) updateNodeProps(frame.modelId, id, props)
+        }}
+        onBulkUpdateNodeShape={(nodeIds, shape) => {
+          for (const id of nodeIds) updateNodeShape(frame.modelId, id, shape)
+        }}
         allModels={storeModels}
         onRegisterModel={registerModel}
         onUpdateModelLabel={updateModelLabel}

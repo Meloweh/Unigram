@@ -93,7 +93,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'return-rmm': return {}
     case 'handoff-mpd': return { targetMpdId: '' }
     case 'camera': return { panX: 0, panY: 0, zoom: 1, rotation: 0, durationMs: 1000 }
-    case 'break': return { shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
+    case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
   }
 }
 
@@ -772,6 +772,16 @@ export function FlowEffectEditor({
                     <div className="fxeditor-field-hint">
                       Splits the node into halves that fall apart with screen shake.
                     </div>
+                    <label className="fxeditor-field">
+                      <span>Split Axis</span>
+                      <select
+                        value={(selectedNode.config.axis as string) ?? 'horizontal'}
+                        onChange={(e) => updateNodeConfig('axis', e.target.value)}
+                      >
+                        <option value="horizontal">Horizontal</option>
+                        <option value="vertical">Vertical</option>
+                      </select>
+                    </label>
                     <label className="fxeditor-field">
                       <span>Shake Intensity (px)</span>
                       <input type="number" min={1} max={20} step={1}
