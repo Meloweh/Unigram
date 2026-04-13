@@ -10,7 +10,7 @@ import { RightSidebar } from './RightSidebar'
 import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
 import { applyThemeToDOM, resolvePalette } from './themes'
-import { resolveBackground } from './backgrounds'
+import { resolveBackground, type BackgroundConfig } from './backgrounds'
 import { ParticleOverlay } from './ParticleOverlay'
 import { ContentEditor } from './ContentEditor'
 import { marked } from 'marked'
@@ -1047,10 +1047,21 @@ export function PrototypeViewport() {
   const [mpdCurtain, setMpdCurtain] = useState<{
     oldModel: Model
     oldSceneStyle: React.CSSProperties
+    oldBgStyle?: React.CSSProperties
+    oldBgConfig?: BackgroundConfig
+    particleScreenshot: string | null
+    oldNodeSizes: Map<string, { w: number; h: number }>
+    oldGridExtent: { minX: number; minY: number; maxX: number; maxY: number }
+    oldGridBgImage: string
+    oldGridPxW: number
+    oldGridPxH: number
     progress: number
     direction: 'left' | 'right'
   } | null>(null)
   const curtainRaf = useRef<number>(0)
+  const particleContainerRef = useRef<HTMLDivElement>(null)
+  // Live scene node sizes — kept in sync for curtain snapshot
+  const liveNodeSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map())
 
   /** Convert a client (screen) position to scene-percentage coords */
   const clientToScene = useCallback((clientX: number, clientY: number) => {
@@ -2591,21 +2602,40 @@ export function PrototypeViewport() {
             opacity: bgConfig.opacity ?? 1,
             filter: bgConfig.blur ? `blur(${bgConfig.blur}px)` : undefined,
             pointerEvents: 'none',
+            clipPath: mpdCurtain
+              ? mpdCurtain.direction === 'left'
+                ? `inset(0 0 0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px))`
+                : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`
+              : 'inset(0)',
           }}
         />
       )}
 
-      {/* Ambient particle overlay — rendered in scene space */}
-      {particlePresetId && (
-        <ParticleOverlay
-          presetId={particlePresetId}
-          sceneTx={sceneTx}
-          sceneTy={sceneTy}
-          sceneScale={effectiveScale}
-          vpSize={vpSize}
-          gridExtent={gridExtent}
-        />
-      )}
+      {/* Ambient particle overlay — clipped to new side during curtain */}
+      <div
+        ref={particleContainerRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          clipPath: mpdCurtain
+            ? mpdCurtain.direction === 'left'
+              ? `inset(0 0 0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px))`
+              : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`
+            : 'inset(0)',
+        }}
+      >
+        {particlePresetId && (
+          <ParticleOverlay
+            presetId={particlePresetId}
+            sceneTx={sceneTx}
+            sceneTy={sceneTy}
+            sceneScale={effectiveScale}
+            vpSize={vpSize}
+            gridExtent={gridExtent}
+          />
+        )}
+      </div>
 
       <div className="debug-overlay">
         <div className="prototype-stats compact">
@@ -2674,9 +2704,20 @@ export function PrototypeViewport() {
 
               const oldModel = model
               const oldStyle = { ...sceneStyle }
+              const oldBgSt = bgStyle ? { ...bgStyle } : undefined
+              const oldBgCfg = bgConfig ? { ...bgConfig } : undefined
+              const oldSizes = new Map(liveNodeSizesRef.current)
+              const oldGE = { ...gridExtent }
+              const oldGBG = gridBackgroundImage(gridConfig)
+              const oldGPW = gridPxW
+              const oldGPH = gridPxH
+              // Capture a snapshot of the particle canvas for the old-side curtain
+              let pScreenshot: string | null = null
+              const pCanvas = particleContainerRef.current?.querySelector('canvas')
+              if (pCanvas) { try { pScreenshot = pCanvas.toDataURL() } catch (_) { /* tainted canvas */ } }
               cancelAnimationFrame(curtainRaf.current)
               flushSync(() => {
-                setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+                setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, oldBgStyle: oldBgSt, oldBgConfig: oldBgCfg, particleScreenshot: pScreenshot, oldNodeSizes: oldSizes, oldGridExtent: oldGE, oldGridBgImage: oldGBG, oldGridPxW: oldGPW, oldGridPxH: oldGPH, progress: 0, direction })
               })
               switchNodeMpd(targetId, nodeDialIds!, alignPan)
               const startTime = performance.now()
@@ -2726,12 +2767,23 @@ export function PrototypeViewport() {
             // Capture current state for curtain
             const oldModel = model
             const oldStyle = { ...sceneStyle }
+            const oldBgSt = bgStyle ? { ...bgStyle } : undefined
+            const oldBgCfg = bgConfig ? { ...bgConfig } : undefined
+            const oldSizes = new Map(liveNodeSizesRef.current)
+            const oldGE = { ...gridExtent }
+            const oldGBG = gridBackgroundImage(gridConfig)
+            const oldGPW = gridPxW
+            const oldGPH = gridPxH
+            // Capture a snapshot of the particle canvas for the old-side curtain
+            let pScreenshot: string | null = null
+            const pCanvas = particleContainerRef.current?.querySelector('canvas')
+            if (pCanvas) { try { pScreenshot = pCanvas.toDataURL() } catch (_) { /* tainted canvas */ } }
             cancelAnimationFrame(curtainRaf.current)
             // flushSync guarantees the clip-path wrapper is in the DOM
             // before switchFrameMpd changes the model, preventing a
             // single unclipped frame where all nodes would visibly jump.
             flushSync(() => {
-              setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, progress: 0, direction })
+              setMpdCurtain({ oldModel, oldSceneStyle: oldStyle, oldBgStyle: oldBgSt, oldBgConfig: oldBgCfg, particleScreenshot: pScreenshot, oldNodeSizes: oldSizes, oldGridExtent: oldGE, oldGridBgImage: oldGBG, oldGridPxW: oldGPW, oldGridPxH: oldGPH, progress: 0, direction })
             })
             switchFrameMpd(newModelId, alignPan)
             // Animate curtain from 0 → 1
@@ -2840,10 +2892,49 @@ export function PrototypeViewport() {
             ? `inset(0 ${mpdCurtain.progress * 100}% 0 0)`
             : `inset(0 0 0 ${mpdCurtain.progress * 100}%)`,
         }}>
+          {/* Old background — always render to prevent new bg bleeding through */}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              ...(mpdCurtain.oldBgConfig?.type === 'image' && mpdCurtain.oldBgConfig.value
+                ? {
+                    backgroundImage: `url(${mpdCurtain.oldBgConfig.value})`,
+                    backgroundSize: mpdCurtain.oldBgConfig.fit === 'tile' ? 'auto' : (mpdCurtain.oldBgConfig.fit ?? 'cover'),
+                    backgroundPosition: 'center',
+                    backgroundRepeat: mpdCurtain.oldBgConfig.fit === 'tile' ? 'repeat' : 'no-repeat',
+                    opacity: mpdCurtain.oldBgConfig.opacity ?? 1,
+                    filter: mpdCurtain.oldBgConfig.blur ? `blur(${mpdCurtain.oldBgConfig.blur}px)` : undefined,
+                  }
+                : mpdCurtain.oldBgStyle
+                  ? mpdCurtain.oldBgStyle
+                  : { background: 'var(--ug-viewport-bg)' }),
+            }}
+          />
+          {/* Old particles — frozen screenshot from transition start */}
+          {mpdCurtain.particleScreenshot && (
+            <img
+              src={mpdCurtain.particleScreenshot}
+              alt=""
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            />
+          )}
           <div
             className="scene"
             style={mpdCurtain.oldSceneStyle}
           >
+            {/* Old grid */}
+            <div style={{
+              position: 'absolute',
+              left: `${mpdCurtain.oldGridExtent.minX}%`,
+              top: `${mpdCurtain.oldGridExtent.minY}%`,
+              width: `${mpdCurtain.oldGridExtent.maxX - mpdCurtain.oldGridExtent.minX}%`,
+              height: `${mpdCurtain.oldGridExtent.maxY - mpdCurtain.oldGridExtent.minY}%`,
+              backgroundImage: mpdCurtain.oldGridBgImage,
+              backgroundSize: `${mpdCurtain.oldGridPxW}px ${mpdCurtain.oldGridPxH}px`,
+              pointerEvents: 'none',
+            }} />
             <ModelSceneContent
               model={mpdCurtain.oldModel}
               selectedNodeId={null}
@@ -2863,6 +2954,8 @@ export function PrototypeViewport() {
               flowAnimations={new Map()}
               flowActiveNodes={new Set()}
               unzipGap={null}
+              noTransition
+              initialNodeSizes={mpdCurtain.oldNodeSizes}
             />
           </div>
         </div>
@@ -2871,12 +2964,34 @@ export function PrototypeViewport() {
       {/* New/live scene – clip wrapper sits outside the transform so clip is in viewport coords */}
       <div style={{
         position: 'absolute', inset: 0,
-        ...(mpdCurtain ? {
-          clipPath: mpdCurtain.direction === 'left'
+        clipPath: mpdCurtain
+          ? mpdCurtain.direction === 'left'
             ? `inset(0 0 0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px))`
-            : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`,
-        } : {}),
+            : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`
+          : 'inset(0)',
       }}>
+      {/* During curtain: new background inside clip wrapper */}
+      {mpdCurtain && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            ...(bgConfig?.type === 'image' && bgConfig.value
+              ? {
+                  backgroundImage: `url(${bgConfig.value})`,
+                  backgroundSize: bgConfig.fit === 'tile' ? 'auto' : (bgConfig.fit ?? 'cover'),
+                  backgroundPosition: 'center',
+                  backgroundRepeat: bgConfig.fit === 'tile' ? 'repeat' : 'no-repeat',
+                  opacity: bgConfig.opacity ?? 1,
+                  filter: bgConfig.blur ? `blur(${bgConfig.blur}px)` : undefined,
+                }
+              : bgStyle
+                ? bgStyle
+                : { background: 'var(--ug-viewport-bg)' }),
+          }}
+        />
+      )}
       <div
         className="scene"
         style={{
@@ -2921,6 +3036,7 @@ export function PrototypeViewport() {
           draggingMultiIds={multiDragOffsetsRef.current.size > 0 ? selectedNodeIds : undefined}
           editingNodeId={editingNodeId}
           noTransition={!!mpdCurtain}
+          onNodeSizesChanged={(sizes) => { liveNodeSizesRef.current = sizes }}
           onFinishEditing={(nodeId, label) => {
             if (label.trim()) {
               // Label is already in the store from onLiveEditLabel; just trim whitespace
@@ -3175,6 +3291,8 @@ function ModelSceneContent({
   flowActiveNodes,
   unzipGap,
   noTransition,
+  initialNodeSizes,
+  onNodeSizesChanged,
   onSetMedia,
   onToggleCollapse,
 }: {
@@ -3199,6 +3317,8 @@ function ModelSceneContent({
   flowActiveNodes: Set<string>
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
+  initialNodeSizes?: Map<string, { w: number; h: number }>
+  onNodeSizesChanged?: (sizes: Map<string, { w: number; h: number }>) => void
   onSetMedia?: (nodeId: string, mediaSrc: string, mediaFileName: string) => void
   onToggleCollapse?: (nodeId: string) => void
 }) {
@@ -3208,15 +3328,26 @@ function ModelSceneContent({
 
   // Track actual measured node sizes for accurate anchor placement
   const nodeSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map())
+  // Pre-seed with initial sizes if provided (avoids first-render anchor jitter)
+  if (nodeSizesRef.current.size === 0 && initialNodeSizes && initialNodeSizes.size > 0) {
+    nodeSizesRef.current = new Map(initialNodeSizes)
+  }
+  const frozenSizes = !!initialNodeSizes
   const [sizeGen, setSizeGen] = useState(0)
+  const onNodeSizesChangedRef = useRef(onNodeSizesChanged)
+  onNodeSizesChangedRef.current = onNodeSizesChanged
   const handleNodeResize = useCallback((id: string, size: { w: number; h: number }) => {
+    // When sizes are pre-seeded (frozen old scene), skip updates to prevent
+    // the estimate→measure cycle from overwriting correct captured sizes
+    if (frozenSizes) return
     const map = nodeSizesRef.current
     const prev = map.get(id)
     if (!prev || prev.w !== size.w || prev.h !== size.h) {
       map.set(id, size)
       setSizeGen(g => g + 1)
+      onNodeSizesChangedRef.current?.(map)
     }
-  }, [])
+  }, [frozenSizes])
 
   // Compute per-node spread offsets: when a popup needs more room than the
   // connection length provides, push both endpoint nodes apart symmetrically.

@@ -155,6 +155,7 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
       antialias: true,
       resolution: window.devicePixelRatio || 1,
       autoDensity: true,
+      preserveDrawingBuffer: true,
     }).then(() => {
       if (destroyed) { app.destroy(true); return }
       container.appendChild(app.canvas as HTMLCanvasElement)
