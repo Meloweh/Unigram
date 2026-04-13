@@ -404,6 +404,7 @@
   border-radius: inherit;
   padding: 4px;
   gap: 2px;
+  pointer-events: none;
 }
 
 .content-node-chevron {
@@ -429,7 +430,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  font-size: 0.72rem;
+  font-size: inherit;
   color: var(--ug-text);
   white-space: nowrap;
   overflow: hidden;
@@ -438,17 +439,18 @@
 }
 
 .content-node-preview .katex {
-  font-size: 0.72rem;
+  font-size: inherit;
 }
 
 .content-node-body {
   flex: 1;
   min-width: 0;
   overflow: auto;
-  font-size: 0.72rem;
+  font-size: inherit;
   line-height: 1.45;
   color: var(--ug-text);
   word-wrap: break-word;
+  pointer-events: auto;
 }
 
 .content-node-body h1,
@@ -655,6 +657,18 @@
   stroke-width: 2;
   stroke-dasharray: 8 4;
   pointer-events: none;
+}
+
+.connection-label {
+  fill: var(--ug-text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--ug-bg, #0f172a);
+  stroke-width: 3px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .child-scene-connections .connection-draft.flow {

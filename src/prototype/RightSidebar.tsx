@@ -726,6 +726,20 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
                 }}
               />
             </div>
+            <div className="settings-row">
+              <span className="settings-label">Font Size</span>
+              <input
+                type="number"
+                className="settings-number-input"
+                min={0.5}
+                max={3}
+                step={0.05}
+                value={node.contentFontSize ?? 0.85}
+                onChange={(e) => onUpdateProps({ contentFontSize: parseFloat(e.target.value) || 0.85 })}
+                style={{ width: '60px' }}
+              />
+              <span className="settings-value" style={{ marginLeft: 2 }}>rem</span>
+            </div>
             {onEditContent && (
               <div className="settings-row">
                 <button type="button" className="settings-add-btn" onClick={onEditContent} style={{ width: '100%' }}>
@@ -1071,6 +1085,34 @@ function ConnectionSettings({ connection, onUpdateType, onUpdateProps }: {
   return (
     <>
       <div className="sidebar-title">Connection Settings</div>
+      <div className="sidebar-section">
+        <div className="sidebar-section-header static">Label</div>
+        <div className="sidebar-section-body">
+          <div className="settings-row">
+            <input
+              type="text"
+              className="settings-text-input"
+              placeholder="Connection label (optional)"
+              value={connection.label ?? ''}
+              onChange={(e) => onUpdateProps({ label: e.target.value || undefined })}
+            />
+          </div>
+          <div className="settings-row">
+            <span className="settings-label">Font Size</span>
+            <input
+              type="number"
+              className="settings-number-input"
+              min={0.5}
+              max={3}
+              step={0.05}
+              value={connection.labelFontSize ?? 0.85}
+              onChange={(e) => onUpdateProps({ labelFontSize: parseFloat(e.target.value) || 0.85 })}
+              style={{ width: '60px' }}
+            />
+            <span className="settings-value" style={{ marginLeft: 2 }}>rem</span>
+          </div>
+        </div>
+      </div>
       <div className="sidebar-section">
         <div className="sidebar-section-header static">Style</div>
         <div className="sidebar-section-body">

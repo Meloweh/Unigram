@@ -28,6 +28,7 @@ interface ModelFileNode {
   cameraTracked?: boolean
   contentSource?: string
   contentCollapsed?: boolean
+  contentFontSize?: number
 }
 
 interface ModelFileConnection {
@@ -40,6 +41,8 @@ interface ModelFileConnection {
   strokeWidth?: number
   strokeDash?: ConnectionDashStyle
   arrowStyle?: ConnectionArrowStyle
+  label?: string
+  labelFontSize?: number
 }
 
 interface ModelFile {
@@ -247,6 +250,7 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (n.cameraTracked) fileNode.cameraTracked = true
       if (n.contentSource) fileNode.contentSource = n.contentSource
       if (n.contentCollapsed != null) fileNode.contentCollapsed = n.contentCollapsed
+      if (n.contentFontSize != null) fileNode.contentFontSize = n.contentFontSize
       return fileNode
     }),
     connections: model.connections.map((c) => {
@@ -258,6 +262,8 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (c.strokeWidth != null) fc.strokeWidth = c.strokeWidth
       if (c.strokeDash) fc.strokeDash = c.strokeDash
       if (c.arrowStyle) fc.arrowStyle = c.arrowStyle
+      if (c.label) fc.label = c.label
+      if (c.labelFontSize != null) fc.labelFontSize = c.labelFontSize
       return fc
     }),
   }
@@ -490,6 +496,7 @@ export async function importBundle(
         if (n.cameraTracked) node.cameraTracked = true
         if (n.contentSource) node.contentSource = n.contentSource
         if (n.contentCollapsed != null) node.contentCollapsed = n.contentCollapsed
+        if (n.contentFontSize != null) node.contentFontSize = n.contentFontSize
         return node
       }),
       connections: mf.connections.map((c) => {
@@ -501,6 +508,8 @@ export async function importBundle(
         if (c.strokeWidth != null) conn.strokeWidth = c.strokeWidth
         if (c.strokeDash) conn.strokeDash = c.strokeDash
         if (c.arrowStyle) conn.arrowStyle = c.arrowStyle
+        if (c.label) conn.label = c.label
+        if (c.labelFontSize != null) conn.labelFontSize = c.labelFontSize
         return conn
       }),
     })

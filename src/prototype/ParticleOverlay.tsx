@@ -177,7 +177,13 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
         const originX = ext.minX / 100 * vpW2 - gridBaseW / 2
         const originY = ext.minY / 100 * vpH2 - gridBaseH / 2
 
-        for (let i = 0; i < cfg.count; i++) {
+        // Scale particle count proportionally to grid area
+        // Base area is 100×100 = 10000 sq% (the default 1-chunk grid)
+        const gridArea = (ext.maxX - ext.minX) * (ext.maxY - ext.minY)
+        const areaScale = gridArea / 10000
+        const scaledCount = Math.round(cfg.count * areaScale)
+
+        for (let i = 0; i < scaledCount; i++) {
           const introDelay = Math.floor(Math.random() * STAGGER_FRAMES)
           const data = createParticle(cfg, gridW, gridH, introDelay)
           data.x += originX
@@ -192,6 +198,12 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
           particles.push({ ...data, gfx })
         }
       }
+
+      // Track last grid area for dynamic particle scaling
+      let lastGridArea = (() => {
+        const ext = gridExtentRef.current
+        return (ext.maxX - ext.minX) * (ext.maxY - ext.minY)
+      })()
 
       // Animation loop
       app.ticker.add(() => {
@@ -222,6 +234,39 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
         const oX = ext2.minX / 100 * vpW3 - gridBaseW2 / 2
         const oY = ext2.minY / 100 * vpH3 - gridBaseH2 / 2
         const margin = 20 // small margin in world px
+
+        // Dynamic particle count: scale with grid area
+        const currentGridArea = (ext2.maxX - ext2.minX) * (ext2.maxY - ext2.minY)
+        if (currentGridArea !== lastGridArea) {
+          lastGridArea = currentGridArea
+          const areaScale = currentGridArea / 10000
+          const targetCount = Math.round(cfg.count * areaScale)
+          if (targetCount > particles.length) {
+            // Grid grew — spawn more particles
+            const toAdd = targetCount - particles.length
+            for (let i = 0; i < toAdd; i++) {
+              const introDelay = Math.floor(Math.random() * STAGGER_FRAMES)
+              const data = createParticle(cfg, gridW, gridH, introDelay)
+              data.x += oX
+              data.y += oY
+              const gfx = new Graphics()
+              const color = pickColor(cfg.color)
+              drawShape(gfx, cfg, data.size, color)
+              gfx.x = data.x
+              gfx.y = data.y
+              gfx.alpha = 0
+              app.stage.addChild(gfx)
+              particles.push({ ...data, gfx })
+            }
+          } else if (targetCount < particles.length) {
+            // Grid shrank — remove excess particles
+            const toRemove = particles.length - targetCount
+            for (let i = 0; i < toRemove; i++) {
+              const removed = particles.pop()!
+              removed.gfx.destroy()
+            }
+          }
+        }
 
         for (const p of particles) {
           // Intro delay countdown

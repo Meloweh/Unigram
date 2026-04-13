@@ -3397,6 +3397,18 @@ function ModelSceneContent({
                 strokeDash={c.strokeDash}
                 arrowStyle={c.arrowStyle}
               />
+              {c.label && !isUnzipping && (
+                <text
+                  x={`${midX}%`}
+                  y={`${midY}%`}
+                  className="connection-label"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  style={{ fontSize: `${c.labelFontSize ?? 0.85}rem` }}
+                >
+                  {c.label}
+                </text>
+              )}
             </g>
           )
         })}
@@ -3995,7 +4007,7 @@ function SceneNode({
       )}
       {/* Markdown / Math content */}
       {(node.mediaType === 'markdown' || node.mediaType === 'math') && chromeFade > 0.01 && (
-        <div className="content-node-wrapper" style={{ opacity: chromeFade }}>
+        <div className="content-node-wrapper" style={{ opacity: chromeFade, fontSize: `${node.contentFontSize ?? 0.85}rem` }}>
           <div
             className="content-node-chevron"
             onPointerDown={(e) => e.stopPropagation()}
@@ -4014,7 +4026,6 @@ function SceneNode({
           ) : (
             <div
               className={`content-node-body content-node-${node.mediaType}`}
-              onPointerDown={(e) => e.stopPropagation()}
               dangerouslySetInnerHTML={{
                 __html: node.contentSource
                   ? (node.mediaType === 'markdown'
@@ -4066,7 +4077,11 @@ function SceneNode({
         <div
           ref={labelRef}
           className={`host-label${node.label.includes('\n') ? ' multiline' : ''}`}
-          style={{ opacity: chromeFade, visibility: chromeFade > 0.01 ? 'visible' : 'hidden' }}
+          style={{
+            opacity: chromeFade,
+            visibility: chromeFade > 0.01 ? 'visible' : 'hidden',
+            ...((node.mediaType === 'markdown' || node.mediaType === 'math') && node.contentSource ? { display: 'none' } : {}),
+          }}
         >
           {node.label ? (node.label.includes('\n')
             ? node.label.split('\n').map((line, i, arr) => (

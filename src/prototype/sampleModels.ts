@@ -109,6 +109,8 @@ export interface ModelNode {
   contentSource?: string
   /** Whether a content node is in collapsed state (default: true) */
   contentCollapsed?: boolean
+  /** Font size (rem) for rendered content in markdown/math nodes */
+  contentFontSize?: number
 }
 
 export interface StudyEvidence {
@@ -132,6 +134,10 @@ export interface ModelConnection {
   strokeDash?: ConnectionDashStyle
   /** Arrowhead style at the target end */
   arrowStyle?: ConnectionArrowStyle
+  /** Optional text label displayed at the midpoint of the connection */
+  label?: string
+  /** Font size (rem) for the connection label */
+  labelFontSize?: number
 }
 
 export interface Model {
