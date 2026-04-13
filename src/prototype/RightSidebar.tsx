@@ -55,7 +55,7 @@ function ColorInput({ value, onChange, id }: { value: string; onChange: (v: stri
   )
 }
 
-export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, onBulkUpdateNodeProps, onBulkUpdateNodeShape, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect }: {
+export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, onBulkUpdateNodeProps, onBulkUpdateNodeShape, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect, onEditContent }: {
   model: Model | undefined
   selectedNode: ModelNode | undefined
   selectedNodeIds: Set<string>
@@ -72,6 +72,7 @@ export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedCon
   onUpdateConnectionType: (from: string, to: string, type: ConnectionType) => void
   onUpdateConnectionProps: (from: string, to: string, props: Partial<ModelConnection>) => void
   onEditEffect: (nodeId: string, effectId: string) => void
+  onEditContent?: (nodeId: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
 
@@ -106,6 +107,7 @@ export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedCon
               onRegisterModel={onRegisterModel}
               onUpdateModelLabel={onUpdateModelLabel}
               onEditEffect={(effectId) => onEditEffect(selectedNode.id, effectId)}
+              onEditContent={onEditContent ? () => onEditContent(selectedNode.id) : undefined}
             />
           ) : selectedConnection ? (
             <ConnectionSettings
@@ -532,7 +534,7 @@ function MultiNodeSettings({ nodes, onUpdateProps, onUpdateShape }: {
   )
 }
 
-function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegisterModel, onUpdateModelLabel, onEditEffect }: {
+function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegisterModel, onUpdateModelLabel, onEditEffect, onEditContent }: {
   node: ModelNode
   onUpdateShape: (shape: NodeShape) => void
   onUpdateProps: (props: Partial<ModelNode>) => void
@@ -540,6 +542,7 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
   onRegisterModel: (model: Model) => void
   onUpdateModelLabel: (modelId: string, label: string) => void
   onEditEffect: (effectId: string) => void
+  onEditContent?: () => void
 }) {
   const shapeOptions: NodeShape[] = ['rectangle', 'rounded-rect', 'oval', 'circle', 'diamond', 'hexagon', 'parallelogram', 'triangle']
 
@@ -695,8 +698,43 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
         </div>
       </div>
       {/* Media section — only for media node types */}
-      {node.mediaType && (
+      {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && (
         <MediaSettings node={node} onUpdateProps={onUpdateProps} />
+      )}
+      {/* Content section — for markdown / math nodes */}
+      {(node.mediaType === 'markdown' || node.mediaType === 'math') && (
+        <div className="sidebar-section">
+          <div className="sidebar-section-header static">Content</div>
+          <div className="sidebar-section-body">
+            <div className="settings-row">
+              <span className="settings-label">Type</span>
+              <span className="settings-value">{node.mediaType === 'markdown' ? 'Markdown' : 'Math'}</span>
+            </div>
+            <div className="settings-row">
+              <span className="settings-label">Collapsed</span>
+              <input
+                type="checkbox"
+                className="settings-checkbox"
+                checked={node.contentCollapsed !== false}
+                onChange={(e) => {
+                  const nowCollapsed = e.target.checked
+                  const expandedH = Math.max(node.nodeHeight ?? 60, 160)
+                  onUpdateProps({
+                    contentCollapsed: nowCollapsed,
+                    nodeHeight: nowCollapsed ? 60 : expandedH,
+                  })
+                }}
+              />
+            </div>
+            {onEditContent && (
+              <div className="settings-row">
+                <button type="button" className="settings-add-btn" onClick={onEditContent} style={{ width: '100%' }}>
+                  Edit Content
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
       <div className="sidebar-section">
         <div className="sidebar-section-header static">Diagrams</div>

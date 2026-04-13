@@ -29,6 +29,8 @@ const mediaNodeTypes: MediaTypeItem[] = [
   { id: 'gif', label: 'Gif Node', icon: '🎞' },
   { id: 'audio', label: 'Audio Node', icon: '🔊' },
   { id: 'video', label: 'Video Node', icon: '🎬' },
+  { id: 'markdown', label: 'Markdown', icon: '𝕄' },
+  { id: 'math', label: 'Math', icon: '∑' },
 ]
 
 function SidebarSection({ title, items, defaultOpen = false }: {

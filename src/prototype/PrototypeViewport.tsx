@@ -12,6 +12,11 @@ import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl,
 import { applyThemeToDOM, resolvePalette } from './themes'
 import { resolveBackground } from './backgrounds'
 import { ParticleOverlay } from './ParticleOverlay'
+import { ContentEditor } from './ContentEditor'
+import { marked } from 'marked'
+import katex from 'katex'
+import DOMPurify from 'dompurify'
+import 'katex/dist/katex.min.css'
 
 /** Build CSS background-image for the grid based on config */
 function gridBackgroundImage(cfg?: GridConfig): string {
@@ -1623,6 +1628,24 @@ export function PrototypeViewport() {
                 layerMaxDuration = Math.max(layerMaxDuration, totalBreakDur)
                 break
               }
+              case 'expand': {
+                const dur = (gNode.config.durationMs as number) ?? 300
+                setTimeout(() => {
+                  const nd = model.nodes.find(n => n.id === nodeId)
+                  const expandedH = Math.max(nd?.nodeHeight ?? 60, 160)
+                  updateNodeProps(frame.modelId, nodeId, { contentCollapsed: false, nodeHeight: expandedH })
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                break
+              }
+              case 'collapse': {
+                const dur = (gNode.config.durationMs as number) ?? 300
+                setTimeout(() => {
+                  updateNodeProps(frame.modelId, nodeId, { contentCollapsed: true, nodeHeight: 60 })
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                break
+              }
             }
           }
         }
@@ -2009,6 +2032,7 @@ export function PrototypeViewport() {
 
   // ---- Node creation (double-click on empty space) ----
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
+  const [editingContentNodeId, setEditingContentNodeId] = useState<string | null>(null)
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     // Only on empty space (the viewport itself)
@@ -2079,15 +2103,22 @@ export function PrototypeViewport() {
         gif: { w: 160, h: 120 },
         audio: { w: 200, h: 80 },
         video: { w: 200, h: 140 },
+        markdown: { w: 240, h: 60 },
+        math: { w: 200, h: 60 },
       }
       const sz = defaultSizes[mediaTypeId] ?? { w: 160, h: 120 }
+      const isContentType = mediaTypeId === 'markdown' || mediaTypeId === 'math'
       addNode(frame.modelId, {
-        id: newId, label: '', x: snappedX, y: snappedY,
+        id: newId, label: isContentType ? (mediaTypeId === 'markdown' ? 'Markdown' : 'Math') : '', x: snappedX, y: snappedY,
         shape: 'rounded-rect',
         mediaType: mediaTypeId as MediaNodeType,
         nodeWidth: sz.w, nodeHeight: sz.h,
+        ...(isContentType ? { contentSource: '', contentCollapsed: true } : {}),
       })
       selectNode(newId)
+      if (isContentType) {
+        setEditingContentNodeId(newId)
+      }
       return
     }
 
@@ -2129,6 +2160,8 @@ export function PrototypeViewport() {
             gif: { w: 160, h: 120 },
             audio: { w: 200, h: 80 },
             video: { w: 200, h: 140 },
+            markdown: { w: 240, h: 60 },
+            math: { w: 200, h: 60 },
           }
           const sz = defaultSizes[mType] ?? { w: 160, h: 120 }
           addNode(frame.modelId, {
@@ -2873,8 +2906,13 @@ export function PrototypeViewport() {
           vpSize={vpSize}
           onSelectNode={handleSelectNode}
           onDoubleClickNode={(nodeId) => {
-            beginEditNode(frame.modelId)
-            setEditingNodeId(nodeId)
+            const n = model.nodes.find(nd => nd.id === nodeId)
+            if (n && (n.mediaType === 'markdown' || n.mediaType === 'math')) {
+              setEditingContentNodeId(nodeId)
+            } else {
+              beginEditNode(frame.modelId)
+              setEditingNodeId(nodeId)
+            }
           }}
           onClickConnection={openUnzip}
           onNodeDragStart={handleNodeDragStart}
@@ -2918,6 +2956,21 @@ export function PrototypeViewport() {
           onSetMedia={(nodeId, src, name) => {
             beginEditNode(frame.modelId)
             updateNodeProps(frame.modelId, nodeId, { mediaSrc: src, mediaFileName: name })
+          }}
+          onToggleCollapse={(nodeId) => {
+            const n = model.nodes.find(nd => nd.id === nodeId)
+            if (!n) return
+            const nowCollapsed = !(n.contentCollapsed !== false)
+            updateNodeProps(frame.modelId, nodeId, { contentCollapsed: nowCollapsed })
+            // Auto-resize: expand to fit content, collapse to compact
+            if (!nowCollapsed) {
+              // Expanding — use a larger default height
+              const expandedH = Math.max(n.nodeHeight ?? 60, 160)
+              updateNodeProps(frame.modelId, nodeId, { nodeHeight: expandedH })
+            } else {
+              // Collapsing — shrink back to compact
+              updateNodeProps(frame.modelId, nodeId, { nodeHeight: 60 })
+            }
           }}
         />
         {activeUnzipPopup && (() => {
@@ -3016,6 +3069,7 @@ export function PrototypeViewport() {
         onUpdateConnectionType={(from, to, type) => updateConnectionType(frame.modelId, from, to, type)}
         onUpdateConnectionProps={(from, to, props) => updateConnectionProps(frame.modelId, from, to, props)}
         onEditEffect={(nodeId, effectId) => setEditingEffect({ nodeId, effectId })}
+        onEditContent={(nodeId) => setEditingContentNodeId(nodeId)}
       />
 
       {/* Flow effect graph editor modal */}
@@ -3078,6 +3132,22 @@ export function PrototypeViewport() {
           />
         )
       })()}
+      {/* Content editor popup for markdown/math nodes */}
+      {editingContentNodeId && (() => {
+        const editContentNode = model.nodes.find(n => n.id === editingContentNodeId)
+        if (!editContentNode || (editContentNode.mediaType !== 'markdown' && editContentNode.mediaType !== 'math')) return null
+        return (
+          <ContentEditor
+            contentType={editContentNode.mediaType as 'markdown' | 'math'}
+            source={editContentNode.contentSource ?? ''}
+            onSave={(source) => {
+              updateNodeProps(frame.modelId, editingContentNodeId, { contentSource: source })
+              setEditingContentNodeId(null)
+            }}
+            onClose={() => setEditingContentNodeId(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
@@ -3106,6 +3176,7 @@ function ModelSceneContent({
   unzipGap,
   noTransition,
   onSetMedia,
+  onToggleCollapse,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -3129,6 +3200,7 @@ function ModelSceneContent({
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
   onSetMedia?: (nodeId: string, mediaSrc: string, mediaFileName: string) => void
+  onToggleCollapse?: (nodeId: string) => void
 }) {
   // Theme palette for node default colors
   const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
@@ -3365,6 +3437,7 @@ function ModelSceneContent({
             defaultCellColor={palette.nodeCell}
             defaultMembraneColor={palette.nodeMembrane}
             onSetMedia={onSetMedia ? (src, name) => onSetMedia(node.id, src, name) : undefined}
+            onToggleCollapse={onToggleCollapse ? () => onToggleCollapse(node.id) : undefined}
           />
         )
       })}
@@ -3633,6 +3706,7 @@ function SceneNode({
   defaultCellColor,
   defaultMembraneColor,
   onSetMedia,
+  onToggleCollapse,
 }: {
   node: ModelNode
   posX: number
@@ -3656,6 +3730,8 @@ function SceneNode({
   defaultCellColor: string
   defaultMembraneColor: string
   onSetMedia?: (mediaSrc: string, mediaFileName: string) => void
+  onToggleCollapse?: () => void
+  onToggleCollapse?: () => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -3917,8 +3993,41 @@ function SceneNode({
           )}
         </div>
       )}
+      {/* Markdown / Math content */}
+      {(node.mediaType === 'markdown' || node.mediaType === 'math') && chromeFade > 0.01 && (
+        <div className="content-node-wrapper" style={{ opacity: chromeFade }}>
+          <div
+            className="content-node-chevron"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onToggleCollapse?.() }}
+          >
+            {node.contentCollapsed !== false ? '▸' : '▾'}
+          </div>
+          {node.contentCollapsed !== false ? (
+            <div className="content-node-preview">
+              {node.contentSource
+                ? (node.mediaType === 'math'
+                  ? (() => { try { return <span dangerouslySetInnerHTML={{ __html: katex.renderToString(node.contentSource.split('\n')[0], { throwOnError: false }) }} /> } catch { return <span className="content-node-fallback">{node.contentSource.split('\n')[0]}</span> } })()
+                  : <span>{node.contentSource.split('\n')[0].slice(0, 60)}{node.contentSource.split('\n')[0].length > 60 ? '…' : ''}</span>)
+                : <span className="content-node-empty">{node.mediaType === 'markdown' ? 'Empty markdown' : 'Empty formula'}</span>}
+            </div>
+          ) : (
+            <div
+              className={`content-node-body content-node-${node.mediaType}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              dangerouslySetInnerHTML={{
+                __html: node.contentSource
+                  ? (node.mediaType === 'markdown'
+                    ? DOMPurify.sanitize(marked.parse(node.contentSource) as string)
+                    : (() => { try { return katex.renderToString(node.contentSource!, { throwOnError: false, displayMode: true }) } catch { return `<span class="content-node-fallback">${node.contentSource}</span>` } })())
+                  : `<span class="content-node-empty">${node.mediaType === 'markdown' ? 'Empty markdown' : 'Empty formula'}</span>`,
+              }}
+            />
+          )}
+        </div>
+      )}
       {/* Empty media placeholder */}
-      {node.mediaType && !node.mediaSrc && chromeFade > 0.01 && (
+      {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && !node.mediaSrc && chromeFade > 0.01 && (
         <div className="media-node-placeholder" style={{ opacity: chromeFade }}>
           <span className="media-node-placeholder-icon">
             {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? (isRecording ? '⏺' : '🔊') : '🎬'}

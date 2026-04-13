@@ -26,6 +26,8 @@ interface ModelFileNode {
   flowEffects?: FlowEffect[]
   hideDuringFlow?: boolean
   cameraTracked?: boolean
+  contentSource?: string
+  contentCollapsed?: boolean
 }
 
 interface ModelFileConnection {
@@ -243,6 +245,8 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (n.flowEffects?.length) fileNode.flowEffects = n.flowEffects
       if (n.hideDuringFlow) fileNode.hideDuringFlow = true
       if (n.cameraTracked) fileNode.cameraTracked = true
+      if (n.contentSource) fileNode.contentSource = n.contentSource
+      if (n.contentCollapsed != null) fileNode.contentCollapsed = n.contentCollapsed
       return fileNode
     }),
     connections: model.connections.map((c) => {
@@ -484,6 +488,8 @@ export async function importBundle(
         if (n.flowEffects?.length) node.flowEffects = n.flowEffects
         if (n.hideDuringFlow) node.hideDuringFlow = true
         if (n.cameraTracked) node.cameraTracked = true
+        if (n.contentSource) node.contentSource = n.contentSource
+        if (n.contentCollapsed != null) node.contentCollapsed = n.contentCollapsed
         return node
       }),
       connections: mf.connections.map((c) => {

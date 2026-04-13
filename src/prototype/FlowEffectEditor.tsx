@@ -49,6 +49,8 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'handoff-mpd': 'Handoff to MPD',
   'camera': 'Camera',
   'break': 'Break Apart',
+  'expand': 'Expand',
+  'collapse': 'Collapse',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -61,6 +63,8 @@ const kindColors: Record<FlowEffectKind, string> = {
   'handoff-rmm': '#a78bfa',
   'return-rmm': '#c084fc',
   'handoff-mpd': '#2dd4bf',
+  'expand': '#22c55e',
+  'collapse': '#ef4444',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -94,6 +98,8 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'handoff-mpd': return { targetMpdId: '' }
     case 'camera': return { panX: 0, panY: 0, zoom: 1, rotation: 0, durationMs: 1000 }
     case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
+    case 'expand': return { durationMs: 300 }
+    case 'collapse': return { durationMs: 300 }
   }
 }
 
@@ -129,7 +135,7 @@ export function FlowEffectEditor({
 }) {
   // Build the addable kinds based on host context
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'play-media', 'camera', 'break',
+    'wait', 'move', 'color', 'spawn', 'play-media', 'camera', 'break', 'expand', 'collapse',
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
     ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
@@ -799,6 +805,19 @@ export function FlowEffectEditor({
                       <input type="number" min={200} max={2000} step={50}
                         value={(selectedNode.config.fallDurationMs as number) ?? 600}
                         onChange={(e) => updateNodeConfig('fallDurationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {(selectedNode.kind === 'expand' || selectedNode.kind === 'collapse') && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      {selectedNode.kind === 'expand' ? 'Expands collapsed content nodes.' : 'Collapses expanded content nodes.'}
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={50} max={2000} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 300}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
                     </label>
                   </>
                 )}

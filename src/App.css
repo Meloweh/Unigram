@@ -393,6 +393,119 @@
   border-color: var(--ug-accent);
 }
 
+/* ── Content nodes (Markdown / Math) ── */
+.content-node-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: inherit;
+  padding: 4px;
+  gap: 2px;
+}
+
+.content-node-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 2px;
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: var(--ug-text-muted);
+  user-select: none;
+  pointer-events: auto;
+}
+
+.content-node-chevron:hover {
+  color: var(--ug-primary);
+}
+
+.content-node-preview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  font-size: 0.72rem;
+  color: var(--ug-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.content-node-preview .katex {
+  font-size: 0.72rem;
+}
+
+.content-node-body {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--ug-text);
+  word-wrap: break-word;
+}
+
+.content-node-body h1,
+.content-node-body h2,
+.content-node-body h3,
+.content-node-body h4,
+.content-node-body h5,
+.content-node-body h6 {
+  margin: 0.4em 0 0.2em;
+  line-height: 1.25;
+}
+.content-node-body h1 { font-size: 1.1em; }
+.content-node-body h2 { font-size: 1em; }
+.content-node-body h3 { font-size: 0.95em; }
+.content-node-body p { margin: 0.25em 0; }
+.content-node-body ul,
+.content-node-body ol { margin: 0.25em 0; padding-left: 1.4em; }
+.content-node-body code {
+  background: var(--ug-surface);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.content-node-body pre {
+  background: var(--ug-surface);
+  padding: 4px 6px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+.content-node-body pre code {
+  background: none;
+  padding: 0;
+}
+.content-node-body blockquote {
+  margin: 0.3em 0;
+  padding-left: 0.6em;
+  border-left: 2px solid var(--ug-border);
+  color: var(--ug-text-muted);
+}
+
+.content-node-math .katex-display {
+  margin: 0.2em 0;
+}
+
+.content-node-empty {
+  color: var(--ug-text-muted);
+  font-style: italic;
+  font-size: 0.7rem;
+}
+
+.content-node-fallback {
+  color: #e74c3c;
+  font-family: monospace;
+  font-size: 0.7rem;
+}
+
 /* ---- Media settings (right sidebar) ---- */
 
 .settings-media-file {
@@ -1273,6 +1386,169 @@
   min-width: 0;
   accent-color: var(--ug-accent);
   cursor: pointer;
+}
+
+/* ---- Content Editor (Markdown / Math) ---- */
+
+.content-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.content-editor-modal {
+  width: 70vw;
+  height: 60vh;
+  max-width: 900px;
+  max-height: 600px;
+  background: var(--ug-surface, #1e293b);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.content-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ug-border, #334155);
+  flex-shrink: 0;
+}
+
+.content-editor-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ug-text, #e2e8f0);
+}
+
+.content-editor-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.content-editor-save-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: none;
+  background: var(--ug-accent, #3b82f6);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.content-editor-save-btn:hover {
+  filter: brightness(1.1);
+}
+
+.content-editor-close-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--ug-border, #334155);
+  background: transparent;
+  color: var(--ug-text-muted, #94a3b8);
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.content-editor-close-btn:hover {
+  background: var(--ug-hover, rgba(255, 255, 255, 0.05));
+}
+
+.content-editor-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.content-editor-textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  border-right: 1px solid var(--ug-border, #334155);
+  background: transparent;
+  color: var(--ug-text, #e2e8f0);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 12px;
+  outline: none;
+}
+
+.content-editor-textarea::placeholder {
+  color: var(--ug-text-muted, #64748b);
+}
+
+.content-editor-preview {
+  flex: 1;
+  padding: 12px;
+  overflow: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ug-text, #e2e8f0);
+}
+
+.content-editor-preview h1,
+.content-editor-preview h2,
+.content-editor-preview h3,
+.content-editor-preview h4,
+.content-editor-preview h5,
+.content-editor-preview h6 {
+  margin: 0.5em 0 0.3em;
+  line-height: 1.3;
+}
+.content-editor-preview h1 { font-size: 1.4em; }
+.content-editor-preview h2 { font-size: 1.2em; }
+.content-editor-preview h3 { font-size: 1.05em; }
+.content-editor-preview p { margin: 0.4em 0; }
+.content-editor-preview ul,
+.content-editor-preview ol { margin: 0.4em 0; padding-left: 1.6em; }
+.content-editor-preview code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.content-editor-preview pre {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+.content-editor-preview pre code {
+  background: none;
+  padding: 0;
+}
+.content-editor-preview blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.8em;
+  border-left: 3px solid var(--ug-border, #334155);
+  color: var(--ug-text-muted, #94a3b8);
+}
+
+.content-editor-empty {
+  color: var(--ug-text-muted, #64748b);
+  font-style: italic;
+}
+
+.content-editor-footer {
+  padding: 6px 16px;
+  border-top: 1px solid var(--ug-border, #334155);
+  flex-shrink: 0;
+}
+
+.content-editor-hint {
+  font-size: 0.68rem;
+  color: var(--ug-text-muted, #64748b);
 }
 
 /* ---- Flow Effect Graph Editor ---- */

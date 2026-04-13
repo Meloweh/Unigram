@@ -2,11 +2,11 @@
 
 export type NodeShape = 'rectangle' | 'rounded-rect' | 'oval' | 'circle' | 'diamond' | 'hexagon' | 'parallelogram' | 'triangle'
 
-export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video'
+export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video' | 'markdown' | 'math'
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse'
 
 export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
 export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
@@ -105,6 +105,10 @@ export interface ModelNode {
   hideDuringFlow?: boolean
   /** Whether the camera tracks this node during flow animation */
   cameraTracked?: boolean
+  /** Raw source text for markdown/math content nodes */
+  contentSource?: string
+  /** Whether a content node is in collapsed state (default: true) */
+  contentCollapsed?: boolean
 }
 
 export interface StudyEvidence {

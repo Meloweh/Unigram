@@ -13,7 +13,10 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "dompurify": "^3.3.3",
     "jszip": "^3.10.1",
+    "katex": "^0.16.45",
+    "marked": "^18.0.0",
     "motion": "^12.38.0",
     "pixi.js": "^8.17.1",
     "react": "^19.2.4",
@@ -25,6 +28,8 @@
     "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/dompurify": "^3.0.5",
+    "@types/katex": "^0.16.8",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
