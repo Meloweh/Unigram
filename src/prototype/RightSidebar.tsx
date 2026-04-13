@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle } from './sampleModels'
 import { useHybridZoomStore } from './useHybridZoomStore'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
 import { PARTICLE_PRESETS } from './particles'
@@ -362,6 +362,49 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
           )}
         </div>
       </div>
+
+      {/* Grid section */}
+      {model && (
+        <div className="sidebar-section">
+          <div className="sidebar-section-header static">Grid</div>
+          <div className="sidebar-section-body">
+            <div className="settings-row">
+              <label className="settings-label" htmlFor="grid-style">Style</label>
+              <select
+                id="grid-style"
+                className="settings-select"
+                value={modelCosmetics?.grid?.style ?? 'dots'}
+                onChange={(e) => setModelCosmetics(model.id, { grid: { ...modelCosmetics?.grid, style: e.target.value as GridStyle } })}
+              >
+                <option value="dots">Dots</option>
+                <option value="lines">Lines</option>
+                <option value="dotted-lines">Dotted Lines</option>
+              </select>
+            </div>
+            <div className="settings-row">
+              <label className="settings-label" htmlFor="grid-color">Color</label>
+              <ColorInput
+                id="grid-color"
+                value={modelCosmetics?.grid?.color || 'rgba(37,96,149,0.18)'}
+                onChange={(v) => setModelCosmetics(model.id, { grid: { ...modelCosmetics?.grid, color: v } })}
+              />
+            </div>
+            <div className="settings-row">
+              <label className="settings-label" htmlFor="grid-size">Size</label>
+              <input
+                id="grid-size"
+                type="range"
+                min={0.5}
+                max={4}
+                step={0.5}
+                className="settings-range"
+                value={modelCosmetics?.grid?.size ?? 1}
+                onChange={(e) => setModelCosmetics(model.id, { grid: { ...modelCosmetics?.grid, size: Number(e.target.value) } })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

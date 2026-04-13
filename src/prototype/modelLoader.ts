@@ -1,4 +1,4 @@
-import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, ConnectionType, FlowEffect } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, ConnectionType, FlowEffect, ConnectionDashStyle, ConnectionArrowStyle, ModelCosmetics, ThemeMode } from './sampleModels'
 import JSZip from 'jszip'
 
 // ---- JSON file schema (what's on disk) ----
@@ -24,6 +24,8 @@ interface ModelFileNode {
   playEnd?: number
   audioCoverFile?: string  // path to audio cover image inside the bundle
   flowEffects?: FlowEffect[]
+  hideDuringFlow?: boolean
+  cameraTracked?: boolean
 }
 
 interface ModelFileConnection {
@@ -31,6 +33,11 @@ interface ModelFileConnection {
   to: string
   evidence?: StudyEvidence[]
   type?: ConnectionType
+  hideDuringFlow?: boolean
+  strokeColor?: string
+  strokeWidth?: number
+  strokeDash?: ConnectionDashStyle
+  arrowStyle?: ConnectionArrowStyle
 }
 
 interface ModelFile {
@@ -170,7 +177,7 @@ export async function loadModelById(
  * Convert a runtime Model back to the JSON file format for saving.
  * mediaMap: if provided, media data URLs are extracted into it as { bundlePath → dataUrl }
  */
-export function modelToFile(model: Model, mediaMap?: Map<string, string>): ModelFile {
+export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaDedup?: Map<string, string>): ModelFile {
   return {
     id: model.id,
     label: model.label,
@@ -208,28 +215,47 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>): Model
       if (n.mediaFileName) fileNode.mediaFileName = n.mediaFileName
       if (n.playStart != null) fileNode.playStart = n.playStart
       if (n.playEnd != null) fileNode.playEnd = n.playEnd
-      // Extract media data URLs into the media map for the bundle
+      // Extract media data URLs into the media map for the bundle (deduplicated)
       if (n.mediaSrc && mediaMap) {
-        const ext = guessExtension(n.mediaSrc, n.mediaFileName)
-        const path = `media/${n.id}${ext}`
-        mediaMap.set(path, n.mediaSrc)
-        fileNode.mediaFile = path
+        const existing = mediaDedup?.get(n.mediaSrc)
+        if (existing) {
+          fileNode.mediaFile = existing
+        } else {
+          const ext = guessExtension(n.mediaSrc, n.mediaFileName)
+          const path = `media/${n.id}${ext}`
+          mediaMap.set(path, n.mediaSrc)
+          mediaDedup?.set(n.mediaSrc, path)
+          fileNode.mediaFile = path
+        }
       }
       if (n.audioCoverSrc && mediaMap) {
-        const ext = guessExtension(n.audioCoverSrc, undefined)
-        const path = `media/${n.id}-cover${ext}`
-        mediaMap.set(path, n.audioCoverSrc)
-        fileNode.audioCoverFile = path
+        const existing = mediaDedup?.get(n.audioCoverSrc)
+        if (existing) {
+          fileNode.audioCoverFile = existing
+        } else {
+          const ext = guessExtension(n.audioCoverSrc, undefined)
+          const path = `media/${n.id}-cover${ext}`
+          mediaMap.set(path, n.audioCoverSrc)
+          mediaDedup?.set(n.audioCoverSrc, path)
+          fileNode.audioCoverFile = path
+        }
       }
       if (n.flowEffects?.length) fileNode.flowEffects = n.flowEffects
+      if (n.hideDuringFlow) fileNode.hideDuringFlow = true
+      if (n.cameraTracked) fileNode.cameraTracked = true
       return fileNode
     }),
-    connections: model.connections.map((c) => ({
-      from: c.from,
-      to: c.to,
-      ...(c.evidence ? { evidence: c.evidence } : {}),
-      ...(c.type ? { type: c.type } : {}),
-    })),
+    connections: model.connections.map((c) => {
+      const fc: ModelFileConnection = { from: c.from, to: c.to }
+      if (c.evidence) fc.evidence = c.evidence
+      if (c.type) fc.type = c.type
+      if (c.hideDuringFlow) fc.hideDuringFlow = true
+      if (c.strokeColor) fc.strokeColor = c.strokeColor
+      if (c.strokeWidth != null) fc.strokeWidth = c.strokeWidth
+      if (c.strokeDash) fc.strokeDash = c.strokeDash
+      if (c.arrowStyle) fc.arrowStyle = c.arrowStyle
+      return fc
+    }),
   }
 }
 
@@ -329,19 +355,32 @@ function bytesToDataUrl(bytes: Uint8Array, path: string): string {
  * Export all models + media as a .unigram zip bundle.
  * Returns a Blob ready for download.
  */
-export async function exportBundle(models: Record<string, Model>): Promise<Blob> {
+export async function exportBundle(
+  models: Record<string, Model>,
+  cosmetics?: Record<string, ModelCosmetics>,
+  appThemeMode?: ThemeMode,
+): Promise<Blob> {
   const zip = new JSZip()
   const mediaMap = new Map<string, string>() // bundle path → data URL
+  const mediaDedup = new Map<string, string>() // data URL → bundle path (dedup)
 
   const projectData: Record<string, ModelFile> = {}
   for (const model of Object.values(models)) {
     const url = modelIdToUrl.get(model.id)
     const filename = url ? url.substring(url.lastIndexOf('/') + 1) : `${model.id}.json`
-    projectData[filename] = modelToFile(model, mediaMap)
+    projectData[filename] = modelToFile(model, mediaMap, mediaDedup)
   }
 
   // Add project JSON
   zip.file('project.json', JSON.stringify(projectData, null, 2))
+
+  // Add settings (cosmetics + app theme)
+  const settings: Record<string, unknown> = {}
+  if (appThemeMode) settings.appThemeMode = appThemeMode
+  if (cosmetics && Object.keys(cosmetics).length > 0) settings.modelCosmetics = cosmetics
+  if (Object.keys(settings).length > 0) {
+    zip.file('settings.json', JSON.stringify(settings, null, 2))
+  }
 
   // Add media files
   for (const [path, dataUrl] of mediaMap) {
@@ -358,6 +397,7 @@ export async function importBundle(
   blob: Blob,
   registerModel: (model: Model) => void,
   resetToRoot: () => void,
+  restoreSettings?: (settings: { appThemeMode?: ThemeMode; modelCosmetics?: Record<string, ModelCosmetics> }) => void,
 ): Promise<void> {
   const zip = await JSZip.loadAsync(blob)
 
@@ -381,6 +421,15 @@ export async function importBundle(
     )
   }
 
+  // Restore settings (cosmetics + app theme) if present
+  const settingsFile = zip.file('settings.json')
+  if (settingsFile && restoreSettings) {
+    try {
+      const settings = JSON.parse(await settingsFile.async('string'))
+      restoreSettings(settings)
+    } catch { /* ignore malformed settings */ }
+  }
+
   clearLoaderCache()
 
   // Build ID lookup from all model files
@@ -397,7 +446,7 @@ export async function importBundle(
     const mf = fileData as {
       id: string; label: string
       nodes: ModelFileNode[]
-      connections: { from: string; to: string; evidence?: StudyEvidence[]; type?: ConnectionType }[]
+      connections: ModelFileConnection[]
     }
 
     registerModel({
@@ -433,9 +482,21 @@ export async function importBundle(
         }
         // Flow effects
         if (n.flowEffects?.length) node.flowEffects = n.flowEffects
+        if (n.hideDuringFlow) node.hideDuringFlow = true
+        if (n.cameraTracked) node.cameraTracked = true
         return node
       }),
-      connections: mf.connections,
+      connections: mf.connections.map((c) => {
+        const conn: ModelConnection = { from: c.from, to: c.to }
+        if (c.evidence) conn.evidence = c.evidence
+        if (c.type) conn.type = c.type
+        if (c.hideDuringFlow) conn.hideDuringFlow = true
+        if (c.strokeColor) conn.strokeColor = c.strokeColor
+        if (c.strokeWidth != null) conn.strokeWidth = c.strokeWidth
+        if (c.strokeDash) conn.strokeDash = c.strokeDash
+        if (c.arrowStyle) conn.arrowStyle = c.arrowStyle
+        return conn
+      }),
     })
   }
 

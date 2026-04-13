@@ -22,10 +22,19 @@ export interface BackgroundConfig {
   fit?: 'cover' | 'contain' | 'tile'
 }
 
+export type GridStyle = 'dots' | 'lines' | 'dotted-lines'
+
+export interface GridConfig {
+  color?: string
+  size?: number
+  style?: GridStyle
+}
+
 export interface ModelCosmetics {
   themeMode?: ThemeMode
   background?: BackgroundConfig
   particleEffect?: string | null
+  grid?: GridConfig
 }
 
 export interface EffectGraphNode {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle, type GridConfig } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
@@ -12,6 +12,21 @@ import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl,
 import { applyThemeToDOM, resolvePalette } from './themes'
 import { resolveBackground } from './backgrounds'
 import { ParticleOverlay } from './ParticleOverlay'
+
+/** Build CSS background-image for the grid based on config */
+function gridBackgroundImage(cfg?: GridConfig): string {
+  const color = cfg?.color || 'var(--ug-grid-dot)'
+  const size = cfg?.size ?? 1
+  const style = cfg?.style ?? 'dots'
+  if (style === 'lines') {
+    return `linear-gradient(${color} ${size}px, transparent ${size}px), linear-gradient(90deg, ${color} ${size}px, transparent ${size}px)`
+  }
+  if (style === 'dotted-lines') {
+    return `repeating-linear-gradient(0deg, ${color} 0 ${size}px, transparent ${size}px ${size * 4}px), repeating-linear-gradient(90deg, ${color} 0 ${size}px, transparent ${size}px ${size * 4}px)`
+  }
+  // dots (default)
+  return `radial-gradient(circle, ${color} ${size}px, transparent ${size}px)`
+}
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
 function useUnzipAnim(popupKey: string | null) {
@@ -765,6 +780,8 @@ export function PrototypeViewport() {
     updateConnectionEvidence,
     appThemeMode,
     modelCosmetics,
+    setAppThemeMode,
+    setModelCosmetics,
   } = useHybridZoomStore()
 
   const frame = currentFrame()
@@ -786,6 +803,7 @@ export function PrototypeViewport() {
   const bgConfig = currentCosmetics?.background
   const bgStyle = bgConfig ? resolveBackground(bgConfig) : undefined
   const particlePresetId = currentCosmetics?.particleEffect ?? null
+  const gridConfig = currentCosmetics?.grid
 
 
 
@@ -2255,14 +2273,14 @@ export function PrototypeViewport() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleSave = useCallback(async () => {
-    const blob = await exportBundle(storeModels)
+    const blob = await exportBundle(storeModels, modelCosmetics, appThemeMode)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = 'unigram-project.unigram'
     a.click()
     URL.revokeObjectURL(url)
-  }, [storeModels])
+  }, [storeModels, modelCosmetics, appThemeMode])
 
   const handleLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -2270,7 +2288,14 @@ export function PrototypeViewport() {
 
     if (file.name.endsWith('.unigram') || file.name.endsWith('.zip')) {
       // Bundle format
-      importBundle(file, registerModel, resetToRoot).catch((err) => {
+      importBundle(file, registerModel, resetToRoot, (settings) => {
+        if (settings.appThemeMode) setAppThemeMode(settings.appThemeMode)
+        if (settings.modelCosmetics) {
+          for (const [modelId, cos] of Object.entries(settings.modelCosmetics)) {
+            setModelCosmetics(modelId, cos)
+          }
+        }
+      }).catch((err) => {
         console.error('Failed to load bundle:', err)
       })
     } else {
@@ -2828,14 +2853,14 @@ export function PrototypeViewport() {
             : {}),
         }}
       >
-        {/* Dynamic grid dots — auto-extends with node positions */}
+        {/* Dynamic grid — auto-extends with node positions */}
         <div style={{
           position: 'absolute',
           left: `${gridExtent.minX}%`,
           top: `${gridExtent.minY}%`,
           width: `${gridExtent.maxX - gridExtent.minX}%`,
           height: `${gridExtent.maxY - gridExtent.minY}%`,
-          backgroundImage: 'radial-gradient(circle, var(--ug-grid-dot) 1px, transparent 1px)',
+          backgroundImage: gridBackgroundImage(gridConfig),
           backgroundSize: `${gridPxW}px ${gridPxH}px`,
           pointerEvents: 'none',
         }} />
