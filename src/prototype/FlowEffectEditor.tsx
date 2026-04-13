@@ -53,6 +53,7 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'break': 'Break Apart',
   'expand': 'Expand',
   'collapse': 'Collapse',
+  'record': '⏺ Record',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -67,6 +68,7 @@ const kindColors: Record<FlowEffectKind, string> = {
   'handoff-mpd': '#2dd4bf',
   'expand': '#22c55e',
   'collapse': '#ef4444',
+  'record': '#dc2626',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -102,6 +104,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
     case 'expand': return { durationMs: 300 }
     case 'collapse': return { durationMs: 300 }
+    case 'record': return { captureMode: 'tab' }
   }
 }
 
@@ -138,7 +141,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'camera', 'break',
+    'wait', 'move', 'color', 'spawn', 'camera', 'break', 'record',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
@@ -863,6 +866,28 @@ export function FlowEffectEditor({
                         value={(selectedNode.config.durationMs as number) ?? 300}
                         onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
                     </label>
+                  </>
+                )}
+                {selectedNode.kind === 'record' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Records a video of the flow playback. Hides UI chrome, starts recording, then downloads the .webm when the flow finishes or is stopped.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Capture Mode</span>
+                      <select
+                        value={(selectedNode.config.captureMode as string) ?? 'tab'}
+                        onChange={(e) => updateNodeConfig('captureMode', e.target.value)}
+                      >
+                        <option value="tab">Browser Tab</option>
+                        <option value="viewport">Viewport Only (Chrome)</option>
+                      </select>
+                    </label>
+                    {(selectedNode.config.captureMode as string) === 'viewport' && (
+                      <div className="fxeditor-field-hint" style={{ color: '#f59e0b', fontSize: '0.75rem' }}>
+                        Viewport-only capture uses the CropTarget API, supported in Chrome 104+ only. Other browsers will fall back to full tab capture.
+                      </div>
+                    )}
                   </>
                 )}
                 {/* Delete button */}

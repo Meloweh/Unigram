@@ -1190,6 +1190,13 @@ export function PrototypeViewport() {
   const flowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const flowMediaDoneRef = useRef(new Set<string>()) // nodeIds whose media finished playing
 
+  // ---- Flow recording state ----
+  const [forceCollapseSidebars, setForceCollapseSidebars] = useState(false)
+  const [hideToolbar, setHideToolbar] = useState(false)
+  const flowRecorderRef = useRef<MediaRecorder | null>(null)
+  const flowRecordChunksRef = useRef<BlobPart[]>([])
+  const flowRecordStreamRef = useRef<MediaStream | null>(null)
+
   // ---- Flow effect editor state ----
   const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
 
@@ -1272,6 +1279,19 @@ export function PrototypeViewport() {
       const media = el as HTMLVideoElement | HTMLAudioElement
       if (!media.paused) media.pause()
     })
+    // Stop flow recording and download result
+    if (flowRecorderRef.current && flowRecorderRef.current.state !== 'inactive') {
+      flowRecorderRef.current.stop()
+      // onstop handler will assemble blob, download, and restore UI
+    } else {
+      // Stop stream tracks if recording never started
+      if (flowRecordStreamRef.current) {
+        flowRecordStreamRef.current.getTracks().forEach(t => t.stop())
+        flowRecordStreamRef.current = null
+      }
+      setForceCollapseSidebars(false)
+      setHideToolbar(false)
+    }
   }, [setPanOffset, setFreeScale, restoreBrokenNodes])
 
   // Trigger media playback on a node via DOM
@@ -1767,6 +1787,84 @@ export function PrototypeViewport() {
                 layerMaxDuration = Math.max(layerMaxDuration, dur)
                 break
               }
+              case 'record': {
+                const captureMode = (gNode.config.captureMode as string) ?? 'tab'
+                const capturedNodeId = nodeId
+                // Collapse sidebars and hide toolbar before recording starts
+                setForceCollapseSidebars(true)
+                setHideToolbar(true)
+                setTimeout(async () => {
+                  try {
+                    const stream = await navigator.mediaDevices.getDisplayMedia({
+                      video: true,
+                      audio: true,
+                      // @ts-expect-error -- preferCurrentTab is a newer Chrome API
+                      preferCurrentTab: true,
+                      selfBrowserSurface: 'include',
+                    })
+
+                    // Viewport-only: try CropTarget (Chrome 104+)
+                    if (captureMode === 'viewport' && viewportRef.current) {
+                      try {
+                        // @ts-expect-error -- CropTarget is not yet in TS typings
+                        if (typeof CropTarget !== 'undefined') {
+                          // @ts-expect-error -- CropTarget.fromElement
+                          const cropTarget = await CropTarget.fromElement(viewportRef.current)
+                          const videoTrack = stream.getVideoTracks()[0]
+                          // @ts-expect-error -- cropTo is newer Chrome API
+                          if (videoTrack?.cropTo) await videoTrack.cropTo(cropTarget)
+                        }
+                      } catch {
+                        // Fallback: full tab capture
+                      }
+                    }
+
+                    flowRecordStreamRef.current = stream
+                    flowRecordChunksRef.current = []
+                    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+                    recorder.ondataavailable = (e) => {
+                      if (e.data.size > 0) flowRecordChunksRef.current.push(e.data)
+                    }
+                    recorder.onstop = () => {
+                      // Stop stream tracks
+                      stream.getTracks().forEach(t => t.stop())
+                      flowRecordStreamRef.current = null
+                      // Restore UI — expand sidebars and show toolbar
+                      setForceCollapseSidebars(false)
+                      setHideToolbar(false)
+                      // Download recording
+                      const blob = new Blob(flowRecordChunksRef.current, { type: 'video/webm' })
+                      flowRecordChunksRef.current = []
+                      flowRecorderRef.current = null
+                      if (blob.size > 0) {
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `unigram-recording-${Date.now()}.webm`
+                        a.click()
+                        URL.revokeObjectURL(url)
+                      }
+                    }
+                    // Also handle user closing the browser share dialog
+                    stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+                      if (recorder.state !== 'inactive') recorder.stop()
+                    })
+                    flowRecorderRef.current = recorder
+                    recorder.start()
+                    // Signal that recording is ready — flow can proceed
+                    flowMediaDoneRef.current.add(capturedNodeId)
+                  } catch {
+                    // User cancelled the getDisplayMedia prompt
+                    setForceCollapseSidebars(false)
+                    setHideToolbar(false)
+                    // Signal done so flow doesn't hang
+                    flowMediaDoneRef.current.add(capturedNodeId)
+                  }
+                }, delay + 400) // 400ms extra to let sidebars animate closed
+                // Use large cap; actual completion signalled by flowMediaDoneRef
+                layerMaxDuration = Math.max(layerMaxDuration, 600000)
+                break
+              }
             }
           }
         }
@@ -2099,6 +2197,19 @@ export function PrototypeViewport() {
           setFlowActiveNodes(new Set())
           flowDAGRef.current = null
           flowMediaDoneRef.current.clear()
+          // Stop flow recording and download result
+          if (flowRecorderRef.current && flowRecorderRef.current.state !== 'inactive') {
+            flowRecorderRef.current.stop()
+            // onstop handler will assemble blob, download, and restore UI
+          } else {
+            // Stop stream tracks if recording never started
+            if (flowRecordStreamRef.current) {
+              flowRecordStreamRef.current.getTracks().forEach(t => t.stop())
+              flowRecordStreamRef.current = null
+            }
+            setForceCollapseSidebars(false)
+            setHideToolbar(false)
+          }
           flowCameraOverrideRef.current = null
           restoreBrokenNodes()
           // Camera return animation
@@ -2932,7 +3043,7 @@ export function PrototypeViewport() {
         />
       )}
 
-      <div className="editor-toolbar">
+      <div className="editor-toolbar" style={hideToolbar ? { visibility: 'hidden' } : undefined}>
         <button
           type="button"
           className="toolbar-btn"
@@ -3288,7 +3399,7 @@ export function PrototypeViewport() {
         )
       })()}
 
-      <LeftSidebar connectionType={activeConnectionType} onConnectionTypeChange={setActiveConnectionType} />
+      <LeftSidebar connectionType={activeConnectionType} onConnectionTypeChange={setActiveConnectionType} forceCollapsed={forceCollapseSidebars || undefined} />
       <RightSidebar
         model={model}
         selectedNode={selectedNode}
@@ -3314,6 +3425,7 @@ export function PrototypeViewport() {
         onUpdateConnectionProps={(from, to, props) => updateConnectionProps(frame.modelId, from, to, props)}
         onEditEffect={(nodeId, effectId) => setEditingEffect({ nodeId, effectId })}
         onEditContent={(nodeId) => setEditingContentNodeId(nodeId)}
+        forceCollapsed={forceCollapseSidebars || undefined}
       />
 
       {/* Flow effect graph editor modal */}

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle } from './sampleModels'
 import { useHybridZoomStore } from './useHybridZoomStore'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
@@ -55,7 +55,7 @@ function ColorInput({ value, onChange, id }: { value: string; onChange: (v: stri
   )
 }
 
-export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, onBulkUpdateNodeProps, onBulkUpdateNodeShape, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect, onEditContent }: {
+export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedConnection, gridSnap, onSetGridSnap, onUpdateNodeShape, onUpdateNodeProps, onBulkUpdateNodeProps, onBulkUpdateNodeShape, allModels, onRegisterModel, onUpdateModelLabel, onUpdateConnectionType, onUpdateConnectionProps, onEditEffect, onEditContent, forceCollapsed }: {
   model: Model | undefined
   selectedNode: ModelNode | undefined
   selectedNodeIds: Set<string>
@@ -73,8 +73,13 @@ export function RightSidebar({ model, selectedNode, selectedNodeIds, selectedCon
   onUpdateConnectionProps: (from: string, to: string, props: Partial<ModelConnection>) => void
   onEditEffect: (nodeId: string, effectId: string) => void
   onEditContent?: (nodeId: string) => void
+  forceCollapsed?: boolean
 }) {
   const [collapsed, setCollapsed] = useState(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (forceCollapsed !== undefined) setCollapsed(forceCollapsed)
+  }, [forceCollapsed])
 
   const multiNodes = selectedNodeIds.size > 1 && model
     ? model.nodes.filter(n => selectedNodeIds.has(n.id))
@@ -954,7 +959,83 @@ function MediaSettings({ node, onUpdateProps }: {
             </div>
           </>
         )}
+
+        {node.mediaType === 'video' && (
+          <YouTubeUrlField onUpdateProps={onUpdateProps} />
+        )}
       </div>
+    </div>
+  )
+}
+
+function YouTubeUrlField({ onUpdateProps }: { onUpdateProps: (props: Partial<ModelNode>) => void }) {
+  const [ytUrl, setYtUrl] = useState('')
+  const [ytStatus, setYtStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [ytError, setYtError] = useState('')
+
+  const handleDownload = async () => {
+    const url = ytUrl.trim()
+    if (!url) return
+    setYtStatus('loading')
+    setYtError('')
+    try {
+      const resp = await fetch('http://localhost:3001/api/youtube', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }))
+        throw new Error(err.error || `HTTP ${resp.status}`)
+      }
+      const blob = await resp.blob()
+      const reader = new FileReader()
+      reader.onload = () => {
+        onUpdateProps({
+          mediaSrc: reader.result as string,
+          mediaFileName: 'youtube-video.mp4',
+        })
+        setYtStatus('idle')
+        setYtUrl('')
+      }
+      reader.onerror = () => {
+        setYtStatus('error')
+        setYtError('Failed to read downloaded video')
+      }
+      reader.readAsDataURL(blob)
+    } catch (err) {
+      setYtStatus('error')
+      setYtError(err instanceof Error ? err.message : 'Download failed')
+    }
+  }
+
+  return (
+    <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+      <span className="settings-label">YouTube URL</span>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <input
+          type="text"
+          className="settings-number-input"
+          style={{ flex: 1, minWidth: 0 }}
+          placeholder="https://youtube.com/watch?v=..."
+          value={ytUrl}
+          onChange={(e) => setYtUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleDownload() }}
+          disabled={ytStatus === 'loading'}
+        />
+        <button
+          type="button"
+          className="settings-add-btn"
+          onClick={handleDownload}
+          disabled={ytStatus === 'loading' || !ytUrl.trim()}
+          style={{ whiteSpace: 'nowrap' }}
+        >
+          {ytStatus === 'loading' ? 'Downloading\u2026' : '\u2b07 Download'}
+        </button>
+      </div>
+      {ytStatus === 'error' && (
+        <span style={{ color: '#ef4444', fontSize: '0.75rem' }}>{ytError}</span>
+      )}
     </div>
   )
 }

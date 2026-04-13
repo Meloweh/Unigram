@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { ConnectionType, MediaNodeType } from './sampleModels'
 
 interface SectionItem {
@@ -148,11 +148,15 @@ function ConnectionTypesSection({ value, onChange }: {
   )
 }
 
-export function LeftSidebar({ connectionType, onConnectionTypeChange }: {
+export function LeftSidebar({ connectionType, onConnectionTypeChange, forceCollapsed }: {
   connectionType: ConnectionType
   onConnectionTypeChange: (type: ConnectionType) => void
+  forceCollapsed?: boolean
 }) {
   const [collapsed, setCollapsed] = useState(false)
+  useEffect(() => {
+    if (forceCollapsed !== undefined) setCollapsed(forceCollapsed)
+  }, [forceCollapsed])
 
   return (
     <div className={`sidebar sidebar-left ${collapsed ? 'collapsed' : ''}`}>
