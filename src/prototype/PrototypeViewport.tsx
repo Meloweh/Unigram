@@ -86,6 +86,9 @@ function useUnzipAnim(popupKey: string | null) {
   return { progress, displayKey }
 }
 
+/** Cache AudioContext + AnalyserNode per media element so createMediaElementSource is only called once */
+const audioCtxCache = new WeakMap<HTMLMediaElement, { ctx: AudioContext; analyser: AnalyserNode }>()
+
 /** Minimum base dimensions fallback before label measured */
 const NODE_MIN_W = 80
 const NODE_MIN_H = 40
@@ -783,6 +786,7 @@ export function PrototypeViewport() {
     gridSnap,
     setGridSnap,
     updateConnectionEvidence,
+    removeConnection,
     appThemeMode,
     modelCosmetics,
     setAppThemeMode,
@@ -1184,6 +1188,7 @@ export function PrototypeViewport() {
   const [flowActiveNodes, setFlowActiveNodes] = useState<Set<string>>(new Set()) // node IDs currently executing effects
   const flowAnimRef = useRef<number | null>(null)
   const flowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flowMediaDoneRef = useRef(new Set<string>()) // nodeIds whose media finished playing
 
   // ---- Flow effect editor state ----
   const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
@@ -1258,9 +1263,15 @@ export function PrototypeViewport() {
     }
     flowCameraRef.current = null
     flowDAGRef.current = null
+    flowMediaDoneRef.current.clear()
     setFlowAnimations(new Map())
     setFlowActiveNodes(new Set())
     restoreBrokenNodes()
+    // Stop all playing media elements
+    document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
+      const media = el as HTMLVideoElement | HTMLAudioElement
+      if (!media.paused) media.pause()
+    })
   }, [setPanOffset, setFreeScale, restoreBrokenNodes])
 
   // Trigger media playback on a node via DOM
@@ -1331,10 +1342,109 @@ export function PrototypeViewport() {
             const dur = (gNode.config.durationMs as number) ?? 300
 
             switch (gNode.kind) {
-              case 'play-media':
-                setTimeout(() => triggerMediaPlay(nodeId), delay)
-                layerMaxDuration = Math.max(layerMaxDuration, 200)
+              case 'play-media': {
+                const isReactive = !!gNode.config.audioReactive
+                const reactiveEffect = (gNode.config.visualEffect as string) ?? 'glow-pulse'
+                const reactiveIntensity = (gNode.config.reactiveIntensity as number) ?? 1
+                const capturedNodeId = nodeId
+                setTimeout(() => {
+                  triggerMediaPlay(capturedNodeId)
+                  // Listen for media completion to signal the flow DAG
+                  const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
+                  if (!article) return
+                  const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
+                  if (media) {
+                    const onMediaDone = () => {
+                      flowMediaDoneRef.current.add(capturedNodeId)
+                      media.removeEventListener('pause', onMediaDone)
+                      media.removeEventListener('ended', onMediaDone)
+                    }
+                    // Wait for playback to actually start before listening for pause/ended
+                    const onPlaying = () => {
+                      media.removeEventListener('playing', onPlaying)
+                      media.addEventListener('pause', onMediaDone)
+                      media.addEventListener('ended', onMediaDone)
+                    }
+                    media.addEventListener('playing', onPlaying)
+                  }
+                  if (isReactive) {
+                    // Start audio-reactive visualization after a short delay for media to begin
+                    setTimeout(() => {
+                      const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
+                      if (!article) return
+                      const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
+                      if (!media) return
+
+                      let cached = audioCtxCache.get(media)
+                      if (!cached) {
+                        try {
+                          const audioCtx = new AudioContext()
+                          const analyser = audioCtx.createAnalyser()
+                          analyser.fftSize = 256
+                          const source = audioCtx.createMediaElementSource(media)
+                          source.connect(analyser)
+                          analyser.connect(audioCtx.destination)
+                          cached = { ctx: audioCtx, analyser }
+                          audioCtxCache.set(media, cached)
+                        } catch {
+                          return
+                        }
+                      }
+                      // Resume context if it was suspended (e.g. browser autoplay policy)
+                      if (cached.ctx.state === 'suspended') cached.ctx.resume()
+
+                      const { analyser } = cached
+                      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+                      const origFilter = article.style.filter
+                      const origOpacity = article.style.opacity
+                      const origTransform = article.style.transform
+
+                      const arTick = () => {
+                        // Stop when media is paused or ended
+                        if (media.paused || media.ended) {
+                          article.style.filter = origFilter
+                          article.style.opacity = origOpacity
+                          article.style.transform = origTransform
+                          return
+                        }
+
+                        analyser.getByteFrequencyData(dataArray)
+                        let sum = 0
+                        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]
+                        const amp = (sum / dataArray.length / 255) * reactiveIntensity
+
+                        switch (reactiveEffect) {
+                          case 'glow-pulse': {
+                            const glow = Math.round(amp * 30)
+                            article.style.filter = `drop-shadow(0 0 ${glow}px rgba(56, 189, 248, ${amp}))`
+                            break
+                          }
+                          case 'scale-bounce': {
+                            const scaleVal = 1 + amp * 0.15
+                            article.style.transform = origTransform.replace(/scale\([^)]*\)/, '').trim() + ` scale(${scaleVal})`
+                            break
+                          }
+                          case 'opacity-pulse': {
+                            const op = 0.4 + amp * 0.6
+                            article.style.opacity = `${op}`
+                            break
+                          }
+                          case 'color-shift': {
+                            const hue = Math.round(amp * 360)
+                            article.style.filter = `hue-rotate(${hue}deg) saturate(${1 + amp})`
+                            break
+                          }
+                        }
+                        requestAnimationFrame(arTick)
+                      }
+                      requestAnimationFrame(arTick)
+                    }, 100)
+                  }
+                }, delay)
+                // Use large cap duration; actual completion signalled by media pause/ended event
+                layerMaxDuration = Math.max(layerMaxDuration, 600000)
                 break
+              }
               case 'wait':
                 layerMaxDuration = Math.max(layerMaxDuration, dur)
                 break
@@ -1841,7 +1951,7 @@ export function PrototypeViewport() {
           wireUpdates.set(task.connectionKey, progress)
         }
 
-        if (progress >= 1) {
+        if (progress >= 1 || (task.kind === 'node' && flowMediaDoneRef.current.has(task.nodeId))) {
           justCompleted.push(taskId)
         }
       }
@@ -1988,6 +2098,7 @@ export function PrototypeViewport() {
           setFlowAnimations(new Map())
           setFlowActiveNodes(new Set())
           flowDAGRef.current = null
+          flowMediaDoneRef.current.clear()
           flowCameraOverrideRef.current = null
           restoreBrokenNodes()
           // Camera return animation
@@ -2155,11 +2266,18 @@ export function PrototypeViewport() {
       reader.onload = () => {
         const dataUrl = reader.result as string
         if (existingNode) {
-          // Drop onto existing media node — replace its media
-          updateNodeProps(frame.modelId, existingNode.id, {
-            mediaSrc: dataUrl,
-            mediaFileName: file.name,
-          })
+          // Image dropped on an audio node → set as cover image instead of replacing media
+          if (existingNode.mediaType === 'audio' && (mType === 'image' || mType === 'gif')) {
+            updateNodeProps(frame.modelId, existingNode.id, {
+              audioCoverSrc: dataUrl,
+            })
+          } else {
+            // Drop onto existing media node — replace its media
+            updateNodeProps(frame.modelId, existingNode.id, {
+              mediaSrc: dataUrl,
+              mediaFileName: file.name,
+            })
+          }
         } else {
           // Drop onto empty scene — create a new media node
           const pos = clientToScene(e.clientX, e.clientY)
@@ -2279,6 +2397,16 @@ export function PrototypeViewport() {
         }
         if (frame.selectedNodeId) {
           removeNode(frame.modelId, frame.selectedNodeId)
+          return
+        }
+        // Delete selected connection
+        if (unzipPopup) {
+          const conn = model.connections.find(c => `${c.from}->${c.to}` === unzipPopup.connectionKey)
+          if (conn) {
+            beginEditNode(frame.modelId)
+            removeConnection(frame.modelId, conn.from, conn.to)
+            closeUnzip()
+          }
         }
       }
       // Escape to deselect or cancel editing
@@ -2312,7 +2440,7 @@ export function PrototypeViewport() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, model.connections, selectedNodeIds, removeNode, clearSelection, closeUnzip, undo, redo, beginEditNode, addNode, addConnection])
+  }, [frame.selectedNodeId, frame.modelId, editingNodeId, model.nodes, model.connections, selectedNodeIds, removeNode, removeConnection, clearSelection, closeUnzip, undo, redo, beginEditNode, addNode, addConnection, unzipPopup])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -2493,7 +2621,7 @@ export function PrototypeViewport() {
       onPointerDown={(event) => {
         if (event.button !== 0) return
         const el = event.target as HTMLElement
-        if (el.closest('.sidebar') || el.closest('.toolbar')) return
+        if (el.closest('.sidebar') || el.closest('.editor-toolbar')) return
         // Selection-rectangle mode: start rubber band on empty space
         if (selectMode && !draggingNodeRef.current && !connectionDraft) {
           if (!el.closest('.host-node')) {
@@ -2577,7 +2705,7 @@ export function PrototypeViewport() {
         }
         // Deselect when clicking empty space — anything that isn't a node or interactive child
         const el = event.target as HTMLElement
-        if (!el.closest('.host-node') && !el.closest('.connection-line') && !el.closest('.unzip-popup') && !el.closest('.sidebar') && !el.closest('.toolbar')) {
+        if (!el.closest('.host-node') && !el.closest('.connection-line') && !el.closest('.unzip-popup') && !el.closest('.sidebar') && !el.closest('.editor-toolbar')) {
           clearSelection()
           setSelectedNodeIds(new Set())
           closeUnzip()
@@ -3215,6 +3343,7 @@ export function PrototypeViewport() {
           mpdLabels: Object.fromEntries(
             (editNode?.mpdIds ?? []).map(id => [id, storeModels[id]?.label ?? id])
           ),
+          mediaType: editNode?.mediaType,
         }
         return (
           <FlowEffectEditor
@@ -3574,6 +3703,7 @@ function ModelSceneContent({
             isDragging={node.id === draggingNodeId || (draggingMultiIds?.has(node.id) ?? false) || !!noTransition}
             isEditing={node.id === editingNodeId}
             isFlowActive={flowActiveNodes.has(node.id)}
+            isFlowRunning={isFlowRunning}
             onFinishEditing={(label) => onFinishEditing(node.id, label)}
             onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
             onResize={(size) => handleNodeResize(node.id, size)}
@@ -3843,6 +3973,7 @@ function SceneNode({
   isDragging,
   isEditing,
   isFlowActive,
+  isFlowRunning,
   onFinishEditing,
   onLiveEditLabel,
   onResize,
@@ -3867,6 +3998,7 @@ function SceneNode({
   isDragging: boolean
   isEditing: boolean
   isFlowActive: boolean
+  isFlowRunning: boolean
   onFinishEditing: (label: string) => void
   onLiveEditLabel: (label: string) => void
   onResize: (size: { w: number; h: number }) => void
@@ -3884,6 +4016,8 @@ function SceneNode({
   // Audio recording state
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const [isRecording, setIsRecording] = useState(false)
+  const onSetMediaRef = useRef(onSetMedia)
+  onSetMediaRef.current = onSetMedia
 
   const startRecording = useCallback(async () => {
     try {
@@ -3896,8 +4030,8 @@ function SceneNode({
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
         const reader = new FileReader()
         reader.onload = () => {
-          if (reader.result && onSetMedia) {
-            onSetMedia(reader.result as string, 'recording.webm')
+          if (reader.result && onSetMediaRef.current) {
+            onSetMediaRef.current(reader.result as string, 'recording.webm')
           }
         }
         reader.readAsDataURL(blob)
@@ -3909,7 +4043,7 @@ function SceneNode({
     } catch {
       // Microphone access denied or unavailable
     }
-  }, [onSetMedia])
+  }, [])
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -4116,7 +4250,7 @@ function SceneNode({
               <audio
                 ref={mediaRef as React.RefObject<HTMLAudioElement>}
                 src={node.mediaSrc}
-                controls
+                controls={!isFlowRunning}
                 preload="metadata"
                 onTimeUpdate={handleMediaTimeUpdate}
                 onPointerDown={(e) => e.stopPropagation()}
@@ -4127,7 +4261,7 @@ function SceneNode({
             <video
               ref={mediaRef as React.RefObject<HTMLVideoElement>}
               src={node.mediaSrc}
-              controls
+              controls={!isFlowRunning}
               preload="metadata"
               draggable={false}
               onTimeUpdate={handleMediaTimeUpdate}
@@ -4168,14 +4302,19 @@ function SceneNode({
           )}
         </div>
       )}
-      {/* Empty media placeholder */}
+      {/* Empty media placeholder (or audio with cover but no audio yet) */}
       {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && !node.mediaSrc && chromeFade > 0.01 && (
         <div className="media-node-placeholder" style={{ opacity: chromeFade }}>
-          <span className="media-node-placeholder-icon">
-            {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? (isRecording ? '⏺' : '🔊') : '🎬'}
-          </span>
+          {node.mediaType === 'audio' && node.audioCoverSrc ? (
+            <img src={node.audioCoverSrc} alt="Cover" className="media-audio-cover" draggable={false}
+              style={{ maxHeight: '60%', objectFit: 'cover', borderRadius: 6 }} />
+          ) : (
+            <span className="media-node-placeholder-icon">
+              {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? (isRecording ? '⏺' : '🔊') : '🎬'}
+            </span>
+          )}
           <span className="media-node-placeholder-text">
-            {isRecording ? 'Recording…' : `Drop ${node.mediaType} here`}
+            {isRecording ? 'Recording…' : node.mediaType === 'audio' && node.audioCoverSrc ? 'Drop audio or record' : `Drop ${node.mediaType} here`}
           </span>
           {node.mediaType === 'audio' && onSetMedia && (
             <button

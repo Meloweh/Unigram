@@ -12,6 +12,8 @@ export interface EffectEditorHostContext {
   mpdIds: string[]
   /** Labels for MPD models keyed by model ID */
   mpdLabels: Record<string, string>
+  /** The media type of the host node (undefined if not a media node) */
+  mediaType?: string
 }
 
 // ---- Spawn item type ----
@@ -134,8 +136,10 @@ export function FlowEffectEditor({
   onClose: () => void
 }) {
   // Build the addable kinds based on host context
+  const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'play-media', 'camera', 'break', 'expand', 'collapse',
+    'wait', 'move', 'color', 'spawn', 'camera', 'break',
+    ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
     ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
@@ -616,9 +620,49 @@ export function FlowEffectEditor({
                 )}
                 {/* ---- Play media ---- */}
                 {selectedNode.kind === 'play-media' && (
-                  <div className="fxeditor-field-hint">
-                    Triggers media playback on the host node.
-                  </div>
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Triggers media playback on the host node.
+                    </div>
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.audioReactive}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            updateNodeConfig('audioReactive', true)
+                            if (!selectedNode.config.visualEffect) updateNodeConfig('visualEffect', 'glow-pulse')
+                            if (!selectedNode.config.reactiveIntensity) updateNodeConfig('reactiveIntensity', 1)
+                          } else {
+                            updateNodeConfig('audioReactive', false)
+                          }
+                        }}
+                      />
+                      <span>Audio Reactive</span>
+                    </label>
+                    {!!selectedNode.config.audioReactive && (
+                      <>
+                        <label className="fxeditor-field">
+                          <span>Visual Effect</span>
+                          <select
+                            value={(selectedNode.config.visualEffect as string) ?? 'glow-pulse'}
+                            onChange={(e) => updateNodeConfig('visualEffect', e.target.value)}
+                          >
+                            <option value="glow-pulse">Glow Pulse</option>
+                            <option value="scale-bounce">Scale Bounce</option>
+                            <option value="opacity-pulse">Opacity Pulse</option>
+                            <option value="color-shift">Color Shift</option>
+                          </select>
+                        </label>
+                        <label className="fxeditor-field">
+                          <span>Intensity</span>
+                          <input type="number" min={0.1} max={3} step={0.1}
+                            value={(selectedNode.config.reactiveIntensity as number) ?? 1}
+                            onChange={(e) => updateNodeConfig('reactiveIntensity', Number(e.target.value))} />
+                        </label>
+                      </>
+                    )}
+                  </>
                 )}
                 {/* ---- Spawn ---- */}
                 {selectedNode.kind === 'spawn' && (() => {
