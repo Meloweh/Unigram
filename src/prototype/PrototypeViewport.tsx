@@ -1412,6 +1412,9 @@ export function PrototypeViewport() {
                       media.addEventListener('ended', onMediaDone)
                     }
                     media.addEventListener('playing', onPlaying)
+                  } else {
+                    // GIF or image node: no media element, signal completion immediately
+                    flowMediaDoneRef.current.add(capturedNodeId)
                   }
                   if (isReactive) {
                     // Start audio-reactive visualization after a short delay for media to begin
@@ -2195,8 +2198,33 @@ export function PrototypeViewport() {
 
     // If there's implicit media and no locked effect, still play media
     if (hasMedia && !hasLockedEffect && effects.length === 0) {
-      triggerMediaPlay(nodeId)
-      maxDuration = Math.max(maxDuration, 200)
+      const capturedNodeId = nodeId
+      triggerMediaPlay(capturedNodeId)
+      // Set up flowMediaDoneRef listener so the flow blocks until media finishes
+      const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
+      if (article) {
+        const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
+        if (media) {
+          const onMediaDone = () => {
+            flowMediaDoneRef.current.add(capturedNodeId)
+            media.removeEventListener('pause', onMediaDone)
+            media.removeEventListener('ended', onMediaDone)
+          }
+          const onPlaying = () => {
+            media.removeEventListener('playing', onPlaying)
+            media.addEventListener('pause', onMediaDone)
+            media.addEventListener('ended', onMediaDone)
+          }
+          media.addEventListener('playing', onPlaying)
+          maxDuration = Math.max(maxDuration, 600000)
+        } else {
+          // GIF/image: no media element, complete immediately
+          flowMediaDoneRef.current.add(capturedNodeId)
+          maxDuration = Math.max(maxDuration, 200)
+        }
+      } else {
+        maxDuration = Math.max(maxDuration, 200)
+      }
     }
 
     return maxDuration > 0 ? maxDuration : 100
@@ -4719,6 +4747,7 @@ function SceneNode({
                 preload="metadata"
                 onTimeUpdate={handleMediaTimeUpdate}
                 onPointerDown={(e) => e.stopPropagation()}
+                className={isFlowRunning ? 'flow-hidden-media' : undefined}
               />
             </div>
           )}
@@ -4730,7 +4759,17 @@ function SceneNode({
               preload="metadata"
               draggable={false}
               onTimeUpdate={handleMediaTimeUpdate}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                // Only block left-click in the native controls bar (~40px from bottom)
+                // so node dragging and connection drawing still work on the video surface
+                if (e.button === 0) {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const yInElement = e.clientY - rect.top
+                  if (yInElement > rect.height - 40) {
+                    e.stopPropagation()
+                  }
+                }
+              }}
             />
           )}
         </div>
