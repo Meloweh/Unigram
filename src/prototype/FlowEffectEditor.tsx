@@ -32,6 +32,12 @@ export interface SpawnItem {
   connectionType: 'none' | 'default' | 'flow'
 }
 
+export interface SpawnCircularItem {
+  label: string
+  animation: 'emerge' | 'zip-in'
+  connectionType: 'none' | 'default' | 'flow'
+}
+
 // ---- Constants ----
 
 const NODE_W = 160
@@ -45,6 +51,7 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'move': 'Move',
   'color': 'Color',
   'spawn': 'Spawn',
+  'spawn-circular': 'Spawn Circular',
   'play-media': 'Play media',
   'handoff-rmm': 'Handoff to RMM',
   'return-rmm': 'Return from RMM',
@@ -54,6 +61,9 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'expand': 'Expand',
   'collapse': 'Collapse',
   'record': '⏺ Record',
+  'jitter': 'Jitter',
+  'float': 'Float',
+  'emerge': 'Emerge',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -62,13 +72,19 @@ const kindColors: Record<FlowEffectKind, string> = {
   'move': '#10b981',
   'color': '#f59e0b',
   'spawn': '#ec4899',
+  'spawn-circular': '#f472b6',
   'play-media': '#f97316',
   'handoff-rmm': '#a78bfa',
   'return-rmm': '#c084fc',
   'handoff-mpd': '#2dd4bf',
+  'camera': '#818cf8',
+  'break': '#f87171',
   'expand': '#22c55e',
   'collapse': '#ef4444',
   'record': '#dc2626',
+  'jitter': '#fb923c',
+  'float': '#67e8f9',
+  'emerge': '#a3e635',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -104,7 +120,11 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
     case 'expand': return { durationMs: 300 }
     case 'collapse': return { durationMs: 300 }
-    case 'record': return { captureMode: 'tab' }
+    case 'record': return { captureMode: 'tab', hideCursor: true, recordingWidth: 1920, recordingHeight: 1080, videoBitrateMbps: 32, codec: 'vp9' }
+    case 'jitter': return { intensity: 4, durationMs: 1000 }
+    case 'float': return { amplitude: 6, speed: 1, durationMs: 3000 }
+    case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
+    case 'emerge': return { targetNodeLabel: '', animation: 'scale-in', durationMs: 600 }
   }
 }
 
@@ -141,7 +161,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'camera', 'break', 'record',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'camera', 'break', 'record',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
@@ -548,26 +568,24 @@ export function FlowEffectEditor({
                                 onClick={() => updateWaypoints(waypoints.filter((_, i) => i !== idx))}>×</button>
                             )}
                           </div>
-                          <div className="fxeditor-field-row">
-                            <label className="fxeditor-field" style={{ flex: 1 }}>
-                              <span>ΔX (%)</span>
-                              <input type="number" step={1} value={wp.dx}
-                                onChange={(e) => {
-                                  const next = [...waypoints]
-                                  next[idx] = { ...wp, dx: Number(e.target.value) }
-                                  updateWaypoints(next)
-                                }} />
-                            </label>
-                            <label className="fxeditor-field" style={{ flex: 1 }}>
-                              <span>ΔY (%)</span>
-                              <input type="number" step={1} value={wp.dy}
-                                onChange={(e) => {
-                                  const next = [...waypoints]
-                                  next[idx] = { ...wp, dy: Number(e.target.value) }
-                                  updateWaypoints(next)
-                                }} />
-                            </label>
-                          </div>
+                          <label className="fxeditor-field">
+                            <span>ΔX (%)</span>
+                            <input type="number" step={1} value={wp.dx}
+                              onChange={(e) => {
+                                const next = [...waypoints]
+                                next[idx] = { ...wp, dx: Number(e.target.value) }
+                                updateWaypoints(next)
+                              }} />
+                          </label>
+                          <label className="fxeditor-field">
+                            <span>ΔY (%)</span>
+                            <input type="number" step={1} value={wp.dy}
+                              onChange={(e) => {
+                                const next = [...waypoints]
+                                next[idx] = { ...wp, dy: Number(e.target.value) }
+                                updateWaypoints(next)
+                              }} />
+                          </label>
                           <label className="fxeditor-field">
                             <span>Duration (ms)</span>
                             <input type="number" min={0} step={50} value={wp.durationMs}
@@ -692,26 +710,24 @@ export function FlowEffectEditor({
                                 updateSpawnItems(next)
                               }} />
                           </label>
-                          <div className="fxeditor-field-row">
-                            <label className="fxeditor-field" style={{ flex: 1 }}>
-                              <span>ΔX (%)</span>
-                              <input type="number" step={1} value={item.offsetX}
-                                onChange={(e) => {
-                                  const next = [...spawnItems]
-                                  next[idx] = { ...item, offsetX: Number(e.target.value) }
-                                  updateSpawnItems(next)
-                                }} />
-                            </label>
-                            <label className="fxeditor-field" style={{ flex: 1 }}>
-                              <span>ΔY (%)</span>
-                              <input type="number" step={1} value={item.offsetY}
-                                onChange={(e) => {
-                                  const next = [...spawnItems]
-                                  next[idx] = { ...item, offsetY: Number(e.target.value) }
-                                  updateSpawnItems(next)
-                                }} />
-                            </label>
-                          </div>
+                          <label className="fxeditor-field">
+                            <span>ΔX (%)</span>
+                            <input type="number" step={1} value={item.offsetX}
+                              onChange={(e) => {
+                                const next = [...spawnItems]
+                                next[idx] = { ...item, offsetX: Number(e.target.value) }
+                                updateSpawnItems(next)
+                              }} />
+                          </label>
+                          <label className="fxeditor-field">
+                            <span>ΔY (%)</span>
+                            <input type="number" step={1} value={item.offsetY}
+                              onChange={(e) => {
+                                const next = [...spawnItems]
+                                next[idx] = { ...item, offsetY: Number(e.target.value) }
+                                updateSpawnItems(next)
+                              }} />
+                          </label>
                           <label className="fxeditor-field">
                             <span>Animation</span>
                             <select value={item.animation}
@@ -888,6 +904,202 @@ export function FlowEffectEditor({
                         Viewport-only capture uses the CropTarget API, supported in Chrome 104+ only. Other browsers will fall back to full tab capture.
                       </div>
                     )}
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={selectedNode.config.hideCursor !== false}
+                        onChange={(e) => updateNodeConfig('hideCursor', e.target.checked)}
+                      />
+                      <span>Hide cursor during recording</span>
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Recording Width (px)</span>
+                      <input type="number" min={320} max={7680} step={10}
+                        value={(selectedNode.config.recordingWidth as number) ?? 1920}
+                        onChange={(e) => updateNodeConfig('recordingWidth', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Recording Height (px)</span>
+                      <input type="number" min={240} max={4320} step={10}
+                        value={(selectedNode.config.recordingHeight as number) ?? 1080}
+                        onChange={(e) => updateNodeConfig('recordingHeight', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Codec</span>
+                      <select
+                        value={(selectedNode.config.codec as string) ?? 'vp9'}
+                        onChange={(e) => updateNodeConfig('codec', e.target.value)}
+                      >
+                        <option value="vp9">VP9 (recommended)</option>
+                        <option value="vp8">VP8 (smaller files)</option>
+                        <option value="h264">H.264 (wide compat)</option>
+                      </select>
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Video Bitrate</span>
+                      <select
+                        value={(selectedNode.config.videoBitrateMbps as number) ?? 32}
+                        onChange={(e) => updateNodeConfig('videoBitrateMbps', Number(e.target.value))}
+                      >
+                        <option value={8}>8 Mbps</option>
+                        <option value={16}>16 Mbps</option>
+                        <option value={32}>32 Mbps (default)</option>
+                        <option value={64}>64 Mbps</option>
+                        <option value={100}>100 Mbps</option>
+                        <option value={200}>200 Mbps (near lossless)</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+                {/* ---- Jitter ---- */}
+                {selectedNode.kind === 'jitter' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Makes the node shake nervously for a duration.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Intensity (px)</span>
+                      <input type="number" min={1} max={20} step={1}
+                        value={(selectedNode.config.intensity as number) ?? 4}
+                        onChange={(e) => updateNodeConfig('intensity', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={100} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {/* ---- Float ---- */}
+                {selectedNode.kind === 'float' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Wobbles the node in place like an air-suspended drone.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Amplitude (px)</span>
+                      <input type="number" min={1} max={30} step={1}
+                        value={(selectedNode.config.amplitude as number) ?? 6}
+                        onChange={(e) => updateNodeConfig('amplitude', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Speed</span>
+                      <input type="number" min={0.1} max={5} step={0.1}
+                        value={(selectedNode.config.speed as number) ?? 1}
+                        onChange={(e) => updateNodeConfig('speed', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={200} step={100}
+                        value={(selectedNode.config.durationMs as number) ?? 3000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {/* ---- Spawn Circular ---- */}
+                {selectedNode.kind === 'spawn-circular' && (() => {
+                  const scItems: SpawnCircularItem[] = (selectedNode.config.spawnCircularItems as SpawnCircularItem[] | undefined) ?? []
+                  const updateScItems = (items: SpawnCircularItem[]) => updateNodeConfig('spawnCircularItems', items)
+                  return (
+                    <div className="fxeditor-spawn-section">
+                      <div className="fxeditor-field-hint">
+                        Spawns nodes in a circle around the source, one after another.
+                      </div>
+                      <label className="fxeditor-field">
+                        <span>Distance (px)</span>
+                        <input type="number" min={20} step={10}
+                          value={(selectedNode.config.distance as number) ?? 120}
+                          onChange={(e) => updateNodeConfig('distance', Number(e.target.value))} />
+                      </label>
+                      <label className="fxeditor-field">
+                        <span>Delay between (ms)</span>
+                        <input type="number" min={0} step={50}
+                          value={(selectedNode.config.delayBetweenMs as number) ?? 200}
+                          onChange={(e) => updateNodeConfig('delayBetweenMs', Number(e.target.value))} />
+                      </label>
+                      {scItems.map((item, idx) => (
+                        <div key={idx} className="fxeditor-spawn-item">
+                          <div className="fxeditor-spawn-item-header">
+                            <span className="fxeditor-spawn-item-num">#{idx + 1}</span>
+                            <button type="button" className="fxeditor-spawn-remove"
+                              onClick={() => updateScItems(scItems.filter((_, i) => i !== idx))}>×</button>
+                          </div>
+                          <label className="fxeditor-field">
+                            <span>Label</span>
+                            <input type="text" value={item.label}
+                              onChange={(e) => {
+                                const next = [...scItems]
+                                next[idx] = { ...item, label: e.target.value }
+                                updateScItems(next)
+                              }} />
+                          </label>
+                          <label className="fxeditor-field">
+                            <span>Animation</span>
+                            <select value={item.animation}
+                              onChange={(e) => {
+                                const next = [...scItems]
+                                next[idx] = { ...item, animation: e.target.value as SpawnCircularItem['animation'] }
+                                updateScItems(next)
+                              }}>
+                              <option value="emerge">Emerge from source</option>
+                              <option value="zip-in">Zip-in</option>
+                            </select>
+                          </label>
+                          <label className="fxeditor-field">
+                            <span>Connection</span>
+                            <select value={item.connectionType}
+                              onChange={(e) => {
+                                const next = [...scItems]
+                                next[idx] = { ...item, connectionType: e.target.value as SpawnCircularItem['connectionType'] }
+                                updateScItems(next)
+                              }}>
+                              <option value="none">No connection</option>
+                              <option value="default">Default connection</option>
+                              <option value="flow">Flow connection</option>
+                            </select>
+                          </label>
+                        </div>
+                      ))}
+                      <button type="button" className="fxeditor-spawn-add"
+                        onClick={() => updateScItems([...scItems, {
+                          label: `Node ${scItems.length + 1}`,
+                          animation: 'emerge',
+                          connectionType: 'none',
+                        }])}>
+                        + Add spawn item
+                      </button>
+                    </div>
+                  )
+                })()}
+                {/* ---- Emerge ---- */}
+                {selectedNode.kind === 'emerge' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Makes a target node emerge out of the source node.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Target node label</span>
+                      <input type="text"
+                        value={(selectedNode.config.targetNodeLabel as string) ?? ''}
+                        onChange={(e) => updateNodeConfig('targetNodeLabel', e.target.value)} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Animation</span>
+                      <select
+                        value={(selectedNode.config.animation as string) ?? 'scale-in'}
+                        onChange={(e) => updateNodeConfig('animation', e.target.value)}
+                      >
+                        <option value="scale-in">Scale in</option>
+                        <option value="fade-in">Fade in</option>
+                      </select>
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={100} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 600}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
                   </>
                 )}
                 {/* Delete button */}

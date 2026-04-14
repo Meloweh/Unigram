@@ -1291,6 +1291,7 @@ export function PrototypeViewport() {
       }
       setForceCollapseSidebars(false)
       setHideToolbar(false)
+      document.documentElement.style.cursor = ''
     }
   }, [setPanOffset, setFreeScale, restoreBrokenNodes])
 
@@ -1787,16 +1788,189 @@ export function PrototypeViewport() {
                 layerMaxDuration = Math.max(layerMaxDuration, dur)
                 break
               }
+              case 'jitter': {
+                const intensity = (gNode.config.intensity as number) ?? 4
+                const durationMs = (gNode.config.durationMs as number) ?? 1000
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!el) return
+                  const start = performance.now()
+                  const animateJitter = (now: number) => {
+                    const t = (now - start) / durationMs
+                    if (t >= 1) {
+                      el.style.transform = 'translate(-50%, -50%)'
+                      return
+                    }
+                    const decay = 1 - t
+                    const dx = (Math.random() * 2 - 1) * intensity * decay
+                    const dy = (Math.random() * 2 - 1) * intensity * decay
+                    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+                    requestAnimationFrame(animateJitter)
+                  }
+                  requestAnimationFrame(animateJitter)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, durationMs)
+                break
+              }
+              case 'float': {
+                const amplitude = (gNode.config.amplitude as number) ?? 6
+                const speed = (gNode.config.speed as number) ?? 1
+                const durationMs = (gNode.config.durationMs as number) ?? 3000
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!el) return
+                  // Random phase offsets so multi-axis wobble looks organic
+                  const phaseX = Math.random() * Math.PI * 2
+                  const phaseY = Math.random() * Math.PI * 2
+                  const start = performance.now()
+                  const animateFloat = (now: number) => {
+                    const t = (now - start) / durationMs
+                    if (t >= 1) {
+                      el.style.transform = 'translate(-50%, -50%)'
+                      return
+                    }
+                    // Wobble using two incommensurate sine waves per axis
+                    const s = t * speed * Math.PI * 2 * (durationMs / 1000)
+                    const dx = Math.sin(s * 1.3 + phaseX) * amplitude * 0.7 + Math.sin(s * 2.1 + phaseX + 1) * amplitude * 0.3
+                    const dy = Math.sin(s * 0.9 + phaseY) * amplitude * 0.7 + Math.cos(s * 1.7 + phaseY + 2) * amplitude * 0.3
+                    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+                    requestAnimationFrame(animateFloat)
+                  }
+                  requestAnimationFrame(animateFloat)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, durationMs)
+                break
+              }
+              case 'spawn-circular': {
+                const scItems = (gNode.config.spawnCircularItems as Array<{
+                  label: string; animation: string; connectionType: string
+                }>) ?? []
+                const distance = (gNode.config.distance as number) ?? 120
+                const delayBetweenMs = (gNode.config.delayBetweenMs as number) ?? 200
+                const count = scItems.length
+                const totalSpawnDur = count > 0 ? (count - 1) * delayBetweenMs + 400 : 0
+                setTimeout(() => {
+                  if (!node || count === 0) return
+                  scItems.forEach((item, idx) => {
+                    setTimeout(() => {
+                      const angle = (2 * Math.PI * idx) / count - Math.PI / 2 // start from top
+                      const spawnX = node.x + Math.cos(angle) * distance
+                      const spawnY = node.y + Math.sin(angle) * distance
+                      const newId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+                      addNode(frame.modelId, { id: newId, label: item.label, x: spawnX, y: spawnY })
+                      if (item.connectionType !== 'none') {
+                        addConnection(frame.modelId, {
+                          from: nodeId, to: newId,
+                          type: item.connectionType === 'flow' ? 'flow' : 'default',
+                        })
+                      }
+                      requestAnimationFrame(() => {
+                        const el = document.querySelector(`[data-node-id="${CSS.escape(newId)}"]`) as HTMLElement | null
+                        if (el) {
+                          if (item.animation === 'zip-in') {
+                            el.style.opacity = '0'
+                            el.style.transform = 'scale(0.3)'
+                            el.style.transition = 'opacity 300ms ease, transform 300ms ease'
+                            requestAnimationFrame(() => {
+                              el.style.opacity = '1'
+                              el.style.transform = 'scale(1)'
+                            })
+                          } else {
+                            el.style.transform = 'scale(0)'
+                            el.style.transition = 'transform 400ms ease'
+                            requestAnimationFrame(() => {
+                              el.style.transform = 'scale(1)'
+                            })
+                          }
+                        }
+                      })
+                    }, idx * delayBetweenMs)
+                  })
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, totalSpawnDur)
+                break
+              }
+              case 'emerge': {
+                const targetLabel = (gNode.config.targetNodeLabel as string) ?? ''
+                const animation = (gNode.config.animation as string) ?? 'scale-in'
+                const emergeDur = (gNode.config.durationMs as number) ?? 600
+                setTimeout(() => {
+                  if (!targetLabel) return
+                  // Find target node by label
+                  const targetNode = model.nodes.find(n => n.label === targetLabel && n.id !== nodeId)
+                  if (!targetNode) return
+                  const targetEl = document.querySelector(`[data-node-id="${CSS.escape(targetNode.id)}"]`) as HTMLElement | null
+                  const sourceEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!targetEl) return
+                  if (animation === 'fade-in') {
+                    targetEl.style.opacity = '0'
+                    targetEl.style.transition = `opacity ${emergeDur}ms ease`
+                    requestAnimationFrame(() => {
+                      targetEl.style.opacity = '1'
+                      setTimeout(() => {
+                        targetEl.style.transition = ''
+                      }, emergeDur)
+                    })
+                  } else {
+                    // scale-in: start at source center, scale 0, animate to full size at target position
+                    if (sourceEl) {
+                      const sourceRect = sourceEl.getBoundingClientRect()
+                      const targetRect = targetEl.getBoundingClientRect()
+                      const dx = sourceRect.left + sourceRect.width / 2 - (targetRect.left + targetRect.width / 2)
+                      const dy = sourceRect.top + sourceRect.height / 2 - (targetRect.top + targetRect.height / 2)
+                      targetEl.style.transform = `translate(${dx}px, ${dy}px) scale(0)`
+                      targetEl.style.transition = 'none'
+                      requestAnimationFrame(() => {
+                        targetEl.style.transition = `transform ${emergeDur}ms cubic-bezier(0.25, 0.1, 0.25, 1)`
+                        requestAnimationFrame(() => {
+                          targetEl.style.transform = 'translate(0, 0) scale(1)'
+                          setTimeout(() => {
+                            targetEl.style.transition = ''
+                            targetEl.style.transform = ''
+                          }, emergeDur)
+                        })
+                      })
+                    } else {
+                      targetEl.style.transform = 'scale(0)'
+                      targetEl.style.transition = `transform ${emergeDur}ms ease`
+                      requestAnimationFrame(() => {
+                        targetEl.style.transform = 'scale(1)'
+                        setTimeout(() => {
+                          targetEl.style.transition = ''
+                          targetEl.style.transform = ''
+                        }, emergeDur)
+                      })
+                    }
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, emergeDur)
+                break
+              }
               case 'record': {
                 const captureMode = (gNode.config.captureMode as string) ?? 'tab'
+                const hideCursor = gNode.config.hideCursor !== false
+                const recWidth = (gNode.config.recordingWidth as number) || undefined
+                const recHeight = (gNode.config.recordingHeight as number) || undefined
+                const videoBitrateMbps = (gNode.config.videoBitrateMbps as number) || 32
+                const codecPref = (gNode.config.codec as string) ?? 'vp9'
+                const mimeTypes: Record<string, string[]> = {
+                  vp9: ['video/webm;codecs=vp09.00.10.08', 'video/webm;codecs=vp9', 'video/webm'],
+                  vp8: ['video/webm;codecs=vp8', 'video/webm'],
+                  h264: ['video/mp4;codecs=avc1.640034', 'video/webm;codecs=h264', 'video/webm'],
+                }
+                const chosenMime = (mimeTypes[codecPref] ?? mimeTypes.vp9).find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm'
                 const capturedNodeId = nodeId
                 // Collapse sidebars and hide toolbar before recording starts
                 setForceCollapseSidebars(true)
                 setHideToolbar(true)
+                if (hideCursor) document.documentElement.style.cursor = 'none'
                 setTimeout(async () => {
                   try {
                     const stream = await navigator.mediaDevices.getDisplayMedia({
-                      video: true,
+                      video: {
+                        width: { ideal: recWidth },
+                        height: { ideal: recHeight },
+                      },
                       audio: true,
                       // @ts-expect-error -- preferCurrentTab is a newer Chrome API
                       preferCurrentTab: true,
@@ -1821,7 +1995,7 @@ export function PrototypeViewport() {
 
                     flowRecordStreamRef.current = stream
                     flowRecordChunksRef.current = []
-                    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+                    const recorder = new MediaRecorder(stream, { mimeType: chosenMime, videoBitsPerSecond: videoBitrateMbps * 1_000_000 })
                     recorder.ondataavailable = (e) => {
                       if (e.data.size > 0) flowRecordChunksRef.current.push(e.data)
                     }
@@ -1829,21 +2003,26 @@ export function PrototypeViewport() {
                       // Stop stream tracks
                       stream.getTracks().forEach(t => t.stop())
                       flowRecordStreamRef.current = null
-                      // Restore UI — expand sidebars and show toolbar
+                      // Restore UI — expand sidebars, show toolbar, restore cursor
+                      document.documentElement.style.cursor = ''
                       setForceCollapseSidebars(false)
                       setHideToolbar(false)
-                      // Download recording
-                      const blob = new Blob(flowRecordChunksRef.current, { type: 'video/webm' })
+                      // Download recording — deferred so UI restores first
+                      const chunks = flowRecordChunksRef.current
                       flowRecordChunksRef.current = []
                       flowRecorderRef.current = null
-                      if (blob.size > 0) {
-                        const url = URL.createObjectURL(blob)
-                        const a = document.createElement('a')
-                        a.href = url
-                        a.download = `unigram-recording-${Date.now()}.webm`
-                        a.click()
-                        URL.revokeObjectURL(url)
-                      }
+                      setTimeout(() => {
+                        const isMp4 = chosenMime.startsWith('video/mp4')
+                        const blob = new Blob(chunks, { type: isMp4 ? 'video/mp4' : 'video/webm' })
+                        if (blob.size > 0) {
+                          const url = URL.createObjectURL(blob)
+                          const a = document.createElement('a')
+                          a.href = url
+                          a.download = `unigram-recording-${Date.now()}.${isMp4 ? 'mp4' : 'webm'}`
+                          a.click()
+                          URL.revokeObjectURL(url)
+                        }
+                      }, 100)
                     }
                     // Also handle user closing the browser share dialog
                     stream.getVideoTracks()[0]?.addEventListener('ended', () => {
@@ -1855,6 +2034,7 @@ export function PrototypeViewport() {
                     flowMediaDoneRef.current.add(capturedNodeId)
                   } catch {
                     // User cancelled the getDisplayMedia prompt
+                    document.documentElement.style.cursor = ''
                     setForceCollapseSidebars(false)
                     setHideToolbar(false)
                     // Signal done so flow doesn't hang
@@ -3399,7 +3579,7 @@ export function PrototypeViewport() {
         )
       })()}
 
-      <LeftSidebar connectionType={activeConnectionType} onConnectionTypeChange={setActiveConnectionType} forceCollapsed={forceCollapseSidebars || undefined} />
+      <LeftSidebar connectionType={activeConnectionType} onConnectionTypeChange={setActiveConnectionType} forceCollapsed={forceCollapseSidebars} />
       <RightSidebar
         model={model}
         selectedNode={selectedNode}
@@ -3425,7 +3605,7 @@ export function PrototypeViewport() {
         onUpdateConnectionProps={(from, to, props) => updateConnectionProps(frame.modelId, from, to, props)}
         onEditEffect={(nodeId, effectId) => setEditingEffect({ nodeId, effectId })}
         onEditContent={(nodeId) => setEditingContentNodeId(nodeId)}
-        forceCollapsed={forceCollapseSidebars || undefined}
+        forceCollapsed={forceCollapseSidebars}
       />
 
       {/* Flow effect graph editor modal */}
