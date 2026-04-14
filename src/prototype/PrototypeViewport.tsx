@@ -1185,6 +1185,7 @@ export function PrototypeViewport() {
 
   // ---- Flow animation state ----
   const [flowAnimations, setFlowAnimations] = useState<Map<string, number>>(new Map()) // connectionKey → progress (0→1)
+  const [emergeAnimations, setEmergeAnimations] = useState<Map<string, number>>(new Map()) // connectionKey → progress (0→1) for emerge scale-in
   const [flowActiveNodes, setFlowActiveNodes] = useState<Set<string>>(new Set()) // node IDs currently executing effects
   const flowAnimRef = useRef<number | null>(null)
   const flowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1230,12 +1231,23 @@ export function PrototypeViewport() {
   flowRotationRef.current = flowRotation
   const [shakeOffset, setShakeOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const brokenNodeElementsRef = useRef<HTMLElement[]>([])
+  const emergeHiddenElementsRef = useRef<HTMLElement[]>([])
+  const scaleRevertTimersRef = useRef<number[]>([])
 
   const restoreBrokenNodes = useCallback(() => {
     for (const el of brokenNodeElementsRef.current) {
       el.style.opacity = ''
     }
     brokenNodeElementsRef.current = []
+  }, [])
+
+  const restoreEmergeNodes = useCallback(() => {
+    for (const el of emergeHiddenElementsRef.current) {
+      el.style.opacity = ''
+      el.style.transform = 'translate(-50%, -50%)'
+      el.style.transition = ''
+    }
+    emergeHiddenElementsRef.current = []
   }, [])
 
   const stopFlowAnimation = useCallback(() => {
@@ -1272,8 +1284,12 @@ export function PrototypeViewport() {
     flowDAGRef.current = null
     flowMediaDoneRef.current.clear()
     setFlowAnimations(new Map())
+    setEmergeAnimations(new Map())
     setFlowActiveNodes(new Set())
     restoreBrokenNodes()
+    restoreEmergeNodes()
+    for (const t of scaleRevertTimersRef.current) clearTimeout(t)
+    scaleRevertTimersRef.current = []
     // Stop all playing media elements
     document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
       const media = el as HTMLVideoElement | HTMLAudioElement
@@ -1293,7 +1309,7 @@ export function PrototypeViewport() {
       setHideToolbar(false)
       document.documentElement.style.cursor = ''
     }
-  }, [setPanOffset, setFreeScale, restoreBrokenNodes])
+  }, [setPanOffset, setFreeScale, restoreBrokenNodes, restoreEmergeNodes])
 
   // Trigger media playback on a node via DOM
   const triggerMediaPlay = useCallback((nodeId: string) => {
@@ -1361,6 +1377,15 @@ export function PrototypeViewport() {
             // Schedule this effect's execution
             const delay = totalDelay
             const dur = (gNode.config.durationMs as number) ?? 300
+
+            // ╔══════════════════════════════════════════════════════════════╗
+            // ║  IMPORTANT: Nodes use `transform: translate(-50%, -50%)`     ║
+            // ║  for centering. Any effect that modifies `el.style.transform`║
+            // ║  MUST preserve this, e.g.:                                   ║
+            // ║    During:  translate(calc(-50% + Xpx), calc(-50% + Ypx))    ║
+            // ║    Cleanup: translate(-50%, -50%)                            ║
+            // ║  Setting transform to '' causes SE displacement.             ║
+            // ╚══════════════════════════════════════════════════════════════╝
 
             switch (gNode.kind) {
               case 'play-media': {
@@ -1698,6 +1723,10 @@ export function PrototypeViewport() {
                     clone.style.zIndex = '10000'
                     clone.style.pointerEvents = 'none'
                     clone.style.transition = 'none'
+                    clone.style.animation = 'none'
+                    clone.style.boxShadow = 'none'
+                    clone.style.filter = 'none'
+                    clone.classList.remove('focused', 'flow-active', 'multi-selected')
                     clone.removeAttribute('data-node-id')
                   }
 
@@ -1891,59 +1920,167 @@ export function PrototypeViewport() {
                 break
               }
               case 'emerge': {
-                const targetLabel = (gNode.config.targetNodeLabel as string) ?? ''
                 const animation = (gNode.config.animation as string) ?? 'scale-in'
                 const emergeDur = (gNode.config.durationMs as number) ?? 600
                 setTimeout(() => {
-                  if (!targetLabel) return
-                  // Find target node by label
-                  const targetNode = model.nodes.find(n => n.label === targetLabel && n.id !== nodeId)
-                  if (!targetNode) return
-                  const targetEl = document.querySelector(`[data-node-id="${CSS.escape(targetNode.id)}"]`) as HTMLElement | null
-                  const sourceEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
-                  if (!targetEl) return
+                  const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!el) return
+
+                  // Find the parent node via incoming flow connections
+                  const incomingConn = model.connections.find(c => c.to === nodeId && c.type === 'flow')
+                  const parentEl = incomingConn
+                    ? document.querySelector(`[data-node-id="${CSS.escape(incomingConn.from)}"]`) as HTMLElement | null
+                    : null
+                  const connKey = incomingConn ? `${incomingConn.from}->${nodeId}` : ''
+
                   if (animation === 'fade-in') {
-                    targetEl.style.opacity = '0'
-                    targetEl.style.transition = `opacity ${emergeDur}ms ease`
+                    el.style.opacity = '0'
+                    el.style.transition = `opacity ${emergeDur}ms ease`
+                    // Also animate the connection during fade-in
+                    const fadeStart = performance.now()
+                    const animateFadeConn = (now: number) => {
+                      const t = Math.min((now - fadeStart) / emergeDur, 1)
+                      if (connKey) {
+                        setEmergeAnimations(prev => {
+                          const next = new Map(prev)
+                          if (t >= 1) next.delete(connKey)
+                          else next.set(connKey, t)
+                          return next
+                        })
+                      }
+                      if (t < 1) requestAnimationFrame(animateFadeConn)
+                    }
                     requestAnimationFrame(() => {
-                      targetEl.style.opacity = '1'
+                      el.style.opacity = '1'
+                      requestAnimationFrame(animateFadeConn)
                       setTimeout(() => {
-                        targetEl.style.transition = ''
+                        el.style.transition = ''
                       }, emergeDur)
                     })
-                  } else {
-                    // scale-in: start at source center, scale 0, animate to full size at target position
-                    if (sourceEl) {
-                      const sourceRect = sourceEl.getBoundingClientRect()
-                      const targetRect = targetEl.getBoundingClientRect()
-                      const dx = sourceRect.left + sourceRect.width / 2 - (targetRect.left + targetRect.width / 2)
-                      const dy = sourceRect.top + sourceRect.height / 2 - (targetRect.top + targetRect.height / 2)
-                      targetEl.style.transform = `translate(${dx}px, ${dy}px) scale(0)`
-                      targetEl.style.transition = 'none'
-                      requestAnimationFrame(() => {
-                        targetEl.style.transition = `transform ${emergeDur}ms cubic-bezier(0.25, 0.1, 0.25, 1)`
-                        requestAnimationFrame(() => {
-                          targetEl.style.transform = 'translate(0, 0) scale(1)'
-                          setTimeout(() => {
-                            targetEl.style.transition = ''
-                            targetEl.style.transform = ''
-                          }, emergeDur)
+                  } else if (parentEl) {
+                    // scale-in: rAF-driven, animating both node transform and real connection
+                    const parentRect = parentEl.getBoundingClientRect()
+                    const selfRect = el.getBoundingClientRect()
+                    const dx = parentRect.left + parentRect.width / 2 - (selfRect.left + selfRect.width / 2)
+                    const dy = parentRect.top + parentRect.height / 2 - (selfRect.top + selfRect.height / 2)
+
+                    el.style.opacity = '1'
+                    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0)`
+                    el.style.transition = 'none'
+
+                    const startTime = performance.now()
+                    const easeOutCubic = (t: number) => 1 - (1 - t) ** 3
+                    const animateEmerge = (now: number) => {
+                      const raw = Math.min((now - startTime) / emergeDur, 1)
+                      const t = easeOutCubic(raw)
+
+                      // Interpolate node position and scale
+                      const currDx = dx * (1 - t)
+                      const currDy = dy * (1 - t)
+                      el.style.transform = `translate(calc(-50% + ${currDx}px), calc(-50% + ${currDy}px)) scale(${t})`
+
+                      // Drive the real connection via emergeAnimations state
+                      if (connKey) {
+                        setEmergeAnimations(prev => {
+                          const next = new Map(prev)
+                          if (raw >= 1) next.delete(connKey)
+                          else next.set(connKey, t)
+                          return next
                         })
-                      })
-                    } else {
-                      targetEl.style.transform = 'scale(0)'
-                      targetEl.style.transition = `transform ${emergeDur}ms ease`
-                      requestAnimationFrame(() => {
-                        targetEl.style.transform = 'scale(1)'
-                        setTimeout(() => {
-                          targetEl.style.transition = ''
-                          targetEl.style.transform = ''
-                        }, emergeDur)
-                      })
+                      }
+
+                      if (raw < 1) {
+                        requestAnimationFrame(animateEmerge)
+                      } else {
+                        el.style.transform = 'translate(-50%, -50%)'
+                      }
                     }
+                    requestAnimationFrame(animateEmerge)
+                  } else {
+                    // No parent — just scale in from self center
+                    el.style.opacity = '1'
+                    el.style.transform = 'translate(-50%, -50%) scale(0)'
+                    el.style.transition = `transform ${emergeDur}ms ease`
+                    requestAnimationFrame(() => {
+                      el.style.transform = 'translate(-50%, -50%) scale(1)'
+                      setTimeout(() => {
+                        el.style.transition = ''
+                        el.style.transform = 'translate(-50%, -50%)'
+                      }, emergeDur)
+                    })
                   }
+                  // Remove from hidden list since it's now visible
+                  emergeHiddenElementsRef.current = emergeHiddenElementsRef.current.filter(e => e !== el)
                 }, delay)
                 layerMaxDuration = Math.max(layerMaxDuration, emergeDur)
+                break
+              }
+              case 'scale': {
+                const targetWidth = (gNode.config.targetWidth as number) ?? 200
+                const targetHeight = (gNode.config.targetHeight as number) ?? 120
+                const scaleDur = (gNode.config.durationMs as number) ?? 500
+                const persistent = gNode.config.persistent === true
+                setTimeout(() => {
+                  if (!node) return
+                  const startW = node.nodeWidth ?? 160
+                  const startH = node.nodeHeight ?? 60
+                  // Target the outer wrapper div (parent of the article) which has position styles
+                  const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!article) return
+                  // The wrapper is the article's parent if it's a polygon shape, otherwise the article itself
+                  const el = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
+                    ? article.parentElement : article
+                  const start = performance.now()
+                  const animateScale = (now: number) => {
+                    const t = Math.min((now - start) / scaleDur, 1)
+                    const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2
+                    const w = startW + (targetWidth - startW) * ease
+                    const h = startH + (targetHeight - startH) * ease
+                    el.style.width = `${w}px`
+                    el.style.minWidth = `${w}px`
+                    el.style.height = `${h}px`
+                    el.style.minHeight = `${h}px`
+                    if (t < 1) {
+                      requestAnimationFrame(animateScale)
+                    } else if (persistent) {
+                      el.style.width = ''
+                      el.style.minWidth = ''
+                      el.style.height = ''
+                      el.style.minHeight = ''
+                      updateNodeProps(frame.modelId, nodeId, { nodeWidth: targetWidth, nodeHeight: targetHeight })
+                    } else {
+                      // Hold at target size, then revert when flow stops
+                      // (stopFlowAnimation will clear scaleRevertTimersRef)
+                      // Animate back to original
+                      const revertStart = performance.now()
+                      const animateRevert = (now2: number) => {
+                        const t2 = Math.min((now2 - revertStart) / scaleDur, 1)
+                        const ease2 = t2 < 0.5 ? 2 * t2 * t2 : 1 - (-2 * t2 + 2) ** 2 / 2
+                        const w2 = targetWidth + (startW - targetWidth) * ease2
+                        const h2 = targetHeight + (startH - targetHeight) * ease2
+                        el.style.width = `${w2}px`
+                        el.style.minWidth = `${w2}px`
+                        el.style.height = `${h2}px`
+                        el.style.minHeight = `${h2}px`
+                        if (t2 < 1) {
+                          requestAnimationFrame(animateRevert)
+                        } else {
+                          el.style.width = ''
+                          el.style.minWidth = ''
+                          el.style.height = ''
+                          el.style.minHeight = ''
+                        }
+                      }
+                      // Delay the revert by a brief hold period
+                      const timer = window.setTimeout(() => {
+                        requestAnimationFrame(animateRevert)
+                      }, 200)
+                      scaleRevertTimersRef.current.push(timer)
+                    }
+                  }
+                  requestAnimationFrame(animateScale)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, persistent ? scaleDur : scaleDur * 2 + 200)
                 break
               }
               case 'record': {
@@ -2155,6 +2292,31 @@ export function PrototypeViewport() {
       untrackedPaths: new Set<string>(),
     }
     flowDAGRef.current = dag
+
+    // Hide nodes that have an 'emerge' effect — they should be invisible until their emerge executes
+    // Also collapse incoming connections to zero length via emergeAnimations
+    const initialEmergeAnims = new Map<string, number>()
+    for (const nodeId of reachableNodes) {
+      const n = model.nodes.find(nn => nn.id === nodeId)
+      if (!n?.flowEffects) continue
+      const hasEmerge = n.flowEffects.some(eff =>
+        eff.graph.nodes.some(gn => gn.kind === 'emerge')
+      )
+      if (hasEmerge) {
+        const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+        if (el) {
+          el.style.opacity = '0'
+          emergeHiddenElementsRef.current.push(el)
+        }
+        // Collapse all incoming flow connections to this node
+        for (const c of model.connections) {
+          if (c.to === nodeId && c.type === 'flow') {
+            initialEmergeAnims.set(`${c.from}->${c.to}`, 0)
+          }
+        }
+      }
+    }
+    if (initialEmergeAnims.size > 0) setEmergeAnimations(initialEmergeAnims)
 
     // Check if any reachable node has cameraTracked — if so, enable flow camera
     const anyTracked = [...reachableNodes].some(nid => {
@@ -3371,6 +3533,7 @@ export function PrototypeViewport() {
               onLiveEditLabel={() => {}}
               connectionDraft={null}
               flowAnimations={new Map()}
+              emergeAnimations={new Map()}
               flowActiveNodes={new Set()}
               unzipGap={null}
               noTransition
@@ -3471,6 +3634,7 @@ export function PrototypeViewport() {
           }}
           connectionDraft={connectionDraft}
           flowAnimations={flowAnimations}
+          emergeAnimations={emergeAnimations}
           flowActiveNodes={flowActiveNodes}
           unzipGap={unzipDisplayKey ? {
             connectionKey: unzipDisplayKey,
@@ -3709,6 +3873,7 @@ function ModelSceneContent({
   onLiveEditLabel,
   connectionDraft,
   flowAnimations,
+  emergeAnimations,
   flowActiveNodes,
   unzipGap,
   noTransition,
@@ -3735,6 +3900,7 @@ function ModelSceneContent({
   onLiveEditLabel: (nodeId: string, label: string) => void
   connectionDraft: { fromId: string; fromX: number; fromY: number; toX: number; toY: number; connectionType?: ConnectionType } | null
   flowAnimations: Map<string, number>
+  emergeAnimations: Map<string, number>
   flowActiveNodes: Set<string>
   unzipGap: { connectionKey: string; progress: number; popupSize: { w: number; h: number } | null; connectionAngle: number } | null
   noTransition?: boolean
@@ -3923,11 +4089,18 @@ function ModelSceneContent({
           const midY = (a.fy + a.ty) / 2
           const isUnzipping = unzipGap?.connectionKey === key
           const gapT = isUnzipping ? unzipGap.progress : 0
+          // Emerge animation: interpolate the target endpoint from the source toward the final anchor
+          const emergeT = emergeAnimations.get(key)
+          const effToX = emergeT != null ? a.fx + (a.tx - a.fx) * emergeT : a.tx
+          const effToY = emergeT != null ? a.fy + (a.ty - a.fy) * emergeT : a.ty
+          const isFlow = c.type === 'flow'
+          const baseStrokeWidth = c.strokeWidth ?? (isFlow ? 3 : 2)
+          const emergeStrokeWidth = emergeT != null ? baseStrokeWidth * emergeT : undefined
           return (
             <g key={key}>
               <line
                 x1={`${a.fx}%`} y1={`${a.fy}%`}
-                x2={`${a.tx}%`} y2={`${a.ty}%`}
+                x2={`${effToX}%`} y2={`${effToY}%`}
                 className="connection-hit-area"
                 onClick={(e) => {
                   e.stopPropagation()
@@ -3936,7 +4109,7 @@ function ModelSceneContent({
               />
               <ConnectionLine
                 fromX={a.fx} fromY={a.fy}
-                toX={a.tx} toY={a.ty}
+                toX={effToX} toY={effToY}
                 hasEvidence={hasEvidence}
                 connectionType={c.type}
                 flowProgress={flowAnimations.get(key)}
@@ -3945,7 +4118,7 @@ function ModelSceneContent({
                 popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
                 connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
                 strokeColor={c.strokeColor}
-                strokeWidth={c.strokeWidth}
+                strokeWidth={emergeStrokeWidth ?? c.strokeWidth}
                 strokeDash={c.strokeDash}
                 arrowStyle={c.arrowStyle}
               />

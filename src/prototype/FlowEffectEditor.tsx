@@ -64,6 +64,7 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'jitter': 'Jitter',
   'float': 'Float',
   'emerge': 'Emerge',
+  'scale': 'Scale',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -85,6 +86,7 @@ const kindColors: Record<FlowEffectKind, string> = {
   'jitter': '#fb923c',
   'float': '#67e8f9',
   'emerge': '#a3e635',
+  'scale': '#34d399',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -124,7 +126,8 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'jitter': return { intensity: 4, durationMs: 1000 }
     case 'float': return { amplitude: 6, speed: 1, durationMs: 3000 }
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
-    case 'emerge': return { targetNodeLabel: '', animation: 'scale-in', durationMs: 600 }
+    case 'emerge': return { animation: 'scale-in', durationMs: 600 }
+    case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false }
   }
 }
 
@@ -161,7 +164,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'camera', 'break', 'record',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
@@ -1076,14 +1079,8 @@ export function FlowEffectEditor({
                 {selectedNode.kind === 'emerge' && (
                   <>
                     <div className="fxeditor-field-hint">
-                      Makes a target node emerge out of the source node.
+                      Hides this node when the flow starts. When reached, the node transitions out of its parent (incoming connection's source node).
                     </div>
-                    <label className="fxeditor-field">
-                      <span>Target node label</span>
-                      <input type="text"
-                        value={(selectedNode.config.targetNodeLabel as string) ?? ''}
-                        onChange={(e) => updateNodeConfig('targetNodeLabel', e.target.value)} />
-                    </label>
                     <label className="fxeditor-field">
                       <span>Animation</span>
                       <select
@@ -1099,6 +1096,40 @@ export function FlowEffectEditor({
                       <input type="number" min={100} step={50}
                         value={(selectedNode.config.durationMs as number) ?? 600}
                         onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {/* ---- Scale ---- */}
+                {selectedNode.kind === 'scale' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Smoothly scales the node to a new width and height.
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Target Width (px)</span>
+                      <input type="number" min={20} step={10}
+                        value={(selectedNode.config.targetWidth as number) ?? 200}
+                        onChange={(e) => updateNodeConfig('targetWidth', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Target Height (px)</span>
+                      <input type="number" min={20} step={10}
+                        value={(selectedNode.config.targetHeight as number) ?? 120}
+                        onChange={(e) => updateNodeConfig('targetHeight', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={100} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 500}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={selectedNode.config.persistent === true}
+                        onChange={(e) => updateNodeConfig('persistent', e.target.checked)}
+                      />
+                      <span>Keep new size (don't revert)</span>
                     </label>
                   </>
                 )}
