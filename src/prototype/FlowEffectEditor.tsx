@@ -182,7 +182,6 @@ export function FlowEffectEditor({
   })
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; graphX: number; graphY: number } | null>(null)
 
   // Dragging state
   const dragRef = useRef<{ nodeId: string; startX: number; startY: number; origX: number; origY: number } | null>(null)
@@ -205,7 +204,6 @@ export function FlowEffectEditor({
     if (e.button !== 0) return
     e.stopPropagation()
     setSelectedNodeId(nodeId)
-    setContextMenu(null)
     const node = nodes.find(n => n.id === nodeId)
     if (!node) return
     dragRef.current = { nodeId, startX: e.clientX, startY: e.clientY, origX: node.x, origY: node.y }
@@ -221,10 +219,9 @@ export function FlowEffectEditor({
 
   // ---- Canvas pointer events ----
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button === 2) return // context menu handled separately
+    if (e.button === 2) return
     if (e.button === 0) {
       setSelectedNodeId(null)
-      setContextMenu(null)
       // Start panning
       panRef.current = { startX: e.clientX, startY: e.clientY, origPanX: pan.x, origPanY: pan.y }
     }
@@ -280,14 +277,8 @@ export function FlowEffectEditor({
     panRef.current = null
   }, [edgeDraft, toGraph, nodes, edges])
 
-  // ---- Context menu (add nodes) ----
-  const onCanvasContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const gp = toGraph(e)
-    setContextMenu({ x: e.clientX, y: e.clientY, graphX: gp.x, graphY: gp.y })
-  }, [toGraph])
-
-  const addNode = useCallback((kind: FlowEffectKind, gx: number, gy: number) => {
+  // ---- Add node ----
+  const addNodeAt = useCallback((kind: FlowEffectKind, gx: number, gy: number) => {
     const node: EffectGraphNode = {
       id: uid(),
       kind,
@@ -298,8 +289,31 @@ export function FlowEffectEditor({
     }
     setNodes(prev => [...prev, node])
     setSelectedNodeId(node.id)
-    setContextMenu(null)
   }, [])
+
+  const addNode = useCallback((kind: FlowEffectKind) => {
+    // Place at center of visible canvas area
+    const rect = canvasRef.current?.getBoundingClientRect()
+    const cx = rect ? (rect.width / 2 - pan.x) : 200
+    const cy = rect ? (rect.height / 2 - pan.y) : 200
+    addNodeAt(kind, cx, cy)
+  }, [pan, addNodeAt])
+
+  const onCanvasDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const onCanvasDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    const kind = e.dataTransfer.getData('application/fxnode-kind') as FlowEffectKind
+    if (!kind) return
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const gx = e.clientX - rect.left - pan.x
+    const gy = e.clientY - rect.top - pan.y
+    addNodeAt(kind, gx, gy)
+  }, [pan, addNodeAt])
 
   // ---- Check if a node is undeletable ----
   const isNodeLocked = useCallback((node: EffectGraphNode) => {
@@ -357,13 +371,7 @@ export function FlowEffectEditor({
     onSave({ ...effect, graph: { nodes, edges } })
   }, [effect, nodes, edges, onSave])
 
-  // ---- Dismiss context menu on click elsewhere ----
-  useEffect(() => {
-    if (!contextMenu) return
-    const dismiss = () => setContextMenu(null)
-    window.addEventListener('click', dismiss, { once: true })
-    return () => window.removeEventListener('click', dismiss)
-  }, [contextMenu])
+
 
   // ---- Render ----
   return (
@@ -393,7 +401,9 @@ export function FlowEffectEditor({
             onPointerDown={onCanvasPointerDown}
             onPointerMove={onCanvasPointerMove}
             onPointerUp={onCanvasPointerUp}
-            onContextMenu={onCanvasContextMenu}
+            onContextMenu={(e) => e.preventDefault()}
+            onDragOver={onCanvasDragOver}
+            onDrop={onCanvasDrop}
           >
             {/* Grid dots hint */}
             <svg className="fxeditor-grid" width="100%" height="100%">
@@ -492,22 +502,6 @@ export function FlowEffectEditor({
               })}
             </div>
 
-            {/* Context menu */}
-            {contextMenu && (
-              <div className="fxeditor-context-menu"
-                style={{ left: contextMenu.x - (canvasRef.current?.getBoundingClientRect().left ?? 0), top: contextMenu.y - (canvasRef.current?.getBoundingClientRect().top ?? 0) }}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <div className="fxeditor-context-title">Add Node</div>
-                {addableKinds.map(kind => (
-                  <button key={kind} type="button" className="fxeditor-context-item"
-                    onClick={() => addNode(kind, contextMenu.graphX, contextMenu.graphY)}>
-                    <span className="fxeditor-context-dot" style={{ background: kindColors[kind] }} />
-                    {kindLabels[kind]}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* Properties panel */}
@@ -1275,9 +1269,20 @@ export function FlowEffectEditor({
                 )}
               </>
             ) : (
-              <div className="fxeditor-props-empty">
-                <p>Select a node to edit its properties.</p>
-                <p style={{ opacity: 0.6, fontSize: '0.8rem' }}>Right-click on the canvas to add nodes.</p>
+              <div className="fxeditor-add-nodes">
+                <div className="fxeditor-add-nodes-title">Add Node</div>
+                {addableKinds.map(kind => (
+                  <button key={kind} type="button" className="fxeditor-add-node-btn"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/fxnode-kind', kind)
+                      e.dataTransfer.effectAllowed = 'copy'
+                    }}
+                    onClick={() => addNode(kind)}>
+                    <span className="fxeditor-add-node-dot" style={{ background: kindColors[kind] }} />
+                    {kindLabels[kind]}
+                  </button>
+                ))}
               </div>
             )}
           </div>
