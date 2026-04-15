@@ -18,6 +18,11 @@ import katex from 'katex'
 import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 
+/** Fixed scene dimensions — decouples scene space from viewport size */
+const SCENE_W = 1400
+const SCENE_H = 900
+const SCENE_VP = { w: SCENE_W, h: SCENE_H } as const
+
 /** Build CSS background-image for the grid based on config */
 function gridBackgroundImage(cfg?: GridConfig): string {
   const color = cfg?.color || 'var(--ug-grid-dot)'
@@ -952,24 +957,26 @@ export function PrototypeViewport() {
   const { sceneStyle, sceneTx, sceneTy, gridPxW, gridPxH } = useMemo(() => {
     // Auto-center: smoothly pan the scene so the selected node tracks toward viewport center.
     // At nodeProgress=0, no centering. At nodeProgress=1, node is centered.
-    // Formula: centering = nodeProgress × (0.5 − node.x/100) × vpSize × effectiveScale
+    // centering = (vpCenter − node% × SCENE) × nodeProgress × scale
     let cx = 0
     let cy = 0
     if (selectedNode) {
       const np = frame.snapshot.nodeProgress
-      cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * effectiveScale
-      cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * effectiveScale
+      cx = (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * effectiveScale
+      cy = (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * effectiveScale
     }
     const tx = cx + frame.panOffset.x
     const ty = cy + frame.panOffset.y
-    const gridPxW = vpSize.w * gridSnap / 100
-    const gridPxH = vpSize.h * gridSnap / 100
+    const gridPxW = SCENE_W * gridSnap / 100
+    const gridPxH = SCENE_H * gridSnap / 100
     const rot = flowRotationRef.current
     const rotateStr = rot !== 0 ? ` rotate(${rot}deg)` : ''
     return {
       sceneStyle: {
+        width: SCENE_W,
+        height: SCENE_H,
         transform: `translate(${tx}px, ${ty}px) scale(${effectiveScale})${rotateStr}`,
-        transformOrigin: rotateStr ? '50% 50%' : undefined,
+        transformOrigin: `${vpSize.w / 2}px ${vpSize.h / 2}px`,
       },
       sceneTx: tx,
       sceneTy: ty,
@@ -992,8 +999,8 @@ export function PrototypeViewport() {
       const np = frame.snapshot.nodeProgress
       const cs = effectiveScale
       const residual = {
-        x: np * (0.5 - selectedNode.x / 100) * vpSize.w * cs,
-        y: np * (0.5 - selectedNode.y / 100) * vpSize.h * cs,
+        x: (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * cs,
+        y: (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs,
       }
       selectNode(nodeId, residual)
     } else {
@@ -1028,8 +1035,8 @@ export function PrototypeViewport() {
     const startPanX = frame.panOffset.x
     const startPanY = frame.panOffset.y
     const cs = frame.snapshot.cameraScale
-    const targetPanX = (0.5 - node.x / 100) * vpSize.w * cs
-    const targetPanY = (0.5 - node.y / 100) * vpSize.h * cs
+    const targetPanX = (vpSize.w / 2 - node.x / 100 * SCENE_W) * cs
+    const targetPanY = (vpSize.h / 2 - node.y / 100 * SCENE_H) * cs
     const duration = 300 // ms
     let t0: number | null = null
     let raf = 0
@@ -1079,17 +1086,17 @@ export function PrototypeViewport() {
     let cx = 0, cy = 0
     if (selectedNode) {
       const np = frame.snapshot.nodeProgress
-      cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
-      cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+      cx = (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * cs
+      cy = (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs
     }
     const ox = frame.panOffset.x + cx
     const oy = frame.panOffset.y + cy
-    // Scene local pixel coords
+    // Scene local pixel coords (rect.width/2 = viewport center = transform-origin)
     const localX = (clientX - rect.left - rect.width / 2 - ox) / cs + rect.width / 2
     const localY = (clientY - rect.top - rect.height / 2 - oy) / cs + rect.height / 2
     return {
-      x: (localX / rect.width) * 100,
-      y: (localY / rect.height) * 100,
+      x: (localX / SCENE_W) * 100,
+      y: (localY / SCENE_H) * 100,
     }
   }, [effectiveScale, frame.snapshot.nodeProgress, frame.panOffset.x, frame.panOffset.y, selectedNode, vpSize.w, vpSize.h])
 
@@ -2544,8 +2551,8 @@ export function PrototypeViewport() {
           const focusY = (minY + maxY) / 2
           cam.lastTrackedCenter = { x: focusX, y: focusY }
 
-          basePanX = vp.w / 2 - (focusX / 100) * vp.w * scale
-          basePanY = vp.h / 2 - (focusY / 100) * vp.h * scale
+          basePanX = vp.w / 2 - (focusX / 100) * SCENE_W * scale
+          basePanY = vp.h / 2 - (focusY / 100) * SCENE_H * scale
         }
 
         if (override) {
@@ -2603,13 +2610,13 @@ export function PrototypeViewport() {
           let trackPanX = curPanX, trackPanY = curPanY
           if (trackedPoints.length > 0) {
             const focus = cam.lastTrackedCenter!
-            trackPanX = vp.w / 2 - (focus.x / 100) * vp.w * baseScale
-            trackPanY = vp.h / 2 - (focus.y / 100) * vp.h * baseScale
+            trackPanX = vp.w / 2 - (focus.x / 100) * SCENE_W * baseScale
+            trackPanY = vp.h / 2 - (focus.y / 100) * SCENE_H * baseScale
           }
 
           // Pan: offset in scene-percentage units, converted to screen pixels
-          const pxPerSceneX = vp.w * baseScale / 100
-          const pxPerSceneY = vp.h * baseScale / 100
+          const pxPerSceneX = SCENE_W * baseScale / 100
+          const pxPerSceneY = SCENE_H * baseScale / 100
           const targetPanX = trackPanX + override.panX * pxPerSceneX * panXProgress
           const targetPanY = trackPanY + override.panY * pxPerSceneY * panYProgress
           const newPanX = curPanX + (targetPanX - curPanX) * lerpFactor
@@ -2659,8 +2666,8 @@ export function PrototypeViewport() {
             let stablePanX = curPanX, stablePanY = curPanY
             if (trackedPoints.length > 0 && cam.lastTrackedCenter) {
               const focus = cam.lastTrackedCenter
-              stablePanX = vp.w / 2 - (focus.x / 100) * vp.w * stableScale
-              stablePanY = vp.h / 2 - (focus.y / 100) * vp.h * stableScale
+              stablePanX = vp.w / 2 - (focus.x / 100) * SCENE_W * stableScale
+              stablePanY = vp.h / 2 - (focus.y / 100) * SCENE_H * stableScale
             }
             setPanOffset(
               curPanX + (stablePanX - curPanX) * lerpFactor,
@@ -3245,7 +3252,7 @@ export function PrototypeViewport() {
 
   const handleUntangle = useCallback(() => {
     if (isUntangling) return
-    const targets = computeUntangledPositions(model.nodes, model.connections, vpSize.w, vpSize.h, gridSnap)
+    const targets = computeUntangledPositions(model.nodes, model.connections, SCENE_W, SCENE_H, gridSnap)
     if (!targets) return // already untangled
 
     beginMoveNode(frame.modelId) // snapshot for undo
@@ -3481,7 +3488,7 @@ export function PrototypeViewport() {
             sceneTx={sceneTx}
             sceneTy={sceneTy}
             sceneScale={effectiveScale}
-            vpSize={vpSize}
+            vpSize={SCENE_VP}
             gridExtent={gridExtent}
           />
         )}
@@ -3543,8 +3550,8 @@ export function PrototypeViewport() {
                 if (oldNode && twinNode) {
                   const cs = effectiveScale
                   const np = frame.snapshot.nodeProgress
-                  const dx = (twinNode.x - oldNode.x) / 100 * vpSize.w * cs * (np - 1)
-                  const dy = (twinNode.y - oldNode.y) / 100 * vpSize.h * cs * (np - 1)
+                  const dx = (twinNode.x - oldNode.x) / 100 * SCENE_W * cs * (np - 1)
+                  const dy = (twinNode.y - oldNode.y) / 100 * SCENE_H * cs * (np - 1)
                   alignPan = {
                     x: frame.panOffset.x + dx,
                     y: frame.panOffset.y + dy,
@@ -3600,16 +3607,16 @@ export function PrototypeViewport() {
                 const np = frame.snapshot.nodeProgress
                 let cx = 0, cy = 0
                 if (selectedNode) {
-                  cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
-                  cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+                  cx = (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * cs
+                  cy = (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs
                 }
                 // Old node screen position (relative to viewport center)
-                const oldScreenX = cx + frame.panOffset.x + cs * (oldNode.x / 100 - 0.5) * vpSize.w
-                const oldScreenY = cy + frame.panOffset.y + cs * (oldNode.y / 100 - 0.5) * vpSize.h
+                const oldScreenX = cx + frame.panOffset.x + (oldNode.x / 100 * SCENE_W - vpSize.w / 2) * cs
+                const oldScreenY = cy + frame.panOffset.y + (oldNode.y / 100 * SCENE_H - vpSize.h / 2) * cs
                 // New frame: scale=1, no centering → solve for panOffset
                 alignPan = {
-                  x: oldScreenX - (twinNode.x / 100 - 0.5) * vpSize.w,
-                  y: oldScreenY - (twinNode.y / 100 - 0.5) * vpSize.h,
+                  x: oldScreenX - (twinNode.x / 100 * SCENE_W - vpSize.w / 2),
+                  y: oldScreenY - (twinNode.y / 100 * SCENE_H - vpSize.h / 2),
                 }
               }
             }
@@ -3790,7 +3797,7 @@ export function PrototypeViewport() {
               selectedNodeId={null}
               childModel={undefined}
               progress={0}
-              vpSize={vpSize}
+              vpSize={SCENE_VP}
               onSelectNode={() => {}}
               onDoubleClickNode={() => {}}
               onClickConnection={() => {}}
@@ -3869,7 +3876,7 @@ export function PrototypeViewport() {
           selectedNodeIds={selectedNodeIds}
           childModel={childModel}
           progress={p}
-          vpSize={vpSize}
+          vpSize={SCENE_VP}
           onSelectNode={handleSelectNode}
           onDoubleClickNode={(nodeId) => {
             const n = model.nodes.find(nd => nd.id === nodeId)
@@ -3918,7 +3925,7 @@ export function PrototypeViewport() {
               const fn = model.nodes.find((n) => n.id === conn.from)
               const tn = model.nodes.find((n) => n.id === conn.to)
               if (!fn || !tn) return 0
-              return Math.atan2((tn.y - fn.y) * vpSize.h, (tn.x - fn.x) * vpSize.w)
+              return Math.atan2((tn.y - fn.y) * SCENE_H, (tn.x - fn.x) * SCENE_W)
             })()
           } : null}
           onSetMedia={(nodeId, src, name) => {
@@ -3984,8 +3991,8 @@ export function PrototypeViewport() {
           const toNode = model.nodes.find((n) => n.id === conn.to)
           const angle = fromNode && toNode
             ? Math.atan2(
-                (toNode.y - fromNode.y) * vpSize.h,
-                (toNode.x - fromNode.x) * vpSize.w,
+                (toNode.y - fromNode.y) * SCENE_H,
+                (toNode.x - fromNode.x) * SCENE_W,
               )
             : 0
           return (
@@ -4025,12 +4032,12 @@ export function PrototypeViewport() {
         let cx = 0, cy = 0
         if (selectedNode) {
           const np = frame.snapshot.nodeProgress
-          cx = np * (0.5 - selectedNode.x / 100) * vpSize.w * cs
-          cy = np * (0.5 - selectedNode.y / 100) * vpSize.h * cs
+          cx = (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * cs
+          cy = (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs
         }
         const toScreen = (pctX: number, pctY: number) => ({
-          x: (pctX / 100) * vpSize.w * cs + cx + frame.panOffset.x,
-          y: (pctY / 100) * vpSize.h * cs + cy + frame.panOffset.y,
+          x: (pctX / 100) * SCENE_W * cs + cx + frame.panOffset.x,
+          y: (pctY / 100) * SCENE_H * cs + cy + frame.panOffset.y,
         })
         const s = toScreen(selectionRect.startX, selectionRect.startY)
         const e = toScreen(selectionRect.endX, selectionRect.endY)
@@ -4254,8 +4261,8 @@ function ModelSceneContent({
     if (!fromN || !toN) return offsets
 
     // Connection length in pixels
-    const dxPx = (toN.x - fromN.x) * vpSize.w / 100
-    const dyPx = (toN.y - fromN.y) * vpSize.h / 100
+    const dxPx = (toN.x - fromN.x) * SCENE_W / 100
+    const dyPx = (toN.y - fromN.y) * SCENE_H / 100
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx < 1) return offsets
 
@@ -4279,15 +4286,15 @@ function ModelSceneContent({
     const ux = dxPx / lenPx // unit along connection
     const uy = dyPx / lenPx
     offsets[conn.from] = {
-      dx: -ux * halfDeficit * 100 / vpSize.w,
-      dy: -uy * halfDeficit * 100 / vpSize.h,
+      dx: -ux * halfDeficit * 100 / SCENE_W,
+      dy: -uy * halfDeficit * 100 / SCENE_H,
     }
     offsets[conn.to] = {
-      dx: ux * halfDeficit * 100 / vpSize.w,
-      dy: uy * halfDeficit * 100 / vpSize.h,
+      dx: ux * halfDeficit * 100 / SCENE_W,
+      dy: uy * halfDeficit * 100 / SCENE_H,
     }
     return offsets
-  }, [model, unzipGap, vpSize])
+  }, [model, unzipGap])
 
   // Helper: get spread-adjusted position for a node
   const pos = (node: ModelNode) => {
@@ -4299,9 +4306,9 @@ function ModelSceneContent({
 
   // Compute edge-anchored connection endpoints
   const anchors = useMemo(
-    () => computeEdgeAnchors(model.nodes, model.connections, vpSize.w, vpSize.h, pos, nodeSizesRef.current),
+    () => computeEdgeAnchors(model.nodes, model.connections, SCENE_W, SCENE_H, pos, nodeSizesRef.current),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [model, spreadOffsets, vpSize, sizeGen],
+    [model, spreadOffsets, sizeGen],
   )
 
   return (

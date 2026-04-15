@@ -263,8 +263,8 @@
 
 .scene {
   position: absolute;
-  inset: 0;
-  transform-origin: center;
+  left: 0;
+  top: 0;
   overflow: visible;
 }
 
