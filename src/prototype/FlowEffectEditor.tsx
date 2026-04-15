@@ -118,7 +118,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'handoff-rmm': return {}
     case 'return-rmm': return {}
     case 'handoff-mpd': return { targetMpdId: '' }
-    case 'camera': return { panX: 0, panY: 0, zoom: 1, rotation: 0, durationMs: 1000 }
+    case 'camera': return { panX: 0, panY: 0, zoom: 1, rotation: 0, durationMs: 1000, panXDurationMs: 1000, panYDurationMs: 1000, zoomDurationMs: 1000, rotationDurationMs: 1000, panXResetMode: 'attr', panYResetMode: 'attr', zoomResetMode: 'attr', rotationResetMode: 'attr', panXEasing: 'ease-out', panYEasing: 'ease-out', zoomEasing: 'ease-out', rotationEasing: 'ease-out' }
     case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
     case 'expand': return { durationMs: 300 }
     case 'collapse': return { durationMs: 300 }
@@ -805,7 +805,7 @@ export function FlowEffectEditor({
                 {selectedNode.kind === 'camera' && (
                   <>
                     <div className="fxeditor-field-hint">
-                      Overrides camera position during flow. Pan, zoom, and rotation unwind back after duration.
+                      Overrides camera position during flow. Each attribute animates and reverts within its own duration. Hold duration controls when the flow advances.
                     </div>
                     <label className="fxeditor-field">
                       <span>Pan X (%)</span>
@@ -814,11 +814,75 @@ export function FlowEffectEditor({
                         onChange={(e) => updateNodeConfig('panX', Number(e.target.value))} />
                     </label>
                     <label className="fxeditor-field">
+                      <span>Pan X Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.panXDurationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('panXDurationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Pan X Easing</span>
+                      <select
+                        value={(selectedNode.config.panXEasing as string) ?? 'ease-out'}
+                        onChange={(e) => updateNodeConfig('panXEasing', e.target.value)}
+                      >
+                        <option value="ease-in">Ease In</option>
+                        <option value="ease-out">Ease Out</option>
+                        <option value="ease-in-out">Ease In Out</option>
+                      </select>
+                    </label>
+                    <div className="fxeditor-radio-group">
+                      <span>Reset Pan X</span>
+                      <label>
+                        <input type="radio" name="panXResetMode"
+                          checked={((selectedNode.config.panXResetMode as string) ?? 'attr') === 'attr'}
+                          onChange={() => updateNodeConfig('panXResetMode', 'attr')} />
+                        Elapsed Pan X duration
+                      </label>
+                      <label>
+                        <input type="radio" name="panXResetMode"
+                          checked={((selectedNode.config.panXResetMode as string) ?? 'attr') === 'node'}
+                          onChange={() => updateNodeConfig('panXResetMode', 'node')} />
+                        Elapsed Node duration
+                      </label>
+                    </div>
+                    <label className="fxeditor-field">
                       <span>Pan Y (%)</span>
                       <input type="number" min={-50} max={50} step={1}
                         value={(selectedNode.config.panY as number) ?? 0}
                         onChange={(e) => updateNodeConfig('panY', Number(e.target.value))} />
                     </label>
+                    <label className="fxeditor-field">
+                      <span>Pan Y Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.panYDurationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('panYDurationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Pan Y Easing</span>
+                      <select
+                        value={(selectedNode.config.panYEasing as string) ?? 'ease-out'}
+                        onChange={(e) => updateNodeConfig('panYEasing', e.target.value)}
+                      >
+                        <option value="ease-in">Ease In</option>
+                        <option value="ease-out">Ease Out</option>
+                        <option value="ease-in-out">Ease In Out</option>
+                      </select>
+                    </label>
+                    <div className="fxeditor-radio-group">
+                      <span>Reset Pan Y</span>
+                      <label>
+                        <input type="radio" name="panYResetMode"
+                          checked={((selectedNode.config.panYResetMode as string) ?? 'attr') === 'attr'}
+                          onChange={() => updateNodeConfig('panYResetMode', 'attr')} />
+                        Elapsed Pan Y duration
+                      </label>
+                      <label>
+                        <input type="radio" name="panYResetMode"
+                          checked={((selectedNode.config.panYResetMode as string) ?? 'attr') === 'node'}
+                          onChange={() => updateNodeConfig('panYResetMode', 'node')} />
+                        Elapsed Node duration
+                      </label>
+                    </div>
                     <label className="fxeditor-field">
                       <span>Zoom</span>
                       <input type="number" min={0.2} max={5} step={0.1}
@@ -826,13 +890,83 @@ export function FlowEffectEditor({
                         onChange={(e) => updateNodeConfig('zoom', Number(e.target.value))} />
                     </label>
                     <label className="fxeditor-field">
+                      <span>Zoom Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.zoomDurationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('zoomDurationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Zoom Easing</span>
+                      <select
+                        value={(selectedNode.config.zoomEasing as string) ?? 'ease-out'}
+                        onChange={(e) => updateNodeConfig('zoomEasing', e.target.value)}
+                      >
+                        <option value="ease-in">Ease In</option>
+                        <option value="ease-out">Ease Out</option>
+                        <option value="ease-in-out">Ease In Out</option>
+                      </select>
+                    </label>
+                    <div className="fxeditor-radio-group">
+                      <span>Reset Zoom</span>
+                      <label>
+                        <input type="radio" name="zoomResetMode"
+                          checked={((selectedNode.config.zoomResetMode as string) ?? 'attr') === 'attr'}
+                          onChange={() => updateNodeConfig('zoomResetMode', 'attr')} />
+                        Elapsed Zoom duration
+                      </label>
+                      <label>
+                        <input type="radio" name="zoomResetMode"
+                          checked={((selectedNode.config.zoomResetMode as string) ?? 'attr') === 'node'}
+                          onChange={() => updateNodeConfig('zoomResetMode', 'node')} />
+                        Elapsed Node duration
+                      </label>
+                    </div>
+                    <label className="fxeditor-field">
                       <span>Rotation (°)</span>
                       <input type="number" min={-180} max={180} step={1}
                         value={(selectedNode.config.rotation as number) ?? 0}
                         onChange={(e) => updateNodeConfig('rotation', Number(e.target.value))} />
                     </label>
                     <label className="fxeditor-field">
-                      <span>Duration (ms)</span>
+                      <span>Rotation Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.rotationDurationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('rotationDurationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Rotation Easing</span>
+                      <select
+                        value={(selectedNode.config.rotationEasing as string) ?? 'ease-out'}
+                        onChange={(e) => updateNodeConfig('rotationEasing', e.target.value)}
+                      >
+                        <option value="ease-in">Ease In</option>
+                        <option value="ease-out">Ease Out</option>
+                        <option value="ease-in-out">Ease In Out</option>
+                      </select>
+                    </label>
+                    <div className="fxeditor-radio-group">
+                      <span>Reset Rotation</span>
+                      <label>
+                        <input type="radio" name="rotationResetMode"
+                          checked={((selectedNode.config.rotationResetMode as string) ?? 'attr') === 'attr'}
+                          onChange={() => updateNodeConfig('rotationResetMode', 'attr')} />
+                        Elapsed Rotation duration
+                      </label>
+                      <label>
+                        <input type="radio" name="rotationResetMode"
+                          checked={((selectedNode.config.rotationResetMode as string) ?? 'attr') === 'node'}
+                          onChange={() => updateNodeConfig('rotationResetMode', 'node')} />
+                        Elapsed Node duration
+                      </label>
+                      <label>
+                        <input type="radio" name="rotationResetMode"
+                          checked={((selectedNode.config.rotationResetMode as string) ?? 'attr') === 'persist'}
+                          onChange={() => updateNodeConfig('rotationResetMode', 'persist')} />
+                        By other Camera Nodes later after this one
+                      </label>
+                    </div>
+                    <label className="fxeditor-field">
+                      <span>Hold Duration (ms)</span>
                       <input type="number" min={0} step={50}
                         value={(selectedNode.config.durationMs as number) ?? 1000}
                         onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />

@@ -943,6 +943,8 @@ export function PrototypeViewport() {
 
   // Flow rotation ref — updated later by flowRotation state, used by sceneStyle
   const flowRotationRef = useRef(0)
+  const [flowRotation, setFlowRotation] = useState(0)
+  flowRotationRef.current = flowRotation
 
   // Dynamic grid extent — auto-expands/contracts in GRID_CHUNK increments based on node positions
   const gridExtent = useMemo(() => computeGridExtent(model?.nodes ?? []), [model?.nodes])
@@ -974,7 +976,7 @@ export function PrototypeViewport() {
       gridPxW,
       gridPxH,
     }
-  }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap])
+  }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap, flowRotation])
 
   // At handoff, push into child model (prefer lastChildModelId to preserve MPD switch)
   useEffect(() => {
@@ -1226,13 +1228,20 @@ export function PrototypeViewport() {
   const flowCameraOverrideRef = useRef<{
     panX: number; panY: number; zoom: number; rotation: number
     durationMs: number; startTime: number
+    panXDurationMs: number; panYDurationMs: number; zoomDurationMs: number; rotationDurationMs: number
+    panXResetMode: string; panYResetMode: string; zoomResetMode: string; rotationResetMode: string
+    panXEasing: string; panYEasing: string; zoomEasing: string; rotationEasing: string
+    startPan: { x: number; y: number }; startFreeScale: number
   } | null>(null)
-  const [flowRotation, setFlowRotation] = useState(0)
-  flowRotationRef.current = flowRotation
+  // Smooth fadeout for residual camera effects when override expires
+  const flowCameraFadeoutRef = useRef<{
+    rotation: number; freeScaleOffset: number; startFreeScale: number
+  } | null>(null)
   const [shakeOffset, setShakeOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const brokenNodeElementsRef = useRef<HTMLElement[]>([])
   const emergeHiddenElementsRef = useRef<HTMLElement[]>([])
   const scaleRevertTimersRef = useRef<number[]>([])
+  const flowColorBackupsRef = useRef<{ el: HTMLElement; bg: string }[]>([])
 
   const restoreBrokenNodes = useCallback(() => {
     for (const el of brokenNodeElementsRef.current) {
@@ -1256,6 +1265,7 @@ export function PrototypeViewport() {
     flowAnimRef.current = null
     flowTimeoutRef.current = null
     flowCameraOverrideRef.current = null
+    flowCameraFadeoutRef.current = null
     // Animate camera back to pre-flow position
     const cam = flowCameraRef.current
     if (cam?.active) {
@@ -1290,6 +1300,13 @@ export function PrototypeViewport() {
     restoreEmergeNodes()
     for (const t of scaleRevertTimersRef.current) clearTimeout(t)
     scaleRevertTimersRef.current = []
+    // Restore colors changed by permanent color effects
+    for (const { el, bg } of flowColorBackupsRef.current) {
+      el.style.transition = 'background 400ms ease'
+      el.style.background = bg
+      setTimeout(() => { el.style.transition = '' }, 400)
+    }
+    flowColorBackupsRef.current = []
     // Stop all playing media elements
     document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
       const media = el as HTMLVideoElement | HTMLAudioElement
@@ -1503,6 +1520,7 @@ export function PrototypeViewport() {
                 setTimeout(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (el) {
+                    flowColorBackupsRef.current.push({ el, bg: el.style.background })
                     el.style.transition = `background ${dur}ms ease`
                     el.style.background = color
                     if (!permanent) {
@@ -1691,11 +1709,30 @@ export function PrototypeViewport() {
                 const zoom = (gNode.config.zoom as number) ?? 1
                 const rotation = (gNode.config.rotation as number) ?? 0
                 const camDur = (gNode.config.durationMs as number) ?? 1000
+                const panXDurationMs = (gNode.config.panXDurationMs as number) ?? 1000
+                const panYDurationMs = (gNode.config.panYDurationMs as number) ?? 1000
+                const zoomDurationMs = (gNode.config.zoomDurationMs as number) ?? 1000
+                const rotationDurationMs = (gNode.config.rotationDurationMs as number) ?? 1000
+                const panXResetMode = (gNode.config.panXResetMode as string) ?? 'attr'
+                const panYResetMode = (gNode.config.panYResetMode as string) ?? 'attr'
+                const zoomResetMode = (gNode.config.zoomResetMode as string) ?? 'attr'
+                const rotationResetMode = (gNode.config.rotationResetMode as string) ?? 'attr'
+                const panXEasing = (gNode.config.panXEasing as string) ?? 'ease-out'
+                const panYEasing = (gNode.config.panYEasing as string) ?? 'ease-out'
+                const zoomEasing = (gNode.config.zoomEasing as string) ?? 'ease-out'
+                const rotationEasing = (gNode.config.rotationEasing as string) ?? 'ease-out'
                 setTimeout(() => {
+                  // Clear any active fadeout from a previous camera node
+                  flowCameraFadeoutRef.current = null
                   flowCameraOverrideRef.current = {
                     panX, panY, zoom, rotation,
                     durationMs: camDur,
+                    panXDurationMs, panYDurationMs, zoomDurationMs, rotationDurationMs,
+                    panXResetMode, panYResetMode, zoomResetMode, rotationResetMode,
+                    panXEasing, panYEasing, zoomEasing, rotationEasing,
                     startTime: performance.now(),
+                    startPan: { x: panOffsetRef.current.x, y: panOffsetRef.current.y },
+                    startFreeScale: freeScaleRef.current,
                   }
                 }, delay)
                 layerMaxDuration = Math.max(layerMaxDuration, camDur)
@@ -2402,6 +2439,8 @@ export function PrototypeViewport() {
       nodePositions.set(n.id, { x: n.x, y: n.y })
     }
 
+    const rmmCameraScale = frame.snapshot.cameraScale
+
     const tick = (now: number) => {
       const d = flowDAGRef.current
       if (!d) return
@@ -2466,95 +2505,197 @@ export function PrototypeViewport() {
         const curPanY = panOffsetRef.current.y
         const lerpFactor = 0.08
 
+        // Always run normal auto-tracking to compute base position
+        const trackedPoints: { x: number; y: number }[] = []
+        for (const taskId of d.activeTasks) {
+          if (d.untrackedPaths.has(taskId)) continue
+          const task = d.tasks.get(taskId)!
+          if (task.kind === 'node') {
+            const pos = nodePositions.get(task.nodeId)
+            if (pos) trackedPoints.push(pos)
+          } else {
+            // Wire: interpolate between source and target
+            const [fromId, toId] = task.connectionKey.split('->')
+            const fromPos = nodePositions.get(fromId)
+            const toPos = nodePositions.get(toId)
+            if (fromPos && toPos) {
+              const elapsed = now - task.startTime
+              const progress = Math.min(elapsed / task.durationMs, 1)
+              trackedPoints.push({
+                x: fromPos.x + (toPos.x - fromPos.x) * progress,
+                y: fromPos.y + (toPos.y - fromPos.y) * progress,
+              })
+            }
+          }
+        }
+
+        // Compute base tracking pan target
+        let basePanX = curPanX
+        let basePanY = curPanY
+        if (trackedPoints.length > 0) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+          for (const p of trackedPoints) {
+            if (p.x < minX) minX = p.x
+            if (p.y < minY) minY = p.y
+            if (p.x > maxX) maxX = p.x
+            if (p.y > maxY) maxY = p.y
+          }
+          const focusX = (minX + maxX) / 2
+          const focusY = (minY + maxY) / 2
+          cam.lastTrackedCenter = { x: focusX, y: focusY }
+
+          basePanX = vp.w / 2 - (focusX / 100) * vp.w * scale
+          basePanY = vp.h / 2 - (focusY / 100) * vp.h * scale
+        }
+
         if (override) {
-          // Camera effect override active — interpolate toward override transform
+          // Camera effect: each attribute has its own duration, easing, and reset mode.
           const elapsed = now - override.startTime
-          const progress = Math.min(elapsed / override.durationMs, 1)
+          const holdT = override.durationMs > 0 ? Math.min(elapsed / override.durationMs, 1) : 1
 
-          // Override target: base pan + offset
-          const baseFocus = cam.lastTrackedCenter ?? { x: 50, y: 50 }
-          const targetFocusX = baseFocus.x + override.panX
-          const targetFocusY = baseFocus.y + override.panY
-          const targetPanX = vp.w / 2 - (targetFocusX / 100) * vp.w * scale
-          const targetPanY = vp.h / 2 - (targetFocusY / 100) * vp.h * scale
+          // Easing functions
+          const applyEasing = (t: number, easing: string) => {
+            if (easing === 'ease-in') return t * t
+            if (easing === 'ease-out') return 1 - (1 - t) * (1 - t)
+            // ease-in-out
+            return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t)
+          }
 
+          // Compute attribute progress based on reset mode + easing
+          // For 'attr' mode: animate to target over first half of attr duration, revert over second half
+          // For 'node' mode: animate to target over attr duration, hold, then revert over attr duration (starting when node is near expiry)
+          // For 'persist': animate to target, stay there forever
+          const attrProgress = (dur: number, resetMode: string, easing: string) => {
+            if (dur <= 0) return resetMode === 'persist' ? 1 : 0
+            if (resetMode === 'attr') {
+              // There-and-back: use attr duration for both halves
+              const at = Math.min(elapsed / dur, 1)
+              if (at <= 0.5) {
+                return applyEasing(at / 0.5, easing)
+              } else {
+                return 1 - applyEasing((at - 0.5) / 0.5, easing)
+              }
+            } else if (resetMode === 'node') {
+              // Animate to target over attr duration
+              const at = Math.min(elapsed / dur, 1)
+              const forward = applyEasing(at, easing)
+              // Start reverting when remaining hold time equals attr duration
+              const remainingMs = override.durationMs - elapsed
+              if (remainingMs < dur) {
+                const revertT = Math.min(1 - remainingMs / dur, 1)
+                return forward * (1 - applyEasing(revertT, easing))
+              }
+              return forward
+            } else {
+              // 'persist': animate to target, stay there
+              const at = Math.min(elapsed / dur, 1)
+              return applyEasing(at, easing)
+            }
+          }
+
+          const panXProgress = attrProgress(override.panXDurationMs, override.panXResetMode, override.panXEasing)
+          const panYProgress = attrProgress(override.panYDurationMs, override.panYResetMode, override.panYEasing)
+          const zoomProgress = attrProgress(override.zoomDurationMs, override.zoomResetMode, override.zoomEasing)
+          const rotProgress = attrProgress(override.rotationDurationMs, override.rotationResetMode, override.rotationEasing)
+
+          // Compute base pan using the pre-override scale so zoom changes don't affect tracking
+          const baseScale = rmmCameraScale * override.startFreeScale
+          let trackPanX = curPanX, trackPanY = curPanY
+          if (trackedPoints.length > 0) {
+            const focus = cam.lastTrackedCenter!
+            trackPanX = vp.w / 2 - (focus.x / 100) * vp.w * baseScale
+            trackPanY = vp.h / 2 - (focus.y / 100) * vp.h * baseScale
+          }
+
+          // Pan: offset in scene-percentage units, converted to screen pixels
+          const pxPerSceneX = vp.w * baseScale / 100
+          const pxPerSceneY = vp.h * baseScale / 100
+          const targetPanX = trackPanX + override.panX * pxPerSceneX * panXProgress
+          const targetPanY = trackPanY + override.panY * pxPerSceneY * panYProgress
           const newPanX = curPanX + (targetPanX - curPanX) * lerpFactor
           const newPanY = curPanY + (targetPanY - curPanY) * lerpFactor
           setPanOffset(newPanX, newPanY)
 
-          // Rotation: lerp toward target
-          const targetRotation = override.rotation * (1 - Math.max(0, (progress - 0.7) / 0.3)) // start unwinding at 70%
-          setFlowRotation(prev => prev + (targetRotation - prev) * lerpFactor)
+          // Zoom: lerp freeScale toward target based on zoomProgress
+          if (override.zoom !== 1) {
+            const targetFreeScale = override.startFreeScale + (override.startFreeScale * override.zoom - override.startFreeScale) * zoomProgress
+            const curFS = freeScaleRef.current
+            setFreeScale(curFS + (targetFreeScale - curFS) * lerpFactor)
+          }
 
-          // Zoom override
-          const targetZoom = override.zoom
-          const curScale = freeScaleRef.current
-          setFreeScale(curScale + (targetZoom - curScale) * lerpFactor)
+          // Rotation
+          setFlowRotation(override.rotation * rotProgress)
 
-          if (progress >= 1) {
-            // Override expired — 1000ms assimilation back
+          if (holdT >= 1) {
+            // Hold duration expired — snapshot residuals for smooth fadeout
+            const residualRot = override.rotationResetMode === 'persist'
+              ? override.rotation * rotProgress
+              : override.rotation * rotProgress // whatever is left
+            const residualFSOffset = override.zoom !== 1
+              ? freeScaleRef.current - override.startFreeScale
+              : 0
             flowCameraOverrideRef.current = null
-            // Start assimilation: rotation unwinds to 0, zoom returns to 1
-            const assimStart = performance.now()
-            const assimDuration = 1000
-            const startRot = targetRotation
-            const startZoom = freeScaleRef.current
-            const assimilate = (t: number) => {
-              if (!flowCameraRef.current?.active) {
-                setFlowRotation(0)
-                return
+            // Only create fadeout if there's something to fade
+            if (Math.abs(residualRot) > 0.01 || Math.abs(residualFSOffset) > 0.001) {
+              flowCameraFadeoutRef.current = {
+                rotation: residualRot,
+                freeScaleOffset: residualFSOffset,
+                startFreeScale: override.startFreeScale,
               }
-              const p = Math.min((t - assimStart) / assimDuration, 1)
-              const ease = 1 - (1 - p) * (1 - p)
-              setFlowRotation(startRot * (1 - ease))
-              setFreeScale(startZoom + (1 - startZoom) * ease)
-              if (p < 1) requestAnimationFrame(assimilate)
+            } else {
+              flowCameraFadeoutRef.current = null
+              setFlowRotation(0)
+              if (override.zoom !== 1) setFreeScale(override.startFreeScale)
             }
-            requestAnimationFrame(assimilate)
           }
         } else {
-          // Auto-tracking from tracked tasks
-          const trackedPoints: { x: number; y: number }[] = []
-          for (const taskId of d.activeTasks) {
-            if (d.untrackedPaths.has(taskId)) continue
-            const task = d.tasks.get(taskId)!
-            if (task.kind === 'node') {
-              const pos = nodePositions.get(task.nodeId)
-              if (pos) trackedPoints.push(pos)
-            } else {
-              // Wire: interpolate between source and target
-              const [fromId, toId] = task.connectionKey.split('->')
-              const fromPos = nodePositions.get(fromId)
-              const toPos = nodePositions.get(toId)
-              if (fromPos && toPos) {
-                const elapsed = now - task.startTime
-                const progress = Math.min(elapsed / task.durationMs, 1)
-                trackedPoints.push({
-                  x: fromPos.x + (toPos.x - fromPos.x) * progress,
-                  y: fromPos.y + (toPos.y - fromPos.y) * progress,
-                })
-              }
+          // No override — apply base tracking + smooth fadeout of residuals
+          const fadeout = flowCameraFadeoutRef.current
+
+          if (fadeout && Math.abs(fadeout.freeScaleOffset) > 0.001) {
+            // During zoom fadeout, use the stable startFreeScale for pan computation
+            // to avoid the SE jump caused by changing freeScale shifting the pan target
+            const stableScale = rmmCameraScale * fadeout.startFreeScale
+            let stablePanX = curPanX, stablePanY = curPanY
+            if (trackedPoints.length > 0 && cam.lastTrackedCenter) {
+              const focus = cam.lastTrackedCenter
+              stablePanX = vp.w / 2 - (focus.x / 100) * vp.w * stableScale
+              stablePanY = vp.h / 2 - (focus.y / 100) * vp.h * stableScale
             }
+            setPanOffset(
+              curPanX + (stablePanX - curPanX) * lerpFactor,
+              curPanY + (stablePanY - curPanY) * lerpFactor,
+            )
+          } else {
+            const newPanX = curPanX + (basePanX - curPanX) * lerpFactor
+            const newPanY = curPanY + (basePanY - curPanY) * lerpFactor
+            setPanOffset(newPanX, newPanY)
           }
 
-          if (trackedPoints.length > 0) {
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-            for (const p of trackedPoints) {
-              if (p.x < minX) minX = p.x
-              if (p.y < minY) minY = p.y
-              if (p.x > maxX) maxX = p.x
-              if (p.y > maxY) maxY = p.y
+          if (fadeout) {
+            // Smoothly lerp residual rotation and zoom back to zero
+            const fadeRate = 0.06 // per frame decay
+
+            if (Math.abs(fadeout.rotation) > 0.01) {
+              fadeout.rotation *= (1 - fadeRate)
+              setFlowRotation(fadeout.rotation)
+            } else {
+              fadeout.rotation = 0
+              setFlowRotation(0)
             }
-            const focusX = (minX + maxX) / 2
-            const focusY = (minY + maxY) / 2
-            cam.lastTrackedCenter = { x: focusX, y: focusY }
 
-            const targetPanX = vp.w / 2 - (focusX / 100) * vp.w * scale
-            const targetPanY = vp.h / 2 - (focusY / 100) * vp.h * scale
+            if (Math.abs(fadeout.freeScaleOffset) > 0.001) {
+              fadeout.freeScaleOffset *= (1 - fadeRate)
+              setFreeScale(fadeout.startFreeScale + fadeout.freeScaleOffset)
+            } else {
+              fadeout.freeScaleOffset = 0
+              setFreeScale(fadeout.startFreeScale)
+            }
 
-            const newPanX = curPanX + (targetPanX - curPanX) * lerpFactor
-            const newPanY = curPanY + (targetPanY - curPanY) * lerpFactor
-            setPanOffset(newPanX, newPanY)
+            // Clear fadeout when everything has settled
+            if (fadeout.rotation === 0 && fadeout.freeScaleOffset === 0) {
+              flowCameraFadeoutRef.current = null
+            }
           }
         }
       }
@@ -2581,7 +2722,24 @@ export function PrototypeViewport() {
             setHideToolbar(false)
           }
           flowCameraOverrideRef.current = null
+          flowCameraFadeoutRef.current = null
           restoreBrokenNodes()
+          restoreEmergeNodes()
+          // Restore colors changed by permanent color effects
+          for (const { el, bg } of flowColorBackupsRef.current) {
+            el.style.transition = 'background 400ms ease'
+            el.style.background = bg
+            setTimeout(() => { el.style.transition = '' }, 400)
+          }
+          flowColorBackupsRef.current = []
+          // Clear scale revert timers
+          for (const t of scaleRevertTimersRef.current) clearTimeout(t)
+          scaleRevertTimersRef.current = []
+          // Stop all playing media elements
+          document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
+            const media = el as HTMLVideoElement | HTMLAudioElement
+            if (!media.paused) media.pause()
+          })
           // Camera return animation
           const c = flowCameraRef.current
           if (c?.active) {
@@ -2752,12 +2910,63 @@ export function PrototypeViewport() {
             updateNodeProps(frame.modelId, existingNode.id, {
               audioCoverSrc: dataUrl,
             })
+            const img = new Image()
+            img.onload = () => {
+              const maxW = 400, maxH = 400
+              let w = img.naturalWidth, h = img.naturalHeight + 40 // extra height for audio controls
+              if (w > maxW || h > maxH) {
+                const ratio = Math.min(maxW / w, maxH / h)
+                w = Math.round(w * ratio)
+                h = Math.round(h * ratio)
+              }
+              w = Math.max(w, 100)
+              h = Math.max(h, 80)
+              updateNodeProps(frame.modelId, existingNode.id, {
+                nodeWidth: w, nodeHeight: h,
+              })
+            }
+            img.src = dataUrl
           } else {
-            // Drop onto existing media node — replace its media
+            // Drop onto existing media node — replace its media and auto-size for images/gifs/video
             updateNodeProps(frame.modelId, existingNode.id, {
               mediaSrc: dataUrl,
               mediaFileName: file.name,
             })
+            if (mType === 'image' || mType === 'gif') {
+              const img = new Image()
+              img.onload = () => {
+                const maxW = 400, maxH = 400
+                let w = img.naturalWidth, h = img.naturalHeight
+                if (w > maxW || h > maxH) {
+                  const ratio = Math.min(maxW / w, maxH / h)
+                  w = Math.round(w * ratio)
+                  h = Math.round(h * ratio)
+                }
+                w = Math.max(w, 60)
+                h = Math.max(h, 40)
+                updateNodeProps(frame.modelId, existingNode.id, {
+                  nodeWidth: w, nodeHeight: h,
+                })
+              }
+              img.src = dataUrl
+            } else if (mType === 'video') {
+              const vid = document.createElement('video')
+              vid.onloadedmetadata = () => {
+                const maxW = 400, maxH = 400
+                let w = vid.videoWidth, h = vid.videoHeight
+                if (w > maxW || h > maxH) {
+                  const ratio = Math.min(maxW / w, maxH / h)
+                  w = Math.round(w * ratio)
+                  h = Math.round(h * ratio)
+                }
+                w = Math.max(w, 100)
+                h = Math.max(h, 80)
+                updateNodeProps(frame.modelId, existingNode.id, {
+                  nodeWidth: w, nodeHeight: h,
+                })
+              }
+              vid.src = dataUrl
+            }
           }
         } else {
           // Drop onto empty scene — create a new media node
@@ -2783,6 +2992,38 @@ export function PrototypeViewport() {
             nodeWidth: sz.w, nodeHeight: sz.h,
           })
           selectNode(newId)
+          // Auto-size to image/video natural dimensions
+          if (mType === 'image' || mType === 'gif') {
+            const img = new Image()
+            img.onload = () => {
+              const maxW = 400, maxH = 400
+              let w = img.naturalWidth, h = img.naturalHeight
+              if (w > maxW || h > maxH) {
+                const ratio = Math.min(maxW / w, maxH / h)
+                w = Math.round(w * ratio)
+                h = Math.round(h * ratio)
+              }
+              w = Math.max(w, 60)
+              h = Math.max(h, 40)
+              updateNodeProps(frame.modelId, newId, { nodeWidth: w, nodeHeight: h })
+            }
+            img.src = dataUrl
+          } else if (mType === 'video') {
+            const vid = document.createElement('video')
+            vid.onloadedmetadata = () => {
+              const maxW = 400, maxH = 400
+              let w = vid.videoWidth, h = vid.videoHeight
+              if (w > maxW || h > maxH) {
+                const ratio = Math.min(maxW / w, maxH / h)
+                w = Math.round(w * ratio)
+                h = Math.round(h * ratio)
+              }
+              w = Math.max(w, 100)
+              h = Math.max(h, 80)
+              updateNodeProps(frame.modelId, newId, { nodeWidth: w, nodeHeight: h })
+            }
+            vid.src = dataUrl
+          }
         }
       }
       reader.readAsDataURL(file)
@@ -2812,7 +3053,7 @@ export function PrototypeViewport() {
       }
       // Copy: Ctrl+C
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (editingNodeId) return // don't intercept text copy in edit mode
+        if (editingNodeId || inFormField) return // don't intercept text copy in edit mode or form fields
         const ids = selectedNodeIds.size > 0
           ? selectedNodeIds
           : frame.selectedNodeId ? new Set([frame.selectedNodeId]) : null
@@ -2827,7 +3068,7 @@ export function PrototypeViewport() {
       }
       // Paste: Ctrl+V
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        if (editingNodeId) return
+        if (editingNodeId || inFormField) return
         const clip = clipboardRef.current
         if (!clip || clip.nodes.length === 0) return
         e.preventDefault()
@@ -3683,6 +3924,40 @@ export function PrototypeViewport() {
           onSetMedia={(nodeId, src, name) => {
             beginEditNode(frame.modelId)
             updateNodeProps(frame.modelId, nodeId, { mediaSrc: src, mediaFileName: name })
+            // Auto-size to media natural dimensions
+            const node = model.nodes.find(n => n.id === nodeId)
+            const mt = node?.mediaType
+            if (mt === 'image' || mt === 'gif') {
+              const img = new Image()
+              img.onload = () => {
+                const maxW = 400, maxH = 400
+                let w = img.naturalWidth, h = img.naturalHeight
+                if (w > maxW || h > maxH) {
+                  const ratio = Math.min(maxW / w, maxH / h)
+                  w = Math.round(w * ratio)
+                  h = Math.round(h * ratio)
+                }
+                w = Math.max(w, 60)
+                h = Math.max(h, 40)
+                updateNodeProps(frame.modelId, nodeId, { nodeWidth: w, nodeHeight: h })
+              }
+              img.src = src
+            } else if (mt === 'video') {
+              const vid = document.createElement('video')
+              vid.onloadedmetadata = () => {
+                const maxW = 400, maxH = 400
+                let w = vid.videoWidth, h = vid.videoHeight
+                if (w > maxW || h > maxH) {
+                  const ratio = Math.min(maxW / w, maxH / h)
+                  w = Math.round(w * ratio)
+                  h = Math.round(h * ratio)
+                }
+                w = Math.max(w, 100)
+                h = Math.max(h, 80)
+                updateNodeProps(frame.modelId, nodeId, { nodeWidth: w, nodeHeight: h })
+              }
+              vid.src = src
+            }
           }}
           onToggleCollapse={(nodeId) => {
             const n = model.nodes.find(nd => nd.id === nodeId)
