@@ -19,8 +19,8 @@ import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 
 /** Fixed scene dimensions — decouples scene space from viewport size */
-const SCENE_W = 1400
-const SCENE_H = 900
+const SCENE_W = 1920
+const SCENE_H = 1080
 const SCENE_VP = { w: SCENE_W, h: SCENE_H } as const
 
 /** Build CSS background-image for the grid based on config */
@@ -739,7 +739,7 @@ function computeUntangledPositions(
 export function PrototypeViewport() {
   const [debugOpen, setDebugOpen] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const [vpSize, setVpSize] = useState({ w: 1400, h: 900 })
+  const [vpSize, setVpSize] = useState({ w: 1920, h: 1080 })
   const vpSizeRef = useRef(vpSize)
   vpSizeRef.current = vpSize
   const {
