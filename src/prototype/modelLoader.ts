@@ -362,8 +362,31 @@ function bytesToDataUrl(bytes: Uint8Array, path: string): string {
 }
 
 /**
+ * Collect model IDs reachable from the root via childModelId and mpdIds.
+ */
+function collectReachableModelIds(models: Record<string, Model>, rootId: string): Set<string> {
+  const reachable = new Set<string>()
+  const queue = [rootId]
+  while (queue.length > 0) {
+    const id = queue.pop()!
+    if (reachable.has(id)) continue
+    const model = models[id]
+    if (!model) continue
+    reachable.add(id)
+    for (const node of model.nodes) {
+      if (node.childModelId) queue.push(node.childModelId)
+      if (node.mpdIds) {
+        for (const mpdId of node.mpdIds) queue.push(mpdId)
+      }
+    }
+  }
+  return reachable
+}
+
+/**
  * Export all models + media as a .unigram zip bundle.
  * Returns a Blob ready for download.
+ * Only includes models reachable from the root and their media.
  */
 export async function exportBundle(
   models: Record<string, Model>,
@@ -374,8 +397,12 @@ export async function exportBundle(
   const mediaMap = new Map<string, string>() // bundle path → data URL
   const mediaDedup = new Map<string, string>() // data URL → bundle path (dedup)
 
+  // Only export models reachable from root
+  const reachable = collectReachableModelIds(models, 'root')
+
   const projectData: Record<string, ModelFile> = {}
   for (const model of Object.values(models)) {
+    if (!reachable.has(model.id)) continue
     const url = modelIdToUrl.get(model.id)
     const filename = url ? url.substring(url.lastIndexOf('/') + 1) : `${model.id}.json`
     projectData[filename] = modelToFile(model, mediaMap, mediaDedup)
@@ -384,10 +411,16 @@ export async function exportBundle(
   // Add project JSON
   zip.file('project.json', JSON.stringify(projectData, null, 2))
 
-  // Add settings (cosmetics + app theme)
+  // Add settings (cosmetics + app theme) — only for reachable models
   const settings: Record<string, unknown> = {}
   if (appThemeMode) settings.appThemeMode = appThemeMode
-  if (cosmetics && Object.keys(cosmetics).length > 0) settings.modelCosmetics = cosmetics
+  if (cosmetics) {
+    const filtered: Record<string, ModelCosmetics> = {}
+    for (const [id, cos] of Object.entries(cosmetics)) {
+      if (reachable.has(id)) filtered[id] = cos
+    }
+    if (Object.keys(filtered).length > 0) settings.modelCosmetics = filtered
+  }
   if (Object.keys(settings).length > 0) {
     zip.file('settings.json', JSON.stringify(settings, null, 2))
   }

@@ -3,6 +3,7 @@ import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, Conne
 import { useHybridZoomStore } from './useHybridZoomStore'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
 import { PARTICLE_PRESETS } from './particles'
+import { ALL_THEME_OPTIONS } from './themes'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -181,19 +182,24 @@ function DiagramSettings({ model, gridSnap, onSetGridSnap }: {
         <div className="sidebar-section-body">
           {/* Theme mode */}
           <div className="settings-row">
-            <span className="settings-label">Theme</span>
-            <div className="settings-segmented">
-              {(['light', 'dark', 'grey'] as ThemeMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`settings-segmented-btn${appThemeMode === mode ? ' active' : ''}`}
-                  onClick={() => setAppThemeMode(mode)}
-                >
-                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                </button>
-              ))}
-            </div>
+            <label className="settings-label" htmlFor="theme-mode">Theme</label>
+            <select
+              id="theme-mode"
+              className="settings-select"
+              value={appThemeMode}
+              onChange={(e) => setAppThemeMode(e.target.value as ThemeMode)}
+            >
+              <optgroup label="Base">
+                {ALL_THEME_OPTIONS.filter((o) => o.group === 'base').map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Topical">
+                {ALL_THEME_OPTIONS.filter((o) => o.group === 'topical').map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </optgroup>
+            </select>
           </div>
 
           {/* Background */}

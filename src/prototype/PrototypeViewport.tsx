@@ -9,7 +9,7 @@ import { LeftSidebar } from './LeftSidebar'
 import { RightSidebar } from './RightSidebar'
 import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 import { loadModel, loadModelById, exportBundle, importBundle, registerModelUrl, clearLoaderCache } from './modelLoader'
-import { applyThemeToDOM, resolvePalette } from './themes'
+import { applyThemeToDOM, getTopicalPreset, resolvePalette } from './themes'
 import { resolveBackground, type BackgroundConfig } from './backgrounds'
 import { ParticleOverlay } from './ParticleOverlay'
 import { ContentEditor } from './ContentEditor'
@@ -810,6 +810,14 @@ export function PrototypeViewport() {
   // Apply theme palette to DOM whenever appThemeMode changes
   useEffect(() => {
     applyThemeToDOM(resolvePalette(appThemeMode))
+    // Apply/remove topical CSS class on document root
+    const topical = getTopicalPreset(appThemeMode)
+    const root = document.documentElement
+    // Remove all topical theme classes first
+    root.classList.forEach((cls) => {
+      if (cls.startsWith('theme-')) root.classList.remove(cls)
+    })
+    if (topical) root.classList.add(topical.cssClass)
   }, [appThemeMode])
 
   // Resolve per-model cosmetics
@@ -1013,8 +1021,7 @@ export function PrototypeViewport() {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
   const multiDragOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map())
 
-  // ---- Selection rectangle mode ----
-  const [selectMode, setSelectMode] = useState(false)
+  // ---- Selection rectangle (right-click drag) ----
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
   const [selectionRect, setSelectionRect] = useState<{
     startX: number; startY: number; endX: number; endY: number
@@ -3300,7 +3307,7 @@ export function PrototypeViewport() {
   return (
     <div
       ref={viewportRef}
-      className={`viewport ${isDragging ? 'dragging' : ''}${selectMode ? ' select-mode' : ''}`}
+      className={`viewport ${isDragging ? 'dragging' : ''}${selectionRect ? ' select-mode' : ''}`}
       style={bgConfig?.type !== 'image' ? bgStyle : undefined}
       onWheel={(event) => {
         event.preventDefault()
@@ -3348,18 +3355,19 @@ export function PrototypeViewport() {
         }
       }}
       onPointerDown={(event) => {
-        if (event.button !== 0) return
         const el = event.target as HTMLElement
         if (el.closest('.sidebar') || el.closest('.editor-toolbar')) return
-        // Selection-rectangle mode: start rubber band on empty space
-        if (selectMode && !draggingNodeRef.current && !connectionDraft) {
+        // Right-click on empty space: start selection rectangle
+        if (event.button === 2 && !draggingNodeRef.current && !connectionDraft) {
           if (!el.closest('.host-node')) {
+            event.preventDefault()
             selectionStartRef.current = { clientX: event.clientX, clientY: event.clientY }
             const pos = clientToScene(event.clientX, event.clientY)
             setSelectionRect({ startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y })
             return
           }
         }
+        if (event.button !== 0) return
         beginDrag()
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
@@ -3692,13 +3700,7 @@ export function PrototypeViewport() {
           onClick={handleUntangle}
           title="Auto-untangle crossed connections"
         >{isUntangling ? '⟳ Untangling…' : '⟳ Untangle'}</button>
-        <span className="toolbar-sep" />
-        <button
-          type="button"
-          className={`toolbar-btn${selectMode ? ' toolbar-btn-active' : ''}`}
-          onClick={() => setSelectMode(!selectMode)}
-          title="Toggle selection mode (drag to select multiple nodes)"
-        >{selectMode ? '⬚ Select' : '⬚ Select'}</button>
+
         {selectedNodeIsInFlow && (
           <>
             <span className="toolbar-sep" />

@@ -2066,3 +2066,276 @@
     gap: 10px;
   }
 }
+
+/* ===== Topical Theme: Woody ===== */
+
+.theme-woody .host-node {
+  box-shadow: 0 2px 8px rgba(62, 44, 26, 0.18), inset 0 1px 0 rgba(255, 248, 235, 0.3);
+}
+
+.theme-woody .host-node::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.06;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 3px,
+    rgba(90, 55, 25, 0.3) 3px,
+    rgba(90, 55, 25, 0.3) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  mix-blend-mode: multiply;
+  border-radius: inherit;
+}
+
+.theme-woody .node-label-text {
+  text-shadow: 0 1px 0 rgba(255, 248, 235, 0.4);
+}
+
+.theme-woody .viewport {
+  background-image:
+    radial-gradient(ellipse at 20% 80%, rgba(139, 105, 20, 0.05), transparent 60%),
+    radial-gradient(ellipse at 80% 20%, rgba(107, 66, 38, 0.04), transparent 60%);
+}
+
+.theme-woody .sidebar {
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(120, 70, 30, 0.04) 0px,
+      rgba(90, 50, 20, 0.07) 2px,
+      rgba(160, 110, 60, 0.03) 4px,
+      transparent 5px,
+      transparent 9px
+    ),
+    repeating-linear-gradient(
+      178deg,
+      transparent 0px,
+      transparent 14px,
+      rgba(80, 45, 15, 0.04) 15px,
+      transparent 16px,
+      transparent 30px
+    ),
+    linear-gradient(180deg, #f0e4d0, #e4d4ba, #d8c8a8);
+  border-color: #b89b72;
+  box-shadow: 0 2px 16px rgba(62, 44, 26, 0.18), inset 0 1px 0 rgba(255, 245, 225, 0.4);
+}
+
+.theme-woody .sidebar-title {
+  color: #3e2c1a;
+  text-shadow: 0 1px 0 rgba(255, 245, 225, 0.5);
+}
+
+.theme-woody .sidebar-section-header {
+  border-bottom-color: rgba(139, 105, 20, 0.15);
+}
+
+.theme-woody .sidebar-toggle {
+  background: linear-gradient(180deg, #e8d8be, #d4c4a4);
+  border-color: #b89b72;
+}
+
+.theme-woody .sidebar-toggle:hover {
+  background: linear-gradient(180deg, #deceb0, #c8b898);
+}
+
+/* ===== Topical Theme: Frutiger Aero ===== */
+
+.theme-frutiger-aero .host-node {
+  box-shadow:
+    0 4px 16px rgba(0, 188, 212, 0.12),
+    0 1px 4px rgba(33, 150, 243, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  border-color: rgba(33, 150, 243, 0.3) !important;
+}
+
+.theme-frutiger-aero .host-node::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.25) 0%, transparent 50%);
+  border-radius: inherit;
+}
+
+.theme-frutiger-aero .sidebar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, transparent 40%),
+    linear-gradient(180deg, #d8f4f8, #c4ecf2, #b4e4ee);
+  border-color: rgba(0, 188, 212, 0.25);
+  box-shadow: 0 4px 20px rgba(0, 188, 212, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.theme-frutiger-aero .sidebar-toggle {
+  background: linear-gradient(180deg, #d0f0f4, #b8e6ee);
+  border-color: rgba(0, 188, 212, 0.25);
+}
+
+/* ===== Topical Theme: Steel ===== */
+
+.theme-steel .host-node {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.theme-steel .host-node::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(255, 255, 255, 0.15) 2px,
+      rgba(255, 255, 255, 0.15) 3px
+    );
+  border-radius: inherit;
+}
+
+.theme-steel .sidebar {
+  background: linear-gradient(180deg, #2a2e36, #24282f, #1e2228);
+  border-color: #3a4048;
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.theme-steel .sidebar-toggle {
+  background: linear-gradient(180deg, #323840, #2a2e36);
+  border-color: #3a4048;
+}
+
+/* ===== Topical Theme: Sci-Fi ===== */
+
+.theme-sci-fi .host-node {
+  box-shadow:
+    0 0 12px rgba(6, 182, 212, 0.15),
+    0 0 4px rgba(6, 182, 212, 0.1),
+    inset 0 1px 0 rgba(6, 182, 212, 0.08);
+  border-color: rgba(6, 182, 212, 0.35) !important;
+}
+
+.theme-sci-fi .host-node::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.3), transparent);
+}
+
+.theme-sci-fi .viewport {
+  background-image:
+    radial-gradient(ellipse at 50% 50%, rgba(6, 182, 212, 0.03), transparent 70%);
+}
+
+.theme-sci-fi .sidebar {
+  background:
+    linear-gradient(180deg, rgba(6, 182, 212, 0.05) 0%, transparent 30%),
+    linear-gradient(180deg, #0f1628, #0c1220, #0a0e1a);
+  border-color: rgba(6, 182, 212, 0.2);
+  box-shadow: 0 0 20px rgba(6, 182, 212, 0.08), inset 0 1px 0 rgba(6, 182, 212, 0.1);
+}
+
+.theme-sci-fi .sidebar-toggle {
+  background: linear-gradient(180deg, #1a2440, #141c2e);
+  border-color: rgba(6, 182, 212, 0.2);
+}
+
+/* ===== Topical Theme: Aqua ===== */
+
+.theme-aqua .host-node {
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.25),
+    0 0 8px rgba(14, 165, 233, 0.1),
+    inset 0 1px 0 rgba(14, 165, 233, 0.08);
+}
+
+.theme-aqua .viewport {
+  background-image:
+    radial-gradient(ellipse at 30% 90%, rgba(45, 212, 191, 0.04), transparent 50%),
+    radial-gradient(ellipse at 70% 10%, rgba(14, 165, 233, 0.04), transparent 50%);
+}
+
+.theme-aqua .sidebar {
+  background:
+    linear-gradient(180deg, rgba(14, 165, 233, 0.06) 0%, transparent 40%),
+    linear-gradient(180deg, #133048, #0e2638, #0c2030);
+  border-color: rgba(14, 165, 233, 0.18);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(14, 165, 233, 0.08);
+}
+
+.theme-aqua .sidebar-toggle {
+  background: linear-gradient(180deg, #183a54, #133048);
+  border-color: rgba(14, 165, 233, 0.18);
+}
+
+/* ===== Topical Theme: Biology ===== */
+
+.theme-biology .host-node {
+  box-shadow: 0 2px 10px rgba(26, 51, 32, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.theme-biology .host-node::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background: radial-gradient(circle at 30% 30%, rgba(46, 125, 50, 0.4), transparent 60%);
+  border-radius: inherit;
+}
+
+.theme-biology .sidebar {
+  background:
+    repeating-linear-gradient(
+      180deg,
+      transparent 0px,
+      transparent 18px,
+      rgba(46, 125, 50, 0.03) 19px,
+      transparent 20px
+    ),
+    linear-gradient(180deg, #e4f2e0, #d8ecd4, #cce4c8);
+  border-color: #a8d4a0;
+  box-shadow: 0 2px 16px rgba(26, 51, 32, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.theme-biology .sidebar-toggle {
+  background: linear-gradient(180deg, #d8ecd4, #c8e0c4);
+  border-color: #a8d4a0;
+}
+
+/* ===== Topical Theme: Medical ===== */
+
+.theme-medical .host-node {
+  box-shadow: 0 1px 6px rgba(30, 58, 95, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  border-color: rgba(25, 118, 210, 0.2) !important;
+}
+
+.theme-medical .host-node::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, transparent 40%);
+  border-radius: inherit;
+}
+
+.theme-medical .sidebar {
+  background: linear-gradient(180deg, #ffffff, #f5faff, #eef4fa);
+  border-color: #d0dde8;
+  box-shadow: 0 2px 12px rgba(30, 58, 95, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.theme-medical .sidebar-toggle {
+  background: linear-gradient(180deg, #f0f5fa, #e8f0f8);
+  border-color: #d0dde8;
+}

@@ -6,7 +6,7 @@ export interface ParticleConfig {
   size: [number, number]
   opacity: [number, number]
   color: string | string[]
-  shape: 'circle' | 'star' | 'square' | 'snowflake'
+  shape: 'circle' | 'star' | 'square' | 'snowflake' | 'leaf' | 'hexagon' | 'spore'
   behavior: 'drift' | 'fall' | 'rise' | 'wander' | 'twinkle'
   wind?: number
   gravity?: number
@@ -112,6 +112,103 @@ export const PARTICLE_PRESETS: ParticlePreset[] = [
       color: ['#5eead4', '#a78bfa', '#f472b6', '#38bdf8'],
       shape: 'circle',
       behavior: 'drift',
+    },
+  },
+  {
+    id: 'falling-leaves',
+    name: 'Falling Leaves',
+    config: {
+      count: 40,
+      speed: [0.2, 0.55],
+      size: [4, 9],
+      opacity: [0.5, 0.85],
+      color: ['#8B4513', '#D2691E', '#DAA520', '#228B22', '#CD853F'],
+      shape: 'leaf',
+      behavior: 'fall',
+      wind: 0.35,
+      gravity: 0.008,
+    },
+  },
+  {
+    id: 'glossy-bubbles',
+    name: 'Glossy Bubbles',
+    config: {
+      count: 35,
+      speed: [0.15, 0.45],
+      size: [4, 12],
+      opacity: [0.12, 0.28],
+      color: ['#67e8f9', '#a5f3fc', '#bae6fd', '#c4b5fd'],
+      shape: 'circle',
+      behavior: 'rise',
+      wind: 0.1,
+    },
+  },
+  {
+    id: 'sparks',
+    name: 'Sparks',
+    config: {
+      count: 30,
+      speed: [0.3, 0.7],
+      size: [1, 3],
+      opacity: [0.4, 0.9],
+      color: ['#fb923c', '#f59e0b', '#fbbf24', '#fcd34d'],
+      shape: 'circle',
+      behavior: 'rise',
+      wind: 0.2,
+      gravity: -0.005,
+    },
+  },
+  {
+    id: 'data-hex',
+    name: 'Data Hexagons',
+    config: {
+      count: 25,
+      speed: [0.05, 0.2],
+      size: [4, 8],
+      opacity: [0.15, 0.4],
+      color: ['#22d3ee', '#06b6d4', '#67e8f9', '#a78bfa'],
+      shape: 'hexagon',
+      behavior: 'drift',
+    },
+  },
+  {
+    id: 'ocean-bubbles',
+    name: 'Ocean Bubbles',
+    config: {
+      count: 50,
+      speed: [0.1, 0.5],
+      size: [2, 8],
+      opacity: [0.08, 0.25],
+      color: ['#bae6fd', '#e0f2fe', '#cffafe', '#a5f3fc'],
+      shape: 'circle',
+      behavior: 'rise',
+      wind: 0.12,
+    },
+  },
+  {
+    id: 'spores',
+    name: 'Spores',
+    config: {
+      count: 30,
+      speed: [0.08, 0.3],
+      size: [3, 7],
+      opacity: [0.2, 0.5],
+      color: ['#86efac', '#4ade80', '#a3e635', '#bef264'],
+      shape: 'spore',
+      behavior: 'wander',
+    },
+  },
+  {
+    id: 'sterile-motes',
+    name: 'Sterile Motes',
+    config: {
+      count: 40,
+      speed: [0, 0],
+      size: [1, 3],
+      opacity: [0.15, 0.5],
+      color: ['#e0f2fe', '#f0f9ff', '#dbeafe', '#bfdbfe'],
+      shape: 'circle',
+      behavior: 'twinkle',
     },
   },
 ]

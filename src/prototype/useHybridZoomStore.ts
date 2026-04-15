@@ -7,7 +7,7 @@ import {
   type HybridZoomSnapshot,
 } from './hybridZoom'
 import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape, type ConnectionType, type ThemeMode, type ModelCosmetics } from './sampleModels'
-import { applyThemeToDOM, resolvePalette } from './themes'
+import { applyThemeToDOM, getTopicalPreset, resolvePalette } from './themes'
 
 /** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
 export const DEFAULT_GRID_SNAP = 4
@@ -762,6 +762,22 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   setAppThemeMode: (mode) => {
     set({ appThemeMode: mode })
     applyThemeToDOM(resolvePalette(mode))
+    // Auto-apply topical theme cosmetics to the current model
+    const topical = getTopicalPreset(mode)
+    if (topical) {
+      const modelId = get().currentFrame().modelId
+      set((state) => ({
+        modelCosmetics: {
+          ...state.modelCosmetics,
+          [modelId]: {
+            ...state.modelCosmetics[modelId],
+            background: topical.background,
+            particleEffect: topical.particlePreset,
+            grid: topical.grid,
+          },
+        },
+      }))
+    }
   },
 
   setModelCosmetics: (modelId, cosmetics) => {

@@ -11,7 +11,7 @@ export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'sp
 export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
 export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
 
-export type ThemeMode = 'light' | 'dark' | 'grey'
+export type ThemeMode = 'light' | 'dark' | 'grey' | 'woody' | 'frutiger-aero' | 'steel' | 'sci-fi' | 'aqua' | 'biology' | 'medical'
 export type BackgroundType = 'gradient' | 'solid' | 'image' | 'pattern'
 
 export interface BackgroundConfig {

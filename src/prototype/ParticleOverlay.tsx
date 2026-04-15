@@ -17,6 +17,10 @@ interface Particle {
   introDelay: number
   /** Current intro fade progress 0→1 */
   introAlpha: number
+  /** Rotation angle in radians (used for leaf tumbling) */
+  rotation: number
+  /** Rotation speed in radians per frame */
+  rotationSpeed: number
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -95,6 +99,8 @@ function createParticle(config: ParticleConfig, gridW: number, gridH: number, in
     phaseSpeed: 0.01 + Math.random() * 0.03,
     introDelay,
     introAlpha: 0,
+    rotation: Math.random() * Math.PI * 2,
+    rotationSpeed: (config.shape === 'leaf' || config.shape === 'hexagon') ? (Math.random() - 0.5) * 0.06 : 0,
   }
 }
 
@@ -105,6 +111,36 @@ function drawShape(gfx: Graphics, config: ParticleConfig, size: number, color: s
   const effectiveSize = Math.max(size, 2)
   if (config.shape === 'square') {
     gfx.rect(-effectiveSize / 2, -effectiveSize / 2, effectiveSize, effectiveSize).fill({ color: c })
+  } else if (config.shape === 'leaf') {
+    // Leaf silhouette using bezier curves
+    const s = effectiveSize
+    gfx.moveTo(0, -s)
+    gfx.bezierCurveTo(s * 0.8, -s * 0.6, s * 0.8, s * 0.3, 0, s)
+    gfx.bezierCurveTo(-s * 0.8, s * 0.3, -s * 0.8, -s * 0.6, 0, -s)
+    gfx.fill({ color: c })
+    // Center vein
+    gfx.moveTo(0, -s * 0.7).lineTo(0, s * 0.7).stroke({ color: c, width: 0.4, alpha: 0.5 })
+  } else if (config.shape === 'hexagon') {
+    // Regular hexagon
+    const r = effectiveSize / 2
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 6
+      const hx = Math.cos(angle) * r
+      const hy = Math.sin(angle) * r
+      if (i === 0) gfx.moveTo(hx, hy)
+      else gfx.lineTo(hx, hy)
+    }
+    gfx.closePath()
+    gfx.fill({ color: c })
+  } else if (config.shape === 'spore') {
+    // Organic spore: circle with small bumps
+    const r = effectiveSize / 2
+    gfx.circle(0, 0, r).fill({ color: c })
+    const bumps = 3 + Math.floor(Math.random() * 3)
+    for (let i = 0; i < bumps; i++) {
+      const angle = (Math.PI * 2 / bumps) * i
+      gfx.circle(Math.cos(angle) * r * 0.7, Math.sin(angle) * r * 0.7, r * 0.35).fill({ color: c, alpha: 0.6 })
+    }
   } else {
     gfx.circle(0, 0, effectiveSize / 2).fill({ color: c })
   }
@@ -311,6 +347,12 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
           // Update graphics
           p.gfx.x = p.x
           p.gfx.y = p.y
+
+          // Tumbling rotation (leaf particles)
+          if (p.rotationSpeed) {
+            p.rotation += p.rotationSpeed
+            p.gfx.rotation = p.rotation
+          }
 
           // Compute base alpha from behavior
           let alpha: number
