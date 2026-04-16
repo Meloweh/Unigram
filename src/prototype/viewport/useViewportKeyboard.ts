@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
-import type { Model, ModelNode, ModelConnection } from './sampleModels'
-import { snapToGrid } from './useHybridZoomStore'
-import type { UnzipPopupState } from './useHybridZoomStore'
+import type { Model, ModelNode, ModelConnection } from '../model/sampleModels'
+import { snapToGrid } from '../model/useHybridZoomStore'
+import type { UnzipPopupState } from '../model/useHybridZoomStore'
 
 export interface ViewportKeyboardDeps {
   frameSelectedNodeId: string | null

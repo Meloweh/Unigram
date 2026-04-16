@@ -5,9 +5,9 @@ import {
   createInitialSnapshot,
   realignPanOffset,
   type HybridZoomSnapshot,
-} from './hybridZoom'
+} from '../scene/hybridZoom'
 import { getInitialModels, type Model, type ModelConnection, type ModelNode, type NodeShape, type ConnectionType, type ThemeMode, type ModelCosmetics } from './sampleModels'
-import { applyThemeToDOM, getTopicalPreset, resolvePalette } from './themes'
+import { applyThemeToDOM, getTopicalPreset, resolvePalette } from '../theme/themes'
 
 /** Default grid size in percentage units (40px at 1000px viewport ≈ 4%) */
 export const DEFAULT_GRID_SNAP = 4

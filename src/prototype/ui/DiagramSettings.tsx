@@ -1,9 +1,9 @@
 import { useState, useRef } from 'react'
-import type { Model, ThemeMode, GridStyle } from './sampleModels'
-import { useHybridZoomStore } from './useHybridZoomStore'
-import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
-import { PARTICLE_PRESETS } from './particles'
-import { ALL_THEME_OPTIONS } from './themes'
+import type { Model, ThemeMode, GridStyle } from '../model/sampleModels'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
+import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
+import { PARTICLE_PRESETS } from '../theme/particles'
+import { ALL_THEME_OPTIONS } from '../theme/themes'
 
 /** Color picker that uses a hidden native input but positions the swatch to the left of the sidebar */
 export function ColorInput({ value, onChange, id }: { value: string; onChange: (v: string) => void; id: string }) {

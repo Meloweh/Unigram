@@ -1,5 +1,5 @@
-import { ModelSceneContent } from './ModelSceneContent'
-import { SCENE_VP } from './sceneConstants'
+import { ModelSceneContent } from '../scene/ModelSceneContent'
+import { SCENE_VP } from '../scene/sceneConstants'
 import type { MpdCurtainState } from './useMpdCurtain'
 
 interface MpdCurtainSceneProps {

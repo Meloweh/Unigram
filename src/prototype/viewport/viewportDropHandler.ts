@@ -1,5 +1,5 @@
-import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType } from './sampleModels'
-import { snapToGrid } from './useHybridZoomStore'
+import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType } from '../model/sampleModels'
+import { snapToGrid } from '../model/useHybridZoomStore'
 
 /** Detect the media node type from a MIME type */
 export function mimeToMediaType(mime: string): MediaNodeType | null {

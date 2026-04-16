@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
-import { type Model, type ModelNode } from './sampleModels'
-import { useHybridZoomStore } from './useHybridZoomStore'
-import { resolvePalette } from './themes'
+import { type Model, type ModelNode } from '../model/sampleModels'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
+import { resolvePalette } from '../theme/themes'
 import { computeEdgeAnchors } from './edgeAnchoring'
 
 /** Preview of child model content inside a node canvas */

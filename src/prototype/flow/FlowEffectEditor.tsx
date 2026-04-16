@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge, EffectPortId, CosmeticType } from './sampleModels'
+import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge, EffectPortId, CosmeticType } from '../model/sampleModels'
 import { FlowNodeConfigPanel } from './FlowNodeConfigPanel'
 
 // ---- Host context passed from viewport ----

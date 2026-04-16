@@ -1,9 +1,9 @@
 import { useCallback, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import type { Model, ModelNode } from './sampleModels'
-import { SCENE_W, SCENE_H } from './sceneConstants'
-import { gridBackgroundImage } from './gridBackground'
-import type { BackgroundConfig } from './backgrounds'
+import type { Model, ModelNode } from '../model/sampleModels'
+import { SCENE_W, SCENE_H } from '../scene/sceneConstants'
+import { gridBackgroundImage } from '../scene/gridBackground'
+import type { BackgroundConfig } from '../theme/backgrounds'
 
 export interface MpdCurtainState {
   oldModel: Model

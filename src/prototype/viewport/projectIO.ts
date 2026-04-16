@@ -1,5 +1,5 @@
-import type { Model, ThemeMode, ModelCosmetics } from './sampleModels'
-import { exportBundle, importBundle, clearLoaderCache, registerModelUrl } from './modelLoader'
+import type { Model, ThemeMode, ModelCosmetics } from '../model/sampleModels'
+import { exportBundle, importBundle, clearLoaderCache, registerModelUrl } from '../model/modelLoader'
 
 export async function handleSave(
   storeModels: Record<string, Model>,

@@ -1,5 +1,5 @@
 import { useEffect, type MutableRefObject } from 'react'
-import type { Model } from './sampleModels'
+import type { Model } from '../model/sampleModels'
 
 /**
  * Always-play autonomous animation for cosmetic nodes (bubble-levitate, cloud-levitate).

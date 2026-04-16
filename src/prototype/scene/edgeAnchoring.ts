@@ -1,4 +1,4 @@
-import type { ModelNode, ModelConnection } from './sampleModels'
+import type { ModelNode, ModelConnection } from '../model/sampleModels'
 
 /* ---- Edge-anchored connection helpers ---- */
 

@@ -1,5 +1,5 @@
 import type { MutableRefObject, Dispatch, SetStateAction, RefObject } from 'react'
-import type { Model, ModelNode, ModelConnection, EffectGraphNode } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, EffectGraphNode } from '../model/sampleModels'
 
 export type FlowTask =
   | { id: string; kind: 'node'; nodeId: string; durationMs: number; dependsOn: string[]; startTime: number }

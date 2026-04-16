@@ -1,7 +1,7 @@
 /** Theme system — modes, palettes, and DOM application */
 
 import type { BackgroundConfig } from './backgrounds'
-import type { GridConfig, ThemeMode } from './sampleModels'
+import type { GridConfig, ThemeMode } from '../model/sampleModels'
 
 export type { ThemeMode }
 

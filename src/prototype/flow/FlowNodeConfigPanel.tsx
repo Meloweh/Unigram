@@ -1,4 +1,4 @@
-import type { EffectGraphNode, FlowEffectKind } from './sampleModels'
+import type { EffectGraphNode, FlowEffectKind } from '../model/sampleModels'
 import type { EffectEditorHostContext, MoveWaypoint, SpawnItem, SpawnCircularItem } from './FlowEffectEditor'
 
 export function FlowNodeConfigPanel({

@@ -1,5 +1,5 @@
-import { useHybridZoomStore } from './useHybridZoomStore'
-import type { EffectGraphNode } from './sampleModels'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
+import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx } from './flowTypes'
 import {
   handleSpawnCircular, handleEmerge, handleScale, handleTextFormat,

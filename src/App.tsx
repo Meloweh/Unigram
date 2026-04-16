@@ -1,4 +1,4 @@
-import { PrototypeViewport } from './prototype/PrototypeViewport'
+import { PrototypeViewport } from './prototype/viewport/PrototypeViewport'
 import './App.css'
 
 function App() {

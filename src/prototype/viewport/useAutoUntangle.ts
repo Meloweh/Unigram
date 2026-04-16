@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import type { Model } from './sampleModels'
+import type { Model } from '../model/sampleModels'
 import { computeUntangledPositions } from './autoUntangle'
-import { SCENE_W, SCENE_H } from './sceneConstants'
+import { SCENE_W, SCENE_H } from '../scene/sceneConstants'
 
 export function useAutoUntangle(
   model: Model,

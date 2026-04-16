@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle } from '../model/sampleModels'
 import { ColorInput, DiagramSettings } from './DiagramSettings'
 import { NodeSettings } from './NodeSettingsPanel'
 

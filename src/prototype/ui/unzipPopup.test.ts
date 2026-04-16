@@ -1,4 +1,4 @@
-import { useHybridZoomStore } from './useHybridZoomStore'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
 
 const { getState } = useHybridZoomStore
 

@@ -13,7 +13,7 @@ export const GRID_CHUNK = 20
 /** Cache AudioContext + AnalyserNode per media element so createMediaElementSource is only called once */
 export const audioCtxCache = new WeakMap<HTMLMediaElement, { ctx: AudioContext; analyser: AnalyserNode }>()
 
-import type { ModelNode } from './sampleModels'
+import type { ModelNode } from '../model/sampleModels'
 
 /** Compute the dynamic grid extent from node positions (draw.io-style auto-expand).
  *  Extends in GRID_CHUNK increments beyond 0-100 when nodes are outside, shrinks when freed. */

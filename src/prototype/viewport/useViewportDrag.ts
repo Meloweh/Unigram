@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ModelNode, ModelConnection, ConnectionType, Model } from './sampleModels'
-import { SCENE_W, SCENE_H, NODE_MIN_W, NODE_MIN_H } from './sceneConstants'
+import type { ModelNode, ModelConnection, ConnectionType, Model } from '../model/sampleModels'
+import { SCENE_W, SCENE_H, NODE_MIN_W, NODE_MIN_H } from '../scene/sceneConstants'
 
 export interface ConnectionDraft {
   fromId: string

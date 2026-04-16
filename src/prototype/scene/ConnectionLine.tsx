@@ -1,4 +1,4 @@
-import type { ConnectionType, ConnectionArrowStyle, ConnectionDashStyle } from './sampleModels'
+import type { ConnectionType, ConnectionArrowStyle, ConnectionDashStyle } from '../model/sampleModels'
 
 /** Connection line that bows outward into a zipper-bag shape during unzip */
 export function ConnectionLine({

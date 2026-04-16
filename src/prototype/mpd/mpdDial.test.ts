@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useHybridZoomStore } from './useHybridZoomStore'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
 
 const store = useHybridZoomStore
 

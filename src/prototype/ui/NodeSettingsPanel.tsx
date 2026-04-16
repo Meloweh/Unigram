@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
-import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType, FlowEffect, TextFormatRange } from './sampleModels'
-import { applyFormatToRange } from './sampleModels'
-import { useHybridZoomStore } from './useHybridZoomStore'
+import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType, FlowEffect, TextFormatRange } from '../model/sampleModels'
+import { applyFormatToRange } from '../model/sampleModels'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { ColorInput } from './DiagramSettings'
 
 let _nextId = 1

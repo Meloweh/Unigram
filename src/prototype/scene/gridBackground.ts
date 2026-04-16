@@ -1,4 +1,4 @@
-import type { GridConfig } from './sampleModels'
+import type { GridConfig } from '../model/sampleModels'
 
 /** Build CSS background-image for the grid based on config */
 export function gridBackgroundImage(cfg?: GridConfig): string {

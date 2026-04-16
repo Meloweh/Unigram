@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { Model, ModelNode } from './sampleModels'
+import type { Model, ModelNode } from '../model/sampleModels'
 
 export interface MpdLogicDeps {
   frameModelId: string

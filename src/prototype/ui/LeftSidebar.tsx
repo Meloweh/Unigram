@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { ConnectionType, MediaNodeType, CosmeticType } from './sampleModels'
+import type { ConnectionType, MediaNodeType, CosmeticType } from '../model/sampleModels'
 
 interface SectionItem {
   id: string

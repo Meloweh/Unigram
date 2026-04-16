@@ -1,4 +1,4 @@
-import type { Model, ModelNode } from './sampleModels'
+import type { Model, ModelNode } from '../model/sampleModels'
 import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 
 interface FlowEffectEditorModalProps {

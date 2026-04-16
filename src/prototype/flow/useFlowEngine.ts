@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import type { Model, ModelNode, ModelConnection } from './sampleModels'
+import type { Model, ModelNode, ModelConnection } from '../model/sampleModels'
 import type { FlowTask, FlowDAG, FlowEffectCtx } from './flowTypes'
 import { dispatchEffect } from './flowEffectHandlers'
-import { audioCtxCache, SCENE_W, SCENE_H } from './sceneConstants'
+import { audioCtxCache, SCENE_W, SCENE_H } from '../scene/sceneConstants'
 
 export interface FlowEngineDeps {
   model: Model

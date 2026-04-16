@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { StudyEvidence } from './sampleModels'
-import { useHybridZoomStore, type UnzipLevel } from './useHybridZoomStore'
+import type { StudyEvidence } from '../model/sampleModels'
+import { useHybridZoomStore, type UnzipLevel } from '../model/useHybridZoomStore'
 
 interface UnzipPopupProps {
   connectionKey: string

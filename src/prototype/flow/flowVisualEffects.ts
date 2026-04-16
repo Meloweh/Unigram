@@ -1,4 +1,4 @@
-import type { EffectGraphNode } from './sampleModels'
+import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx, TextFormatOrigStyles } from './flowTypes'
 
 // Visual effect handlers: spawn-circular, emerge, scale, text-format, record, and no-op kinds.

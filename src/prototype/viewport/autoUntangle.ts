@@ -1,6 +1,6 @@
-import type { ModelNode, ModelConnection } from './sampleModels'
-import { DEFAULT_GRID_SNAP, snapToGrid } from './useHybridZoomStore'
-import { countCrossings, segmentsIntersect, segmentIntersectsRect, estimateNodePx } from './edgeAnchoring'
+import type { ModelNode, ModelConnection } from '../model/sampleModels'
+import { DEFAULT_GRID_SNAP, snapToGrid } from '../model/useHybridZoomStore'
+import { countCrossings, segmentsIntersect, segmentIntersectsRect, estimateNodePx } from '../scene/edgeAnchoring'
 
 /**
  * Compute untangled target positions.

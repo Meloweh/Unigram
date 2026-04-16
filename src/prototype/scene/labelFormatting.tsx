@@ -1,4 +1,4 @@
-import type { TextFormatRange } from './sampleModels'
+import type { TextFormatRange } from '../model/sampleModels'
 
 /** Render a label string with inline TextFormatRange styling as React elements.
  *  Always wraps text runs in <span data-offset="N"> so flow effect nodes can target them. */
