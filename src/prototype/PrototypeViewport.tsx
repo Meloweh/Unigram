@@ -818,6 +818,7 @@ export function PrototypeViewport() {
     updateNodeLabel,
     updateNodeShape,
     updateNodeProps,
+    updateNodePropsSilent,
     setNodeLabelSilent,
     removeNode,
     addConnection,
@@ -1068,6 +1069,18 @@ export function PrototypeViewport() {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
   const multiDragOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map())
 
+  // ---- Node resize (edge/corner drag) ----
+  const resizingRef = useRef<{
+    nodeId: string
+    dir: string // 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+    startClientX: number
+    startClientY: number
+    origW: number
+    origH: number
+    origX: number
+    origY: number
+  } | null>(null)
+
   // ---- Selection rectangle (right-click drag) ----
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
   const [selectionRect, setSelectionRect] = useState<{
@@ -1196,6 +1209,64 @@ export function PrototypeViewport() {
     draggingNodeRef.current = null
     multiDragOffsetsRef.current.clear()
     setDraggingNodeId(null)
+  }, [])
+
+  // ---- Node resize (edge/corner drag) ----
+  const handleResizeDragStart = useCallback((nodeId: string, dir: string, e: React.PointerEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const node = model.nodes.find((n) => n.id === nodeId)
+    if (!node || node.locked) return
+    const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+    if (!article) return
+    const el = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
+      ? article.parentElement : article
+    beginEditNode(frame.modelId) // snapshot once for undo before resize
+    resizingRef.current = {
+      nodeId,
+      dir,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      origW: el!.offsetWidth,
+      origH: el!.offsetHeight,
+      origX: node.x,
+      origY: node.y,
+    }
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+  }, [model.nodes, beginEditNode, frame.modelId])
+
+  const handleResizeDragMove = useCallback((e: React.PointerEvent) => {
+    const r = resizingRef.current
+    if (!r) return
+    const scale = effectiveScaleRef.current
+    const dx = (e.clientX - r.startClientX) / scale
+    const dy = (e.clientY - r.startClientY) / scale
+    const dir = r.dir
+    let newW = r.origW
+    let newH = r.origH
+    let newX = r.origX
+    let newY = r.origY
+    // Horizontal resize
+    if (dir.includes('e')) {
+      newW = Math.max(NODE_MIN_W, r.origW + dx)
+    } else if (dir.includes('w')) {
+      newW = Math.max(NODE_MIN_W, r.origW - dx)
+      // Shift center so the right edge stays put
+      newX = r.origX + (r.origW - newW) / 2 / SCENE_W * 100
+    }
+    // Vertical resize
+    if (dir.includes('s')) {
+      newH = Math.max(NODE_MIN_H, r.origH + dy)
+    } else if (dir.includes('n')) {
+      newH = Math.max(NODE_MIN_H, r.origH - dy)
+      // Shift center so the bottom edge stays put
+      newY = r.origY + (r.origH - newH) / 2 / SCENE_H * 100
+    }
+    updateNodePropsSilent(frame.modelId, r.nodeId, { nodeWidth: Math.round(newW), nodeHeight: Math.round(newH), x: newX, y: newY })
+  }, [frame.modelId, updateNodePropsSilent])
+
+  const handleResizeDragEnd = useCallback(() => {
+    resizingRef.current = null
   }, [])
 
   // ---- Connection creation (right-click drag) ----
@@ -2146,14 +2217,15 @@ export function PrototypeViewport() {
                 const persistent = gNode.config.persistent === true
                 setTimeout(() => {
                   if (!node) return
-                  const startW = node.nodeWidth ?? 160
-                  const startH = node.nodeHeight ?? 60
                   // Target the outer wrapper div (parent of the article) which has position styles
                   const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!article) return
                   // The wrapper is the article's parent if it's a polygon shape, otherwise the article itself
                   const el = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
                     ? article.parentElement : article
+                  // Read actual rendered size from DOM to avoid mismatch with model defaults
+                  const startW = el.offsetWidth
+                  const startH = el.offsetHeight
                   const start = performance.now()
                   const animateScale = (now: number) => {
                     const t = Math.min((now - start) / scaleDur, 1)
@@ -2189,10 +2261,11 @@ export function PrototypeViewport() {
                         if (t2 < 1) {
                           requestAnimationFrame(animateRevert)
                         } else {
-                          el.style.width = ''
-                          el.style.minWidth = ''
-                          el.style.height = ''
-                          el.style.minHeight = ''
+                          // Restore to original measured size (not empty) to prevent shrinking below original
+                          el.style.width = `${startW}px`
+                          el.style.minWidth = `${startW}px`
+                          el.style.height = `${startH}px`
+                          el.style.minHeight = `${startH}px`
                         }
                       }
                       // Delay the revert by a brief hold period
@@ -3656,6 +3729,11 @@ export function PrototypeViewport() {
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerMove={(event) => {
+        // Node resize takes highest priority
+        if (resizingRef.current) {
+          handleResizeDragMove(event)
+          return
+        }
         // Selection rectangle dragging
         if (selectionStartRef.current) {
           const pos = clientToScene(event.clientX, event.clientY)
@@ -3679,6 +3757,11 @@ export function PrototypeViewport() {
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerUp={(event) => {
+        // Finish resize
+        if (resizingRef.current) {
+          handleResizeDragEnd()
+          return
+        }
         // Finish selection rectangle
         if (selectionStartRef.current && selectionRect) {
           selectionStartRef.current = null
@@ -3710,6 +3793,7 @@ export function PrototypeViewport() {
         pause()
       }}
       onPointerLeave={() => {
+        if (resizingRef.current) handleResizeDragEnd()
         if (selectionStartRef.current) {
           selectionStartRef.current = null
           setSelectionRect(null)
@@ -4267,6 +4351,7 @@ export function PrototypeViewport() {
               updateNodeProps(frame.modelId, nodeId, { nodeHeight: 60 })
             }
           }}
+          onResizeDragStart={handleResizeDragStart}
         />
         {activeUnzipPopup && (() => {
           const conn = model.connections.find(
@@ -4477,6 +4562,7 @@ function ModelSceneContent({
   onNodeSizesChanged,
   onSetMedia,
   onToggleCollapse,
+  onResizeDragStart,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -4504,6 +4590,7 @@ function ModelSceneContent({
   onNodeSizesChanged?: (sizes: Map<string, { w: number; h: number }>) => void
   onSetMedia?: (nodeId: string, mediaSrc: string, mediaFileName: string) => void
   onToggleCollapse?: (nodeId: string) => void
+  onResizeDragStart?: (nodeId: string, dir: string, e: React.PointerEvent) => void
 }) {
   // Theme palette for node default colors
   const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
@@ -4772,6 +4859,7 @@ function ModelSceneContent({
             defaultMembraneColor={palette.nodeMembrane}
             onSetMedia={onSetMedia ? (src, name) => onSetMedia(node.id, src, name) : undefined}
             onToggleCollapse={onToggleCollapse ? () => onToggleCollapse(node.id) : undefined}
+            onResizeDragStart={onResizeDragStart ? (dir, e) => onResizeDragStart(node.id, dir, e) : undefined}
           />
         )
       })}
@@ -5042,6 +5130,7 @@ function SceneNode({
   defaultMembraneColor,
   onSetMedia,
   onToggleCollapse,
+  onResizeDragStart,
 }: {
   node: ModelNode
   posX: number
@@ -5067,7 +5156,7 @@ function SceneNode({
   defaultMembraneColor: string
   onSetMedia?: (mediaSrc: string, mediaFileName: string) => void
   onToggleCollapse?: () => void
-  onToggleCollapse?: () => void
+  onResizeDragStart?: (dir: string, e: React.PointerEvent) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -5488,6 +5577,38 @@ function SceneNode({
     },
   }
 
+  // Resize handles — shown when selected, not editing, not zooming
+  const showResizeHandles = isSelected && !isEditing && progress === 0 && !!onResizeDragStart
+  const resizeHandles = showResizeHandles ? (() => {
+    const HANDLE = 8 // corner handle size
+    const EDGE = 6  // edge handle thickness
+    const handleStyle = (cursor: string, extra: React.CSSProperties): React.CSSProperties => ({
+      position: 'absolute',
+      zIndex: 20,
+      cursor,
+      ...extra,
+    })
+    const dirs: { dir: string; cursor: string; style: React.CSSProperties }[] = [
+      // Edges
+      { dir: 'n', cursor: 'n-resize', style: { top: -EDGE / 2, left: HANDLE, right: HANDLE, height: EDGE } },
+      { dir: 's', cursor: 's-resize', style: { bottom: -EDGE / 2, left: HANDLE, right: HANDLE, height: EDGE } },
+      { dir: 'w', cursor: 'w-resize', style: { left: -EDGE / 2, top: HANDLE, bottom: HANDLE, width: EDGE } },
+      { dir: 'e', cursor: 'e-resize', style: { right: -EDGE / 2, top: HANDLE, bottom: HANDLE, width: EDGE } },
+      // Corners
+      { dir: 'nw', cursor: 'nw-resize', style: { top: -HANDLE / 2, left: -HANDLE / 2, width: HANDLE, height: HANDLE } },
+      { dir: 'ne', cursor: 'ne-resize', style: { top: -HANDLE / 2, right: -HANDLE / 2, width: HANDLE, height: HANDLE } },
+      { dir: 'sw', cursor: 'sw-resize', style: { bottom: -HANDLE / 2, left: -HANDLE / 2, width: HANDLE, height: HANDLE } },
+      { dir: 'se', cursor: 'se-resize', style: { bottom: -HANDLE / 2, right: -HANDLE / 2, width: HANDLE, height: HANDLE } },
+    ]
+    return dirs.map(({ dir, cursor, style }) => (
+      <div
+        key={`resize-${dir}`}
+        style={handleStyle(cursor, style)}
+        onPointerDown={(e) => { if (e.button === 0) onResizeDragStart(dir, e) }}
+      />
+    ))
+  })() : null
+
   // Polygon shapes use a wrapper div so the SVG border is not clipped
   if (clipPath) {
     return (
@@ -5553,6 +5674,7 @@ function SceneNode({
         >
           {articleContent}
         </article>
+        {resizeHandles}
       </div>
     )
   }
@@ -5565,6 +5687,7 @@ function SceneNode({
       {...articleEventHandlers}
     >
       {articleContent}
+      {resizeHandles}
     </article>
   )
 }

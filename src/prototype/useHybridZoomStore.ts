@@ -102,6 +102,8 @@ interface HybridZoomState {
   updateNodeShape: (modelId: string, nodeId: string, shape: NodeShape) => void
   /** Update arbitrary visual properties on a node (with undo) */
   updateNodeProps: (modelId: string, nodeId: string, props: Partial<ModelNode>) => void
+  /** Update node props without pushing undo (used during resize drag after beginEditNode) */
+  updateNodePropsSilent: (modelId: string, nodeId: string, props: Partial<ModelNode>) => void
   /** Update label without pushing undo (used during live editing after beginEditNode) */
   setNodeLabelSilent: (modelId: string, nodeId: string, label: string) => void
   removeNode: (modelId: string, nodeId: string) => void
@@ -477,6 +479,24 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       if (!model) return state
       return {
         ...pushUndo(state, modelId),
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) =>
+              n.id === nodeId ? { ...n, ...props } : n,
+            ),
+          },
+        },
+      }
+    })
+  },
+
+  updateNodePropsSilent: (modelId, nodeId, props) => {
+    set((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
         models: {
           ...state.models,
           [modelId]: {

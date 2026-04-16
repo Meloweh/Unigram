@@ -546,6 +546,20 @@
   color: var(--ug-text);
 }
 
+.settings-reset-btn {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border: 1px solid var(--ug-border);
+  border-radius: 4px;
+  background: var(--ug-surface);
+  color: var(--ug-text);
+  cursor: pointer;
+  width: 100%;
+}
+.settings-reset-btn:hover {
+  background: var(--ug-border);
+}
+
 .host-label {
   font-weight: 600;
   color: var(--ug-node-label);

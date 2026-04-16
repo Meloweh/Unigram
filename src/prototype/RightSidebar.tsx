@@ -807,6 +807,17 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
               }}
             />
           </div>
+          {(node.nodeWidth != null || node.nodeHeight != null) && (
+            <div className="settings-row">
+              <button
+                type="button"
+                className="settings-reset-btn"
+                onClick={() => onUpdateProps({ nodeWidth: undefined, nodeHeight: undefined })}
+              >
+                Reset to auto size
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {/* Text Format section — visible when editing */}
