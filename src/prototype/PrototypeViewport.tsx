@@ -1377,6 +1377,8 @@ export function PrototypeViewport() {
   const flowTextFormatTimersRef = useRef<number[]>([])
   const flowTextFormatBackupsRef = useRef<{ el: HTMLElement; orig: { fontWeight: string; fontStyle: string; textDecoration: string; color: string; fontSize: string; transition: string } }[]>([])
   const flowTextFormatWrapperBackupsRef = useRef<{ el: HTMLElement; orig: { width: string; minWidth: string; height: string; minHeight: string; transition: string } }[]>([])
+  const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
+  const flowEffectTimersRef = useRef<number[]>([])
 
   const restoreBrokenNodes = useCallback(() => {
     for (const el of brokenNodeElementsRef.current) {
@@ -1401,6 +1403,9 @@ export function PrototypeViewport() {
     flowTimeoutRef.current = null
     flowCameraOverrideRef.current = null
     flowCameraFadeoutRef.current = null
+    // Clear all scheduled effect timeouts (BFS-scheduled, including repeater iterations)
+    for (const t of flowEffectTimersRef.current) clearTimeout(t)
+    flowEffectTimersRef.current = []
     // Animate camera back to pre-flow position
     const cam = flowCameraRef.current
     if (cam?.active) {
@@ -1462,6 +1467,12 @@ export function PrototypeViewport() {
       el.style.transition = orig.transition
     }
     flowTextFormatWrapperBackupsRef.current = []
+    // Stop keep-playing looping animations (jitter, float, move)
+    for (const { rafId, cleanup } of flowKeepPlayingAnimsRef.current) {
+      cancelAnimationFrame(rafId)
+      cleanup()
+    }
+    flowKeepPlayingAnimsRef.current = []
     // Stop all playing media elements
     document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
       const media = el as HTMLVideoElement | HTMLAudioElement
@@ -1504,6 +1515,13 @@ export function PrototypeViewport() {
     const node = model.nodes.find(n => n.id === nodeId)
     if (!node) return 100
 
+    // Helper: schedule a flow-effect timeout that gets tracked for cancellation
+    const scheduleEffect = (fn: () => void, ms: number) => {
+      const id = window.setTimeout(fn, ms)
+      flowEffectTimersRef.current.push(id)
+      return id
+    }
+
     // Collect all effects — include the implicit locked media effect if present
     const effects = node.flowEffects ?? []
     // Also consider implicit media if no locked effect exists
@@ -1531,13 +1549,48 @@ export function PrototypeViewport() {
       let frontier = entryNodes.map(n => n.id)
       const visited = new Set<string>(frontier)
       let totalDelay = 0
+      const repeaterCounters = new Map<string, number>()
+      let bfsSafety = 0
 
-      while (frontier.length > 0) {
+      while (frontier.length > 0 && bfsSafety++ < 10000) {
         const nextFrontier: string[] = []
         let layerMaxDuration = 0
 
         for (const gNodeId of frontier) {
-          const targets = adj.get(gNodeId) ?? []
+          // Determine targets — repeater nodes route based on counter
+          let targets: string[]
+          const selfNode = graphNodes.find(n => n.id === gNodeId)
+          if (selfNode?.kind === 'repeater') {
+            const count = (repeaterCounters.get(gNodeId) ?? 0) + 1
+            repeaterCounters.set(gNodeId, count)
+            const rptCount = (selfNode.config.repeatCount as number) ?? 3
+            const outEdges = graphEdges.filter(e => e.from === gNodeId)
+
+            if (count <= rptCount) {
+              // Follow circuit edges, clear visited for circuit path nodes
+              targets = outEdges.filter(e => e.fromPort === 'circuit').map(e => e.to)
+              for (const tId of targets) {
+                const pathQueue = [tId]
+                const pathSeen = new Set<string>()
+                while (pathQueue.length > 0) {
+                  const pid = pathQueue.shift()!
+                  if (pid === gNodeId || pathSeen.has(pid)) continue
+                  pathSeen.add(pid)
+                  visited.delete(pid)
+                  for (const e of graphEdges) {
+                    if (e.from === pid) pathQueue.push(e.to)
+                  }
+                }
+              }
+              visited.delete(gNodeId) // allow repeater to be re-reached via circuit-in
+            } else {
+              // Follow default edges
+              targets = outEdges.filter(e => e.fromPort !== 'circuit').map(e => e.to)
+            }
+          } else {
+            targets = adj.get(gNodeId) ?? []
+          }
+
           for (const targetId of targets) {
             if (visited.has(targetId)) continue
             visited.add(targetId)
@@ -1565,7 +1618,7 @@ export function PrototypeViewport() {
                 const reactiveEffect = (gNode.config.visualEffect as string) ?? 'glow-pulse'
                 const reactiveIntensity = (gNode.config.reactiveIntensity as number) ?? 1
                 const capturedNodeId = nodeId
-                setTimeout(() => {
+                scheduleEffect(() => {
                   triggerMediaPlay(capturedNodeId)
                   // Listen for media completion to signal the flow DAG
                   const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
@@ -1671,14 +1724,14 @@ export function PrototypeViewport() {
                 break
               case 'color': {
                 const color = (gNode.config.color as string) ?? '#f59e0b'
-                const permanent = !!gNode.config.permanent
-                setTimeout(() => {
+                const keepPlaying = !!(gNode.config.keepPlaying ?? gNode.config.permanent)
+                scheduleEffect(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (el) {
                     flowColorBackupsRef.current.push({ el, bg: el.style.background })
                     el.style.transition = `background ${dur}ms ease`
                     el.style.background = color
-                    if (!permanent) {
+                    if (!keepPlaying) {
                       setTimeout(() => {
                         el.style.background = ''
                         el.style.transition = ''
@@ -1686,44 +1739,66 @@ export function PrototypeViewport() {
                     }
                   }
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, dur)
+                layerMaxDuration = Math.max(layerMaxDuration, keepPlaying ? 0 : dur)
                 break
               }
               case 'move': {
                 const waypoints = (gNode.config.waypoints as Array<{dx: number; dy: number; durationMs: number}>) ?? []
                 const roundtrip = !!gNode.config.roundtrip
+                const keepPlaying = !!gNode.config.keepPlaying
                 // Compute total duration across all waypoints
                 let totalWpDur = 0
                 for (const wp of waypoints) totalWpDur += (wp.durationMs ?? 500)
                 if (roundtrip) totalWpDur += (waypoints.length > 0 ? (waypoints[waypoints.length - 1].durationMs ?? 500) : 500)
-                setTimeout(() => {
+                const capturedNodeId = nodeId
+                const capturedModelId = frame.modelId
+                const origX = node.x
+                const origY = node.y
+                scheduleEffect(() => {
                   if (!node) return
-                  let wpDelay = 0
-                  let cumDx = 0
-                  let cumDy = 0
-                  for (const wp of waypoints) {
-                    const wpDur = wp.durationMs ?? 500
-                    const dx = wp.dx ?? 0
-                    const dy = wp.dy ?? 0
-                    cumDx += dx
-                    cumDy += dy
-                    const targetX = node.x + cumDx
-                    const targetY = node.y + cumDy
-                    setTimeout(() => {
-                      updateNodeProps(frame.modelId, nodeId, { x: targetX, y: targetY })
-                    }, wpDelay)
-                    wpDelay += wpDur
+                  let cancelled = false
+                  const runOnce = () => {
+                    let wpDelay = 0
+                    let cumDx = 0
+                    let cumDy = 0
+                    for (const wp of waypoints) {
+                      const wpDur = wp.durationMs ?? 500
+                      const dx = wp.dx ?? 0
+                      const dy = wp.dy ?? 0
+                      cumDx += dx
+                      cumDy += dy
+                      const targetX = origX + cumDx
+                      const targetY = origY + cumDy
+                      scheduleEffect(() => {
+                        if (!cancelled) updateNodeProps(capturedModelId, capturedNodeId, { x: targetX, y: targetY })
+                      }, wpDelay)
+                      wpDelay += wpDur
+                    }
+                    if (roundtrip) {
+                      const lastWpDur = waypoints.length > 0 ? (waypoints[waypoints.length - 1].durationMs ?? 500) : 500
+                      scheduleEffect(() => {
+                        if (!cancelled) updateNodeProps(capturedModelId, capturedNodeId, { x: origX, y: origY })
+                      }, wpDelay)
+                      wpDelay += lastWpDur
+                    }
+                    if (keepPlaying) {
+                      scheduleEffect(() => {
+                        if (!cancelled) runOnce()
+                      }, wpDelay)
+                    }
                   }
-                  if (roundtrip) {
-                    // Return directly to the original position
-                    const lastWpDur = waypoints.length > 0 ? (waypoints[waypoints.length - 1].durationMs ?? 500) : 500
-                    setTimeout(() => {
-                      updateNodeProps(frame.modelId, nodeId, { x: node.x, y: node.y })
-                    }, wpDelay)
-                    wpDelay += lastWpDur
+                  runOnce()
+                  if (keepPlaying) {
+                    flowKeepPlayingAnimsRef.current.push({
+                      rafId: 0,
+                      cleanup: () => {
+                        cancelled = true
+                        updateNodeProps(capturedModelId, capturedNodeId, { x: origX, y: origY })
+                      },
+                    })
                   }
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, totalWpDur)
+                layerMaxDuration = Math.max(layerMaxDuration, keepPlaying ? 0 : totalWpDur)
                 break
               }
               case 'spawn': {
@@ -1731,7 +1806,7 @@ export function PrototypeViewport() {
                   label: string; offsetX: number; offsetY: number;
                   animation: string; connectionType: string
                 }>) ?? []
-                setTimeout(() => {
+                scheduleEffect(() => {
                   if (!node) return
                   for (const item of spawnItems) {
                     const newId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -1772,7 +1847,7 @@ export function PrototypeViewport() {
                 break
               }
               case 'handoff-rmm': {
-                setTimeout(() => {
+                scheduleEffect(() => {
                   if (!node?.childModelId) {
                     console.warn('[Flow] Handoff to RMM: node has no childModelId')
                     return
@@ -1818,7 +1893,7 @@ export function PrototypeViewport() {
                 break
               }
               case 'return-rmm': {
-                setTimeout(() => {
+                scheduleEffect(() => {
                   if (stack.length <= 1) {
                     console.warn('[Flow] Return from RMM: already at root level')
                     return
@@ -1842,7 +1917,7 @@ export function PrototypeViewport() {
               }
               case 'handoff-mpd': {
                 const targetMpdId = (gNode.config.targetMpdId as string) ?? ''
-                setTimeout(() => {
+                scheduleEffect(() => {
                   if (!targetMpdId) {
                     console.warn('[Flow] Handoff to MPD: no target MPD selected')
                     return
@@ -1876,7 +1951,7 @@ export function PrototypeViewport() {
                 const panYEasing = (gNode.config.panYEasing as string) ?? 'ease-out'
                 const zoomEasing = (gNode.config.zoomEasing as string) ?? 'ease-out'
                 const rotationEasing = (gNode.config.rotationEasing as string) ?? 'ease-out'
-                setTimeout(() => {
+                scheduleEffect(() => {
                   // Clear any active fadeout from a previous camera node
                   flowCameraFadeoutRef.current = null
                   flowCameraOverrideRef.current = {
@@ -1899,7 +1974,7 @@ export function PrototypeViewport() {
                 const shakeDurationMs = (gNode.config.shakeDurationMs as number) ?? 300
                 const fallDurationMs = (gNode.config.fallDurationMs as number) ?? 600
                 const totalBreakDur = Math.max(shakeDurationMs, fallDurationMs)
-                setTimeout(() => {
+                scheduleEffect(() => {
                   const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!article) return
 
@@ -1996,7 +2071,7 @@ export function PrototypeViewport() {
               }
               case 'expand': {
                 const dur = (gNode.config.durationMs as number) ?? 300
-                setTimeout(() => {
+                scheduleEffect(() => {
                   const nd = model.nodes.find(n => n.id === nodeId)
                   const expandedH = Math.max(nd?.nodeHeight ?? 60, 160)
                   updateNodeProps(frame.modelId, nodeId, { contentCollapsed: false, nodeHeight: expandedH })
@@ -2006,7 +2081,7 @@ export function PrototypeViewport() {
               }
               case 'collapse': {
                 const dur = (gNode.config.durationMs as number) ?? 300
-                setTimeout(() => {
+                scheduleEffect(() => {
                   updateNodeProps(frame.modelId, nodeId, { contentCollapsed: true, nodeHeight: 60 })
                 }, delay)
                 layerMaxDuration = Math.max(layerMaxDuration, dur)
@@ -2015,54 +2090,72 @@ export function PrototypeViewport() {
               case 'jitter': {
                 const intensity = (gNode.config.intensity as number) ?? 4
                 const durationMs = (gNode.config.durationMs as number) ?? 1000
-                setTimeout(() => {
+                const keepPlaying = !!gNode.config.keepPlaying
+                scheduleEffect(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!el) return
                   const start = performance.now()
+                  const entry = { rafId: 0, cleanup: () => { el.style.transform = 'translate(-50%, -50%)' } }
+                  if (keepPlaying) flowKeepPlayingAnimsRef.current.push(entry)
                   const animateJitter = (now: number) => {
-                    const t = (now - start) / durationMs
-                    if (t >= 1) {
-                      el.style.transform = 'translate(-50%, -50%)'
-                      return
+                    if (!keepPlaying) {
+                      const t = (now - start) / durationMs
+                      if (t >= 1) {
+                        el.style.transform = 'translate(-50%, -50%)'
+                        return
+                      }
+                      const decay = 1 - t
+                      const dx = (Math.random() * 2 - 1) * intensity * decay
+                      const dy = (Math.random() * 2 - 1) * intensity * decay
+                      el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+                    } else {
+                      const dx = (Math.random() * 2 - 1) * intensity
+                      const dy = (Math.random() * 2 - 1) * intensity
+                      el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
                     }
-                    const decay = 1 - t
-                    const dx = (Math.random() * 2 - 1) * intensity * decay
-                    const dy = (Math.random() * 2 - 1) * intensity * decay
-                    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
-                    requestAnimationFrame(animateJitter)
+                    entry.rafId = requestAnimationFrame(animateJitter)
                   }
-                  requestAnimationFrame(animateJitter)
+                  entry.rafId = requestAnimationFrame(animateJitter)
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, durationMs)
+                layerMaxDuration = Math.max(layerMaxDuration, keepPlaying ? 0 : durationMs)
                 break
               }
               case 'float': {
                 const amplitude = (gNode.config.amplitude as number) ?? 6
                 const speed = (gNode.config.speed as number) ?? 1
                 const durationMs = (gNode.config.durationMs as number) ?? 3000
-                setTimeout(() => {
+                const keepPlaying = !!gNode.config.keepPlaying
+                scheduleEffect(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!el) return
-                  // Random phase offsets so multi-axis wobble looks organic
                   const phaseX = Math.random() * Math.PI * 2
                   const phaseY = Math.random() * Math.PI * 2
                   const start = performance.now()
+                  const entry = { rafId: 0, cleanup: () => { el.style.transform = 'translate(-50%, -50%)' } }
+                  if (keepPlaying) flowKeepPlayingAnimsRef.current.push(entry)
                   const animateFloat = (now: number) => {
-                    const t = (now - start) / durationMs
-                    if (t >= 1) {
-                      el.style.transform = 'translate(-50%, -50%)'
-                      return
+                    const elapsed = now - start
+                    if (!keepPlaying) {
+                      const t = elapsed / durationMs
+                      if (t >= 1) {
+                        el.style.transform = 'translate(-50%, -50%)'
+                        return
+                      }
+                      const s = t * speed * Math.PI * 2 * (durationMs / 1000)
+                      const dx = Math.sin(s * 1.3 + phaseX) * amplitude * 0.7 + Math.sin(s * 2.1 + phaseX + 1) * amplitude * 0.3
+                      const dy = Math.sin(s * 0.9 + phaseY) * amplitude * 0.7 + Math.cos(s * 1.7 + phaseY + 2) * amplitude * 0.3
+                      el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
+                    } else {
+                      const s = (elapsed / 1000) * speed * Math.PI * 2
+                      const dx = Math.sin(s * 1.3 + phaseX) * amplitude * 0.7 + Math.sin(s * 2.1 + phaseX + 1) * amplitude * 0.3
+                      const dy = Math.sin(s * 0.9 + phaseY) * amplitude * 0.7 + Math.cos(s * 1.7 + phaseY + 2) * amplitude * 0.3
+                      el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
                     }
-                    // Wobble using two incommensurate sine waves per axis
-                    const s = t * speed * Math.PI * 2 * (durationMs / 1000)
-                    const dx = Math.sin(s * 1.3 + phaseX) * amplitude * 0.7 + Math.sin(s * 2.1 + phaseX + 1) * amplitude * 0.3
-                    const dy = Math.sin(s * 0.9 + phaseY) * amplitude * 0.7 + Math.cos(s * 1.7 + phaseY + 2) * amplitude * 0.3
-                    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`
-                    requestAnimationFrame(animateFloat)
+                    entry.rafId = requestAnimationFrame(animateFloat)
                   }
-                  requestAnimationFrame(animateFloat)
+                  entry.rafId = requestAnimationFrame(animateFloat)
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, durationMs)
+                layerMaxDuration = Math.max(layerMaxDuration, keepPlaying ? 0 : durationMs)
                 break
               }
               case 'spawn-circular': {
@@ -2073,7 +2166,7 @@ export function PrototypeViewport() {
                 const delayBetweenMs = (gNode.config.delayBetweenMs as number) ?? 200
                 const count = scItems.length
                 const totalSpawnDur = count > 0 ? (count - 1) * delayBetweenMs + 400 : 0
-                setTimeout(() => {
+                scheduleEffect(() => {
                   if (!node || count === 0) return
                   scItems.forEach((item, idx) => {
                     setTimeout(() => {
@@ -2117,7 +2210,7 @@ export function PrototypeViewport() {
               case 'emerge': {
                 const animation = (gNode.config.animation as string) ?? 'scale-in'
                 const emergeDur = (gNode.config.durationMs as number) ?? 600
-                setTimeout(() => {
+                scheduleEffect(() => {
                   const el = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!el) return
 
@@ -2214,16 +2307,13 @@ export function PrototypeViewport() {
                 const targetWidth = (gNode.config.targetWidth as number) ?? 200
                 const targetHeight = (gNode.config.targetHeight as number) ?? 120
                 const scaleDur = (gNode.config.durationMs as number) ?? 500
-                const persistent = gNode.config.persistent === true
-                setTimeout(() => {
+                const keepPlaying = !!(gNode.config.keepPlaying ?? gNode.config.persistent)
+                scheduleEffect(() => {
                   if (!node) return
-                  // Target the outer wrapper div (parent of the article) which has position styles
                   const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!article) return
-                  // The wrapper is the article's parent if it's a polygon shape, otherwise the article itself
                   const el = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
                     ? article.parentElement : article
-                  // Read actual rendered size from DOM to avoid mismatch with model defaults
                   const startW = el.offsetWidth
                   const startH = el.offsetHeight
                   const start = performance.now()
@@ -2238,16 +2328,33 @@ export function PrototypeViewport() {
                     el.style.minHeight = `${h}px`
                     if (t < 1) {
                       requestAnimationFrame(animateScale)
-                    } else if (persistent) {
-                      el.style.width = ''
-                      el.style.minWidth = ''
-                      el.style.height = ''
-                      el.style.minHeight = ''
-                      updateNodeProps(frame.modelId, nodeId, { nodeWidth: targetWidth, nodeHeight: targetHeight })
+                    } else if (keepPlaying) {
+                      // Hold at target size — stopFlowAnimation will revert via scaleRevertTimersRef
+                      const timer = window.setTimeout(() => {
+                        // Animate back when flow stops (timer cleared by stopFlowAnimation)
+                        const revertStart = performance.now()
+                        const animateRevert = (now2: number) => {
+                          const t2 = Math.min((now2 - revertStart) / scaleDur, 1)
+                          const ease2 = t2 < 0.5 ? 2 * t2 * t2 : 1 - (-2 * t2 + 2) ** 2 / 2
+                          const w2 = targetWidth + (startW - targetWidth) * ease2
+                          const h2 = targetHeight + (startH - targetHeight) * ease2
+                          el.style.width = `${w2}px`
+                          el.style.minWidth = `${w2}px`
+                          el.style.height = `${h2}px`
+                          el.style.minHeight = `${h2}px`
+                          if (t2 < 1) requestAnimationFrame(animateRevert)
+                          else {
+                            el.style.width = `${startW}px`
+                            el.style.minWidth = `${startW}px`
+                            el.style.height = `${startH}px`
+                            el.style.minHeight = `${startH}px`
+                          }
+                        }
+                        requestAnimationFrame(animateRevert)
+                      }, 999999999) // effectively never — cleared by stopFlowAnimation
+                      scaleRevertTimersRef.current.push(timer)
                     } else {
-                      // Hold at target size, then revert when flow stops
-                      // (stopFlowAnimation will clear scaleRevertTimersRef)
-                      // Animate back to original
+                      // Animate back to original after brief hold
                       const revertStart = performance.now()
                       const animateRevert = (now2: number) => {
                         const t2 = Math.min((now2 - revertStart) / scaleDur, 1)
@@ -2261,14 +2368,12 @@ export function PrototypeViewport() {
                         if (t2 < 1) {
                           requestAnimationFrame(animateRevert)
                         } else {
-                          // Restore to original measured size (not empty) to prevent shrinking below original
                           el.style.width = `${startW}px`
                           el.style.minWidth = `${startW}px`
                           el.style.height = `${startH}px`
                           el.style.minHeight = `${startH}px`
                         }
                       }
-                      // Delay the revert by a brief hold period
                       const timer = window.setTimeout(() => {
                         requestAnimationFrame(animateRevert)
                       }, 200)
@@ -2277,7 +2382,7 @@ export function PrototypeViewport() {
                   }
                   requestAnimationFrame(animateScale)
                 }, delay)
-                layerMaxDuration = Math.max(layerMaxDuration, persistent ? scaleDur : scaleDur * 2 + 200)
+                layerMaxDuration = Math.max(layerMaxDuration, keepPlaying ? 0 : scaleDur * 2 + 200)
                 break
               }
               case 'text-format': {
@@ -2291,7 +2396,9 @@ export function PrototypeViewport() {
                 const fmtColor = (gNode.config.color as string) || ''
                 const fmtFontSize = (gNode.config.fontSize as number) ?? 0
                 const rescaleDur = (gNode.config.rescaleDurationMs as number) ?? 0
-                const resetMode = (gNode.config.resetMode as string) ?? 'node'
+                const rawResetMode = (gNode.config.resetMode as string) ?? 'node'
+                const keepPlaying = !!(gNode.config.keepPlaying ?? (rawResetMode === 'persist'))
+                const resetMode = keepPlaying ? 'persist' : rawResetMode
                 const holdDur = (gNode.config.durationMs as number) ?? 1000
 
                 // Resolve target range
@@ -2305,7 +2412,7 @@ export function PrototypeViewport() {
 
                 if (startIdx >= endIdx) break
 
-                setTimeout(() => {
+                scheduleEffect(() => {
                   const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
                   if (!article) return
                   const labelEl = article.querySelector('.host-label:not(.host-label-editing)') as HTMLElement | null
@@ -2492,7 +2599,7 @@ export function PrototypeViewport() {
                 setForceCollapseSidebars(true)
                 setHideToolbar(true)
                 if (hideCursor) document.documentElement.style.cursor = 'none'
-                setTimeout(async () => {
+                scheduleEffect(async () => {
                   try {
                     const stream = await navigator.mediaDevices.getDisplayMedia({
                       video: {
@@ -2573,6 +2680,9 @@ export function PrototypeViewport() {
                 layerMaxDuration = Math.max(layerMaxDuration, 600000)
                 break
               }
+              case 'repeater':
+                // Pure routing node — no effect, no duration
+                break
             }
           }
         }
@@ -3106,6 +3216,15 @@ export function PrototypeViewport() {
           // Clear scale revert timers
           for (const t of scaleRevertTimersRef.current) clearTimeout(t)
           scaleRevertTimersRef.current = []
+          // Stop keep-playing looping animations (jitter, float, move)
+          for (const { rafId, cleanup } of flowKeepPlayingAnimsRef.current) {
+            cancelAnimationFrame(rafId)
+            cleanup()
+          }
+          flowKeepPlayingAnimsRef.current = []
+          // Clear all scheduled effect timeouts
+          for (const t of flowEffectTimersRef.current) clearTimeout(t)
+          flowEffectTimersRef.current = []
           // Stop all playing media elements
           document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
             const media = el as HTMLVideoElement | HTMLAudioElement

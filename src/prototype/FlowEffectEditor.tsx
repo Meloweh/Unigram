@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge } from './sampleModels'
+import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge, EffectPortId } from './sampleModels'
 
 // ---- Host context passed from viewport ----
 
@@ -66,6 +66,7 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'emerge': 'Emerge',
   'scale': 'Scale',
   'text-format': 'Text Format',
+  'repeater': 'Repeater',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -89,6 +90,7 @@ const kindColors: Record<FlowEffectKind, string> = {
   'emerge': '#a3e635',
   'scale': '#34d399',
   'text-format': '#e879f9',
+  'repeater': '#facc15',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -113,8 +115,8 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
   switch (kind) {
     case 'entry': return { triggeredByRmmParent: false }
     case 'wait': return { durationMs: 500 }
-    case 'move': return { waypoints: [{ dx: 0, dy: 0, durationMs: 500 }], roundtrip: false }
-    case 'color': return { color: '#f59e0b', durationMs: 300, permanent: false }
+    case 'move': return { waypoints: [{ dx: 0, dy: 0, durationMs: 500 }], roundtrip: false, keepPlaying: false }
+    case 'color': return { color: '#f59e0b', durationMs: 300, permanent: false, keepPlaying: false }
     case 'spawn': return { spawnItems: [] }
     case 'play-media': return {}
     case 'handoff-rmm': return {}
@@ -125,12 +127,13 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'expand': return { durationMs: 300 }
     case 'collapse': return { durationMs: 300 }
     case 'record': return { captureMode: 'tab', hideCursor: true, recordingWidth: 1920, recordingHeight: 1080, videoBitrateMbps: 32, codec: 'vp9' }
-    case 'jitter': return { intensity: 4, durationMs: 1000 }
-    case 'float': return { amplitude: 6, speed: 1, durationMs: 3000 }
+    case 'jitter': return { intensity: 4, durationMs: 1000, keepPlaying: false }
+    case 'float': return { amplitude: 6, speed: 1, durationMs: 3000, keepPlaying: false }
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
     case 'emerge': return { animation: 'scale-in', durationMs: 600 }
-    case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false }
-    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000 }
+    case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false, keepPlaying: false }
+    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false }
+    case 'repeater': return { repeatCount: 3 }
   }
 }
 
@@ -140,7 +143,11 @@ function snapToGridVal(v: number) {
   return Math.round(v / GRID) * GRID
 }
 
-function portPos(node: EffectGraphNode, side: 'in' | 'out') {
+function portPos(node: EffectGraphNode, side: 'in' | 'out', port?: EffectPortId) {
+  if (node.kind === 'repeater' && port) {
+    const x = port === 'default' ? node.x + NODE_W * 0.25 : node.x + NODE_W * 0.75
+    return { x, y: side === 'in' ? node.y : node.y + NODE_H }
+  }
   return {
     x: node.x + NODE_W / 2,
     y: side === 'in' ? node.y : node.y + NODE_H,
@@ -167,7 +174,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'repeater',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
@@ -189,7 +196,7 @@ export function FlowEffectEditor({
   // Dragging state
   const dragRef = useRef<{ nodeId: string; startX: number; startY: number; origX: number; origY: number } | null>(null)
   // Edge drafting
-  const [edgeDraft, setEdgeDraft] = useState<{ fromId: string; mx: number; my: number } | null>(null)
+  const [edgeDraft, setEdgeDraft] = useState<{ fromId: string; fromPort?: EffectPortId; mx: number; my: number } | null>(null)
   // Panning
   const panRef = useRef<{ startX: number; startY: number; origPanX: number; origPanY: number } | null>(null)
 
@@ -213,11 +220,11 @@ export function FlowEffectEditor({
   }, [nodes])
 
   // ---- Edge creation (drag from output port) ----
-  const onPortPointerDown = useCallback((e: React.PointerEvent, nodeId: string) => {
+  const onPortPointerDown = useCallback((e: React.PointerEvent, nodeId: string, port?: EffectPortId) => {
     e.stopPropagation()
     e.preventDefault()
     const gp = toGraph(e)
-    setEdgeDraft({ fromId: nodeId, mx: gp.x, my: gp.y })
+    setEdgeDraft({ fromId: nodeId, fromPort: port, mx: gp.x, my: gp.y })
   }, [toGraph])
 
   // ---- Canvas pointer events ----
@@ -261,17 +268,44 @@ export function FlowEffectEditor({
     if (edgeDraft) {
       // Check if we're over an input port
       const gp = toGraph(e)
-      const target = nodes.find(n => {
-        if (n.id === edgeDraft.fromId) return false
-        if (n.kind === 'entry') return false // entry has no input port
-        const ip = portPos(n, 'in')
-        return Math.hypot(gp.x - ip.x, gp.y - ip.y) < PORT_R * 3
-      })
-      if (target) {
-        // Don't allow duplicate edges
-        const exists = edges.some(ed => ed.from === edgeDraft.fromId && ed.to === target.id)
+      // Build candidate ports: for repeater nodes, check both default and circuit input ports
+      let bestTarget: { node: EffectGraphNode; port?: EffectPortId; dist: number } | null = null
+      for (const n of nodes) {
+        if (n.kind === 'entry') continue // entry has no input port
+        // Allow self-loop only for repeater circuit edges
+        if (n.id === edgeDraft.fromId && n.kind !== 'repeater') continue
+        if (n.kind === 'repeater') {
+          for (const p of ['default', 'circuit'] as EffectPortId[]) {
+            // For self-loops, only allow circuit-out → circuit-in
+            if (n.id === edgeDraft.fromId && (edgeDraft.fromPort !== 'circuit' || p !== 'circuit')) continue
+            const ip = portPos(n, 'in', p)
+            const dist = Math.hypot(gp.x - ip.x, gp.y - ip.y)
+            if (dist < PORT_R * 3 && (!bestTarget || dist < bestTarget.dist)) {
+              bestTarget = { node: n, port: p, dist }
+            }
+          }
+        } else {
+          if (n.id === edgeDraft.fromId) continue
+          const ip = portPos(n, 'in')
+          const dist = Math.hypot(gp.x - ip.x, gp.y - ip.y)
+          if (dist < PORT_R * 3 && (!bestTarget || dist < bestTarget.dist)) {
+            bestTarget = { node: n, dist }
+          }
+        }
+      }
+      if (bestTarget) {
+        const { node: target, port: toPort } = bestTarget
+        // Don't allow duplicate edges (same from/to/ports)
+        const exists = edges.some(ed =>
+          ed.from === edgeDraft.fromId && ed.to === target.id &&
+          (ed.fromPort ?? undefined) === edgeDraft.fromPort &&
+          (ed.toPort ?? undefined) === toPort
+        )
         if (!exists) {
-          setEdges(prev => [...prev, { from: edgeDraft.fromId, to: target.id }])
+          const newEdge: EffectGraphEdge = { from: edgeDraft.fromId, to: target.id }
+          if (edgeDraft.fromPort) newEdge.fromPort = edgeDraft.fromPort
+          if (toPort) newEdge.toPort = toPort
+          setEdges(prev => [...prev, newEdge])
         }
       }
       setEdgeDraft(null)
@@ -336,8 +370,8 @@ export function FlowEffectEditor({
   }, [selectedNodeId, nodes, isNodeLocked])
 
   // ---- Delete edge ----
-  const deleteEdge = useCallback((from: string, to: string) => {
-    setEdges(prev => prev.filter(e => !(e.from === from && e.to === to)))
+  const deleteEdge = useCallback((from: string, to: string, fromPort?: EffectPortId, toPort?: EffectPortId) => {
+    setEdges(prev => prev.filter(e => !(e.from === from && e.to === to && (e.fromPort ?? undefined) === fromPort && (e.toPort ?? undefined) === toPort)))
   }, [])
 
   // ---- Keyboard (capture and stop propagation so viewport doesn't react) ----
@@ -432,13 +466,13 @@ export function FlowEffectEditor({
                   const fromNode = nodes.find(n => n.id === edge.from)
                   const toNode = nodes.find(n => n.id === edge.to)
                   if (!fromNode || !toNode) return null
-                  const fp = portPos(fromNode, 'out')
-                  const tp = portPos(toNode, 'in')
+                  const fp = portPos(fromNode, 'out', edge.fromPort)
+                  const tp = portPos(toNode, 'in', edge.toPort)
                   const midY = (fp.y + tp.y) / 2
                   return (
-                    <g key={`${edge.from}->${edge.to}`}
+                    <g key={`${edge.from}->${edge.to}:${edge.fromPort ?? ''}:${edge.toPort ?? ''}`}
                       className="fxeditor-edge-g"
-                      onClick={(e) => { e.stopPropagation(); deleteEdge(edge.from, edge.to) }}>
+                      onClick={(e) => { e.stopPropagation(); deleteEdge(edge.from, edge.to, edge.fromPort, edge.toPort) }}>
                       <path
                         d={`M${fp.x},${fp.y} C${fp.x},${midY} ${tp.x},${midY} ${tp.x},${tp.y}`}
                         stroke="#94a3b8" strokeWidth={2} fill="none" markerEnd="url(#fxarrow)"
@@ -455,7 +489,7 @@ export function FlowEffectEditor({
                 {edgeDraft && (() => {
                   const fromNode = nodes.find(n => n.id === edgeDraft.fromId)
                   if (!fromNode) return null
-                  const fp = portPos(fromNode, 'out')
+                  const fp = portPos(fromNode, 'out', edgeDraft.fromPort)
                   const midY = (fp.y + edgeDraft.my) / 2
                   return (
                     <path
@@ -472,6 +506,7 @@ export function FlowEffectEditor({
                 const isSelected = node.id === selectedNodeId
                 const locked = isNodeLocked(node)
                 const isEntry = node.kind === 'entry'
+                const isRepeater = node.kind === 'repeater'
                 return (
                   <div
                     key={node.id}
@@ -483,23 +518,49 @@ export function FlowEffectEditor({
                     }}
                     onPointerDown={(e) => onNodePointerDown(e, node.id)}
                   >
-                    {/* Input port (top) — not on entry nodes */}
-                    {!isEntry && (
+                    {/* Input ports */}
+                    {isRepeater ? (
+                      <>
+                        <div
+                          className="fxeditor-port in port-default"
+                          style={{ background: color, left: '25%' }}
+                        />
+                        <div
+                          className="fxeditor-port in port-circuit"
+                          style={{ background: color, left: '75%' }}
+                        />
+                      </>
+                    ) : !isEntry ? (
                       <div
                         className="fxeditor-port in"
                         style={{ background: color }}
                       />
-                    )}
+                    ) : null}
                     {/* Node content */}
                     <div className="fxeditor-node-kind" style={{ color }}>{kindLabels[node.kind]}</div>
                     <div className="fxeditor-node-label">{node.label}</div>
                     {locked && !isEntry && <div className="fxeditor-lock-badge">🔒</div>}
-                    {/* Output port (bottom) */}
-                    <div
-                      className="fxeditor-port out"
-                      style={{ background: color }}
-                      onPointerDown={(e) => onPortPointerDown(e, node.id)}
-                    />
+                    {/* Output ports */}
+                    {isRepeater ? (
+                      <>
+                        <div
+                          className="fxeditor-port out port-default"
+                          style={{ background: color, left: '25%' }}
+                          onPointerDown={(e) => onPortPointerDown(e, node.id, 'default')}
+                        />
+                        <div
+                          className="fxeditor-port out port-circuit"
+                          style={{ background: color, left: '75%' }}
+                          onPointerDown={(e) => onPortPointerDown(e, node.id, 'circuit')}
+                        />
+                      </>
+                    ) : (
+                      <div
+                        className="fxeditor-port out"
+                        style={{ background: color }}
+                        onPointerDown={(e) => onPortPointerDown(e, node.id)}
+                      />
+                    )}
                   </div>
                 )
               })}
@@ -609,6 +670,14 @@ export function FlowEffectEditor({
                         />
                         <span>Roundtrip (return to start)</span>
                       </label>
+                      <label className="fxeditor-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={!!selectedNode.config.keepPlaying}
+                          onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
+                        />
+                        <span>Keep playing until flow ends</span>
+                      </label>
                     </div>
                   )
                 })()}
@@ -624,12 +693,12 @@ export function FlowEffectEditor({
                     <label className="fxeditor-checkbox">
                       <input
                         type="checkbox"
-                        checked={!!selectedNode.config.permanent}
-                        onChange={(e) => updateNodeConfig('permanent', e.target.checked)}
+                        checked={!!selectedNode.config.keepPlaying}
+                        onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
                       />
-                      <span>Permanent</span>
+                      <span>Keep playing until flow ends</span>
                     </label>
-                    {!selectedNode.config.permanent && (
+                    {!selectedNode.config.keepPlaying && (
                       <label className="fxeditor-field">
                         <span>Duration (ms)</span>
                         <input type="number" min={0} step={50}
@@ -1097,11 +1166,21 @@ export function FlowEffectEditor({
                         value={(selectedNode.config.intensity as number) ?? 4}
                         onChange={(e) => updateNodeConfig('intensity', Number(e.target.value))} />
                     </label>
-                    <label className="fxeditor-field">
-                      <span>Duration (ms)</span>
-                      <input type="number" min={100} step={50}
-                        value={(selectedNode.config.durationMs as number) ?? 1000}
-                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    {!selectedNode.config.keepPlaying && (
+                      <label className="fxeditor-field">
+                        <span>Duration (ms)</span>
+                        <input type="number" min={100} step={50}
+                          value={(selectedNode.config.durationMs as number) ?? 1000}
+                          onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                      </label>
+                    )}
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.keepPlaying}
+                        onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
+                      />
+                      <span>Keep playing until flow ends</span>
                     </label>
                   </>
                 )}
@@ -1123,11 +1202,21 @@ export function FlowEffectEditor({
                         value={(selectedNode.config.speed as number) ?? 1}
                         onChange={(e) => updateNodeConfig('speed', Number(e.target.value))} />
                     </label>
-                    <label className="fxeditor-field">
-                      <span>Duration (ms)</span>
-                      <input type="number" min={200} step={100}
-                        value={(selectedNode.config.durationMs as number) ?? 3000}
-                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    {!selectedNode.config.keepPlaying && (
+                      <label className="fxeditor-field">
+                        <span>Duration (ms)</span>
+                        <input type="number" min={200} step={100}
+                          value={(selectedNode.config.durationMs as number) ?? 3000}
+                          onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                      </label>
+                    )}
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.keepPlaying}
+                        onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
+                      />
+                      <span>Keep playing until flow ends</span>
                     </label>
                   </>
                 )}
@@ -1257,10 +1346,10 @@ export function FlowEffectEditor({
                     <label className="fxeditor-checkbox">
                       <input
                         type="checkbox"
-                        checked={selectedNode.config.persistent === true}
-                        onChange={(e) => updateNodeConfig('persistent', e.target.checked)}
+                        checked={selectedNode.config.keepPlaying === true}
+                        onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
                       />
-                      <span>Keep new size (don't revert)</span>
+                      <span>Keep playing until flow ends</span>
                     </label>
                   </>
                 )}
@@ -1345,27 +1434,37 @@ export function FlowEffectEditor({
                           onChange={(e) => updateNodeConfig('rescaleDurationMs', Number(e.target.value))} />
                       </label>
                     )}
-                    <label className="fxeditor-field">
-                      <span>Node Duration (ms)</span>
-                      <input type="number" min={0} step={50}
-                        value={(selectedNode.config.durationMs as number) ?? 1000}
-                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    {!selectedNode.config.keepPlaying && (
+                      <label className="fxeditor-field">
+                        <span>Node Duration (ms)</span>
+                        <input type="number" min={0} step={50}
+                          value={(selectedNode.config.durationMs as number) ?? 1000}
+                          onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                      </label>
+                    )}
+                    <label className="fxeditor-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedNode.config.keepPlaying}
+                        onChange={(e) => updateNodeConfig('keepPlaying', e.target.checked)}
+                      />
+                      <span>Keep playing until flow ends</span>
                     </label>
-                    <div className="fxeditor-radio-group">
-                      <span>Reset Mode</span>
-                      <label>
-                        <input type="radio" name="textFmtResetMode"
-                          checked={((selectedNode.config.resetMode as string) ?? 'node') === 'node'}
-                          onChange={() => updateNodeConfig('resetMode', 'node')} />
-                        Revert after node duration
-                      </label>
-                      <label>
-                        <input type="radio" name="textFmtResetMode"
-                          checked={((selectedNode.config.resetMode as string) ?? 'node') === 'persist'}
-                          onChange={() => updateNodeConfig('resetMode', 'persist')} />
-                        Persist until flow stops
-                      </label>
+                  </>
+                )}
+                {/* ---- Repeater ---- */}
+                {selectedNode.kind === 'repeater' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Loops circuit-connected effects N times, then hands off via the default output.
+                      Connect circuit-out (bottom-right) → circuit-in (top-right) of downstream effects to form the loop.
                     </div>
+                    <label className="fxeditor-field">
+                      <span>Repeat Count</span>
+                      <input type="number" min={1} max={100} step={1}
+                        value={(selectedNode.config.repeatCount as number) ?? 3}
+                        onChange={(e) => updateNodeConfig('repeatCount', Number(e.target.value))} />
+                    </label>
                   </>
                 )}
                 {/* Delete button */}

@@ -6,7 +6,7 @@ export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video' | 'markdown' | '
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format' | 'repeater'
 
 export interface TextFormatRange {
   start: number
@@ -56,9 +56,13 @@ export interface EffectGraphNode {
   config: Record<string, unknown>
 }
 
+export type EffectPortId = 'default' | 'circuit'
+
 export interface EffectGraphEdge {
   from: string
   to: string
+  fromPort?: EffectPortId
+  toPort?: EffectPortId
 }
 
 export interface FlowEffect {
