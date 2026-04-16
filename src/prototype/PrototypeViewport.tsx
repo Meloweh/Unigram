@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle, type GridConfig, type TextFormatRange } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type CosmeticType, type TipDirection, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle, type GridConfig, type TextFormatRange } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
@@ -205,8 +205,24 @@ function shapeEdgeIntersect(
   shape: string | undefined,
   hw: number, hh: number,
   dx: number, dy: number,
+  cosmeticType?: string,
 ): { x: number; y: number } {
   const s = shape ?? 'rounded-rect'
+
+  // Cosmetic: thinking-cloud uses elliptical boundary (like oval)
+  if (cosmeticType === 'thinking-cloud') {
+    const denom = Math.sqrt((dx * dx) / (hw * hw) + (dy * dy) / (hh * hh))
+    if (denom < 1e-9) return { x: 0, y: 0 }
+    return { x: dx / denom, y: dy / denom }
+  }
+
+  // Cosmetic: chat-bubble uses rect boundary (tip extends beyond, connections attach to body)
+  if (cosmeticType === 'chat-bubble') {
+    const tx = Math.abs(dx) > 1e-9 ? hw / Math.abs(dx) : Infinity
+    const ty = Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity
+    const t = Math.min(tx, ty)
+    return { x: dx * t, y: dy * t }
+  }
 
   // Elliptical shapes
   if (s === 'oval' || s === 'circle') {
@@ -265,6 +281,133 @@ function shapeSvgPoints(shape: string, w: number, h: number): string {
     case 'triangle': return `${w / 2},0 ${w},${h} 0,${h}`
     default: return ''
   }
+}
+
+// ---- Cosmetic SVG helpers ----
+
+/** Build a single closed SVG path for a chat-bubble (rounded rect body + triangular tip).
+ *  The tip is integrated into the body path so no membrane gap appears at the junction. */
+function chatBubblePath(w: number, h: number, tipAngle: number, tipLength = 20): string {
+  const r = Math.min(18, w / 4, h / 4) // corner radius
+  const tipW = Math.min(15, tipLength * 0.75) // half-width of base
+  const cosA = Math.cos(tipAngle), sinA = Math.sin(tipAngle)
+  // Determine if tip is on bottom or top edge (positive sin = downward in y-down coords)
+  const isBottom = sinA >= 0
+  const edgeY = isBottom ? h : 0
+  const centerX = w / 2, centerY = h / 2
+
+  // Find where the ray from center at tipAngle hits the chosen horizontal edge
+  let baseX: number
+  if (Math.abs(sinA) > 0.05) {
+    const t = (edgeY - centerY) / sinA
+    baseX = centerX + t * cosA
+  } else {
+    baseX = centerX
+  }
+  baseX = Math.max(r + tipW, Math.min(w - r - tipW, baseX))
+
+  // Tip apex: extend from base in the direction of tipAngle
+  const apexX = baseX + tipLength * cosA
+  const apexY = edgeY + tipLength * sinA
+
+  // --- Top edge (left to right) ---
+  let topEdge = `L${w - r},0`
+  if (!isBottom) {
+    const lb = Math.max(r, baseX - tipW)
+    const rb = Math.min(w - r, baseX + tipW)
+    topEdge = `L${lb},0 L${apexX.toFixed(1)},${apexY.toFixed(1)} L${rb},0 L${w - r},0`
+  }
+
+  // --- Bottom edge (right to left) ---
+  let bottomEdge = `L${r},${h}`
+  if (isBottom) {
+    const lb = Math.max(r, baseX - tipW)
+    const rb = Math.min(w - r, baseX + tipW)
+    bottomEdge = `L${rb},${h} L${apexX.toFixed(1)},${apexY.toFixed(1)} L${lb},${h} L${r},${h}`
+  }
+
+  return [
+    `M${r},0`,
+    topEdge,
+    `Q${w},0 ${w},${r}`,
+    `L${w},${h - r}`,
+    `Q${w},${h} ${w - r},${h}`,
+    bottomEdge,
+    `Q0,${h} 0,${h - r}`,
+    `L0,${r}`,
+    `Q0,0 ${r},0`,
+    'Z',
+  ].join(' ')
+}
+
+/** Build the main cloud body path (bumpy outline) for a thinking-cloud node.
+ *  Uses arc-based puffs: junction points sit on a base ellipse, and circular
+ *  arcs between them bulge outward — producing puffy lobes with no gear-like
+ *  inward valleys. */
+function thinkingCloudPath(w: number, h: number): string {
+  const cx = w / 2, cy = h / 2
+  // Base ellipse — junction points sit here; arcs bulge outward past them
+  const rx = w * 0.46, ry = h * 0.46
+  const n = 8 // number of puffs — 8 gives a natural cartoon-cloud look
+
+  // Junction points between puffs, sitting on the base ellipse
+  // Slight angular jitter for organic feel
+  const junctions: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const jitter = 0.06 * Math.sin(i * 2.1 + 0.5)
+    const angle = (i / n) * Math.PI * 2 - Math.PI / 2 + jitter
+    junctions.push([
+      cx + rx * Math.cos(angle),
+      cy + ry * Math.sin(angle),
+    ])
+  }
+
+  // Build path using circular arcs between junction points
+  const d: string[] = [`M${junctions[0][0].toFixed(1)},${junctions[0][1].toFixed(1)}`]
+  for (let i = 0; i < n; i++) {
+    const j1 = junctions[i]
+    const j2 = junctions[(i + 1) % n]
+    const dx = j2[0] - j1[0], dy = j2[1] - j1[1]
+    const chord = Math.sqrt(dx * dx + dy * dy)
+    // Vary arc radius per puff for size variation (smaller radius = puffier arc)
+    const sizeVar = 1 + 0.25 * Math.sin(i * 2.3) + 0.1 * Math.sin(i * 3.7 + 1)
+    // Arc radius: ~55-65% of chord gives nicely puffy semicircular arcs
+    const arcR = Math.max(chord * 0.5 + 0.1, chord * 0.58 * sizeVar)
+    // sweep-flag=1 (CW) + large-arc-flag=0 makes arcs bulge outward
+    d.push(`A${arcR.toFixed(1)},${arcR.toFixed(1)} 0 0,1 ${j2[0].toFixed(1)},${j2[1].toFixed(1)}`)
+  }
+  d.push('Z')
+  return d.join(' ')
+}
+
+/** Positions and radii of the 3 trailing thought-bubbles for a thinking-cloud.
+ *  Returns [{cx, cy, r}, ...] from largest (nearest body) to smallest (farthest). */
+function thinkingCloudTrail(
+  w: number, h: number, tipAngle: number, tipLength = 20,
+): { cx: number; cy: number; r: number }[] {
+  const centerX = w / 2, centerY = h / 2
+  const cosA = Math.cos(tipAngle), sinA = Math.sin(tipAngle)
+  // Cloud body is roughly elliptical — find where ray hits its edge
+  const rx = w * 0.5, ry = h * 0.5
+  const denom = Math.sqrt((cosA * cosA) / (rx * rx) + (sinA * sinA) / (ry * ry))
+  const edgeX = denom > 1e-9 ? centerX + cosA / denom : centerX
+  const edgeY = denom > 1e-9 ? centerY + sinA / denom : centerY
+  // Trail circles extend from edge outward; spacing scales with tipLength, radii stay fixed
+  const scale = tipLength / 20
+  const radii = [8, 6, 4]
+  return radii.map((r, i) => ({
+    cx: edgeX + cosA * (10 + i * 14) * scale,
+    cy: edgeY + sinA * (10 + i * 14) * scale,
+    r,
+  }))
+}
+
+/** Chat-bubble clip-path CSS string (excludes the tip from content area). */
+function chatBubbleClipPath(w: number, h: number): string {
+  // Just clip to the rounded-rect body, tip extends outside
+  const r = Math.min(18, w / 4, h / 4)
+  const rPctX = (r / w) * 100, rPctY = (r / h) * 100
+  return `inset(0% 0% 0% 0% round ${rPctX}% / ${rPctY}%)`
 }
 
 interface Anchor { fx: number; fy: number; tx: number; ty: number }
@@ -384,11 +527,12 @@ function computeEdgeAnchors(
 
       // Adjust anchor to sit on shape boundary instead of bounding rect
       const nodeShape = node.shape
-      if (nodeShape && nodeShape !== 'rectangle' && nodeShape !== 'rounded-rect') {
+      const nodeCosmeticType = node.cosmeticType
+      if (nodeCosmeticType || (nodeShape && nodeShape !== 'rectangle' && nodeShape !== 'rounded-rect')) {
         const dirX = sp.x - np.x
         const dirY = sp.y - np.y
         if (Math.abs(dirX) > 1e-9 || Math.abs(dirY) > 1e-9) {
-          const pt = shapeEdgeIntersect(nodeShape, hw, hh, dirX, dirY)
+          const pt = shapeEdgeIntersect(nodeShape, hw, hh, dirX, dirY, nodeCosmeticType)
           sp = { x: np.x + pt.x, y: np.y + pt.y }
         }
       }
@@ -1378,8 +1522,9 @@ export function PrototypeViewport() {
   const flowTextFormatBackupsRef = useRef<{ el: HTMLElement; orig: { fontWeight: string; fontStyle: string; textDecoration: string; color: string; fontSize: string; transition: string } }[]>([])
   const flowTextFormatWrapperBackupsRef = useRef<{ el: HTMLElement; orig: { width: string; minWidth: string; height: string; minHeight: string; transition: string } }[]>([])
   const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
+  const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
-
+  const alwaysPlayAnimsRef = useRef<Map<string, { rafId: number; cleanup: () => void }>>(new Map())
   const restoreBrokenNodes = useCallback(() => {
     for (const el of brokenNodeElementsRef.current) {
       el.style.opacity = ''
@@ -1473,6 +1618,12 @@ export function PrototypeViewport() {
       cleanup()
     }
     flowKeepPlayingAnimsRef.current = []
+    // Stop levitate animations started during flow
+    for (const { rafId, cleanup } of flowLevitateAnimsRef.current) {
+      cancelAnimationFrame(rafId)
+      cleanup()
+    }
+    flowLevitateAnimsRef.current = []
     // Stop all playing media elements
     document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
       const media = el as HTMLVideoElement | HTMLAudioElement
@@ -2400,6 +2551,7 @@ export function PrototypeViewport() {
                 const keepPlaying = !!(gNode.config.keepPlaying ?? (rawResetMode === 'persist'))
                 const resetMode = keepPlaying ? 'persist' : rawResetMode
                 const holdDur = (gNode.config.durationMs as number) ?? 1000
+                const levitateStyle = (gNode.config.levitateStyle as string) ?? 'none'
 
                 // Resolve target range
                 if (targetMode === 'suffix' && suffix && node) {
@@ -2517,6 +2669,45 @@ export function PrototypeViewport() {
                       // persist — store cleanup for stopFlowAnimation
                       flowTextFormatBackupsRef.current.push({ el: sr.el, orig: origStyles })
                     }
+                  }
+
+                  // Levitate animation on affected spans
+                  if (levitateStyle !== 'none' && affected.length > 0) {
+                    const levStart = performance.now()
+                    const levEntries: { rafId: number; cleanup: () => void }[] = []
+                    for (let i = 0; i < affected.length; i++) {
+                      const spanEl = affected[i].sr.el
+                      const origTransform = spanEl.style.transform
+                      const phase = i * 0.7 // per-span phase offset for organic feel
+                      spanEl.style.display = 'inline-block' // needed for transform on inline spans
+                      const entry = {
+                        rafId: 0,
+                        cleanup: () => { spanEl.style.transform = origTransform; spanEl.style.display = '' },
+                      }
+                      const animateSpan = (now: number) => {
+                        const t = (now - levStart) / 1000
+                        if (resetMode === 'node' && t * 1000 >= holdDur) {
+                          entry.cleanup()
+                          return
+                        }
+                        const s = t * 1.2 * Math.PI * 2
+                        if (levitateStyle === 'cloudy') {
+                          const dx = Math.sin(s * 0.7 + phase) * 3
+                          const dy = Math.sin(s * 0.5 + phase) * 5
+                          const rot = Math.sin(s * 0.3 + phase) * 2
+                          spanEl.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`
+                        } else {
+                          const dx = Math.sin(s * 0.6 + phase) * 4
+                          const dy = Math.sin(s * 0.4 + phase) * 5
+                          const sc = 1 + Math.sin(s * 0.8 + phase) * 0.04
+                          spanEl.style.transform = `translate(${dx}px, ${dy}px) scale(${sc})`
+                        }
+                        entry.rafId = requestAnimationFrame(animateSpan)
+                      }
+                      entry.rafId = requestAnimationFrame(animateSpan)
+                      levEntries.push(entry)
+                    }
+                    flowLevitateAnimsRef.current.push(...levEntries)
                   }
 
                   // Animate wrapper to match font-size change
@@ -2681,8 +2872,61 @@ export function PrototypeViewport() {
                 break
               }
               case 'repeater':
-                // Pure routing node — no effect, no duration
                 break
+              case 'cloud-levitate':
+              case 'bubble-levitate': {
+                const levAmplitude = (gNode.config.amplitude as number) ?? (gNode.kind === 'cloud-levitate' ? 8 : 10)
+                const levSpeed = (gNode.config.speed as number) ?? (gNode.kind === 'cloud-levitate' ? 0.8 : 0.5)
+                const levDuration = (gNode.config.durationMs as number) ?? (gNode.kind === 'cloud-levitate' ? 3000 : 4000)
+                const levScalePulse = gNode.kind === 'bubble-levitate' && gNode.config.scalePulse !== false
+                const levKind = gNode.kind
+                scheduleEffect(() => {
+                  // Prefer wrapper (cosmetic nodes) so SVG + text move together
+                  const wEl = document.querySelector(`[data-node-wrapper="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  const aEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  const el = wEl ?? aEl
+                  if (!el) return
+                  const isWrapper = !!wEl
+                  const phaseX = Math.random() * Math.PI * 2
+                  const phaseY = Math.random() * Math.PI * 2
+                  const start = performance.now()
+                  const entry = {
+                    rafId: 0,
+                    cleanup: () => {
+                      el.style.transform = isWrapper ? 'translate(-50%, -50%)' : ''
+                      el.style.filter = ''
+                    },
+                  }
+                  const animate = (now: number) => {
+                    const elapsed = (now - start) / 1000
+                    if (elapsed * 1000 >= levDuration) {
+                      entry.cleanup()
+                      return
+                    }
+                    const s = elapsed * levSpeed * Math.PI * 2
+                    if (levKind === 'cloud-levitate') {
+                      const dx = Math.sin(s * 0.7 + phaseX) * levAmplitude * 0.4
+                      const dy = Math.sin(s * 0.5 + phaseY) * levAmplitude
+                      const rot = Math.sin(s * 0.3 + phaseX) * 1.5
+                      el.style.transform = isWrapper
+                        ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(${rot}deg)`
+                        : `translate(${dx}px, ${dy}px) rotate(${rot}deg)`
+                    } else {
+                      const dx = Math.sin(s * 0.6 + phaseX) * levAmplitude * 0.6
+                      const dy = Math.sin(s * 0.4 + phaseY) * levAmplitude
+                      const sc = levScalePulse ? 1 + Math.sin(s * 0.8) * 0.03 : 1
+                      el.style.transform = isWrapper
+                        ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(${sc})`
+                        : `translate(${dx}px, ${dy}px) scale(${sc})`
+                    }
+                    entry.rafId = requestAnimationFrame(animate)
+                  }
+                  entry.rafId = requestAnimationFrame(animate)
+                  flowLevitateAnimsRef.current.push(entry)
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, levDuration)
+                break
+              }
             }
           }
         }
@@ -3222,6 +3466,12 @@ export function PrototypeViewport() {
             cleanup()
           }
           flowKeepPlayingAnimsRef.current = []
+          // Stop levitate animations started during flow
+          for (const { rafId, cleanup } of flowLevitateAnimsRef.current) {
+            cancelAnimationFrame(rafId)
+            cleanup()
+          }
+          flowLevitateAnimsRef.current = []
           // Clear all scheduled effect timeouts
           for (const t of flowEffectTimersRef.current) clearTimeout(t)
           flowEffectTimersRef.current = []
@@ -3308,10 +3558,122 @@ export function PrototypeViewport() {
     return null
   }
 
+  // ---- Always-play autonomous animation for cosmetic nodes ----
+  useEffect(() => {
+    const activeMap = alwaysPlayAnimsRef.current
+    const wantedNodeIds = new Set<string>()
+
+    for (const node of model.nodes) {
+      if (!node.cosmeticType) continue
+      const effects = node.flowEffects ?? []
+      // Check locked cosmetic effects + virtual default
+      const cosmeticKind = node.cosmeticType === 'thinking-cloud' ? 'cloud-levitate' : 'bubble-levitate'
+      let shouldPlay = true // default: always-play unless explicitly disabled
+      const lockedCosmeticEffect = effects.find(e => e.locked && e.graph.nodes.some(n => n.kind === cosmeticKind))
+      if (lockedCosmeticEffect && lockedCosmeticEffect.alwaysPlay === false) {
+        shouldPlay = false
+      }
+      // Also check any non-locked effect with levitate kind
+      for (const fx of effects) {
+        if (fx.graph.nodes.some(n => n.kind === cosmeticKind)) {
+          if (fx.alwaysPlay === false) shouldPlay = false
+          else if (fx.alwaysPlay === true) shouldPlay = true
+        }
+      }
+      if (shouldPlay) wantedNodeIds.add(node.id)
+    }
+
+    // Stop animations for nodes no longer wanted
+    for (const [nodeId, entry] of activeMap) {
+      if (!wantedNodeIds.has(nodeId)) {
+        cancelAnimationFrame(entry.rafId)
+        entry.cleanup()
+        activeMap.delete(nodeId)
+      }
+    }
+
+    // Start animations for newly wanted nodes
+    for (const nodeId of wantedNodeIds) {
+      if (activeMap.has(nodeId)) continue
+      const node = model.nodes.find(n => n.id === nodeId)
+      if (!node) continue
+
+      // Get config from the effect graph node
+      const cosmeticKind = node.cosmeticType === 'thinking-cloud' ? 'cloud-levitate' : 'bubble-levitate'
+      let amplitude = cosmeticKind === 'cloud-levitate' ? 8 : 10
+      let speed = cosmeticKind === 'cloud-levitate' ? 0.8 : 0.5
+      let scalePulse = cosmeticKind === 'bubble-levitate'
+      for (const fx of (node.flowEffects ?? [])) {
+        for (const gNode of fx.graph.nodes) {
+          if (gNode.kind === cosmeticKind) {
+            amplitude = (gNode.config.amplitude as number) ?? amplitude
+            speed = (gNode.config.speed as number) ?? speed
+            if (cosmeticKind === 'bubble-levitate') {
+              scalePulse = gNode.config.scalePulse !== false
+            }
+          }
+        }
+      }
+
+      // Prefer wrapper element (cosmetic nodes) so SVG + article move together;
+      // fall back to article for non-cosmetic nodes
+      const wrapperEl = document.querySelector(`[data-node-wrapper="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+      const articleEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+      const el = wrapperEl ?? articleEl
+      if (!el) continue
+      const isWrapper = !!wrapperEl
+
+      const phaseX = Math.random() * Math.PI * 2
+      const phaseY = Math.random() * Math.PI * 2
+      const start = performance.now()
+      const entry = {
+        rafId: 0,
+        cleanup: () => { el.style.transform = isWrapper ? 'translate(-50%, -50%)' : ''; el.style.filter = '' },
+      }
+
+      const animate = (now: number) => {
+        const elapsed = (now - start) / 1000
+        const s = elapsed * speed * Math.PI * 2
+        if (cosmeticKind === 'cloud-levitate') {
+          // Gentle bob + slight horizontal drift + subtle rotation
+          const dx = Math.sin(s * 0.7 + phaseX) * amplitude * 0.4
+          const dy = Math.sin(s * 0.5 + phaseY) * amplitude
+          const rot = Math.sin(s * 0.3 + phaseX) * 1.5
+          el.style.transform = isWrapper
+            ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(${rot}deg)`
+            : `translate(${dx}px, ${dy}px) rotate(${rot}deg)`
+        } else {
+          // Bubble levitate: drift + oscillation + scale pulse
+          const dx = Math.sin(s * 0.6 + phaseX) * amplitude * 0.6
+          const dy = Math.sin(s * 0.4 + phaseY) * amplitude
+          const sc = scalePulse ? 1 + Math.sin(s * 0.8) * 0.03 : 1
+          el.style.transform = isWrapper
+            ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(${sc})`
+            : `translate(${dx}px, ${dy}px) scale(${sc})`
+        }
+        entry.rafId = requestAnimationFrame(animate)
+      }
+      entry.rafId = requestAnimationFrame(animate)
+      activeMap.set(nodeId, entry)
+    }
+  }) // runs every render to pick up model changes
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      for (const [, entry] of alwaysPlayAnimsRef.current) {
+        cancelAnimationFrame(entry.rafId)
+        entry.cleanup()
+      }
+      alwaysPlayAnimsRef.current.clear()
+    }
+  }, [])
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (
       e.dataTransfer.types.includes('application/unigram-shape') ||
       e.dataTransfer.types.includes('application/unigram-media-type') ||
+      e.dataTransfer.types.includes('application/unigram-cosmetic-type') ||
       e.dataTransfer.types.includes('Files')
     ) {
       e.preventDefault()
@@ -3370,6 +3732,28 @@ export function PrototypeViewport() {
       if (isContentType) {
         setEditingContentNodeId(newId)
       }
+      return
+    }
+
+    // 2b) Cosmetic node from sidebar
+    const cosmeticTypeId = e.dataTransfer.getData('application/unigram-cosmetic-type')
+    if (cosmeticTypeId) {
+      e.preventDefault()
+      endDrag()
+      lastPointer.current = null
+      const pos = clientToScene(e.clientX, e.clientY)
+      const snappedX = snapToGrid(pos.x)
+      const snappedY = snapToGrid(pos.y)
+      const newId = `node-${Date.now()}`
+      addNode(frame.modelId, {
+        id: newId, label: '', x: snappedX, y: snappedY,
+        shape: 'rounded-rect',
+        cosmeticType: cosmeticTypeId as CosmeticType,
+        tipAngle: Math.PI * 0.75,
+        nodeWidth: 180, nodeHeight: 100,
+      })
+      selectNode(newId)
+      setEditingNodeId(newId)
       return
     }
 
@@ -4471,6 +4855,9 @@ export function PrototypeViewport() {
             }
           }}
           onResizeDragStart={handleResizeDragStart}
+          onTipDrag={(nodeId, tipAngle, tipLength) => {
+            updateNodeProps(frame.modelId, nodeId, { tipAngle, tipLength })
+          }}
         />
         {activeUnzipPopup && (() => {
           const conn = model.connections.find(
@@ -4591,6 +4978,26 @@ export function PrototypeViewport() {
             },
           }
         }
+        if (!editFx && editingEffect.effectId === '__locked-cosmetic__' && editNode?.cosmeticType) {
+          const cKind = editNode.cosmeticType === 'thinking-cloud' ? 'cloud-levitate' as const : 'bubble-levitate' as const
+          const cLabel = editNode.cosmeticType === 'thinking-cloud' ? 'Cloudy Levitate' : 'Soap Bubble Levitate'
+          const cConfig = cKind === 'cloud-levitate'
+            ? { amplitude: 8, speed: 0.8, durationMs: 3000 }
+            : { amplitude: 10, speed: 0.5, durationMs: 4000, scalePulse: true }
+          editFx = {
+            id: '__locked-cosmetic__',
+            label: cLabel,
+            locked: true,
+            alwaysPlay: true,
+            graph: {
+              nodes: [
+                { id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} },
+                { id: 'cosmetic-root', kind: cKind, label: cLabel, x: 300, y: 120, config: cConfig },
+              ],
+              edges: [{ from: '__entry__', to: 'cosmetic-root' }],
+            },
+          }
+        }
         if (!editFx) return null
         const hostCtx: EffectEditorHostContext = {
           hasChildModel: !!editNode?.childModelId,
@@ -4600,6 +5007,7 @@ export function PrototypeViewport() {
             (editNode?.mpdIds ?? []).map(id => [id, storeModels[id]?.label ?? id])
           ),
           mediaType: editNode?.mediaType,
+          cosmeticType: editNode?.cosmeticType,
         }
         return (
           <FlowEffectEditor
@@ -4607,7 +5015,7 @@ export function PrototypeViewport() {
             hostContext={hostCtx}
             onSave={(updated) => {
               if (!editNode) return
-              if (updated.id === '__locked-media__') {
+              if (updated.id === '__locked-media__' || updated.id === '__locked-cosmetic__') {
                 // Materialise the locked effect into the flowEffects array
                 const existing = editNode.flowEffects ?? []
                 const lockedExists = existing.find(e => e.locked)
@@ -4682,6 +5090,7 @@ function ModelSceneContent({
   onSetMedia,
   onToggleCollapse,
   onResizeDragStart,
+  onTipDrag,
 }: {
   model: Model
   selectedNodeId: string | null
@@ -4710,6 +5119,7 @@ function ModelSceneContent({
   onSetMedia?: (nodeId: string, mediaSrc: string, mediaFileName: string) => void
   onToggleCollapse?: (nodeId: string) => void
   onResizeDragStart?: (nodeId: string, dir: string, e: React.PointerEvent) => void
+  onTipDrag?: (nodeId: string, tipAngle: number, tipLength: number) => void
 }) {
   // Theme palette for node default colors
   const appThemeMode = useHybridZoomStore((s) => s.appThemeMode)
@@ -4979,6 +5389,7 @@ function ModelSceneContent({
             onSetMedia={onSetMedia ? (src, name) => onSetMedia(node.id, src, name) : undefined}
             onToggleCollapse={onToggleCollapse ? () => onToggleCollapse(node.id) : undefined}
             onResizeDragStart={onResizeDragStart ? (dir, e) => onResizeDragStart(node.id, dir, e) : undefined}
+            onTipDrag={onTipDrag ? (angle, len) => onTipDrag(node.id, angle, len) : undefined}
           />
         )
       })}
@@ -5250,6 +5661,7 @@ function SceneNode({
   onSetMedia,
   onToggleCollapse,
   onResizeDragStart,
+  onTipDrag,
 }: {
   node: ModelNode
   posX: number
@@ -5276,6 +5688,7 @@ function SceneNode({
   onSetMedia?: (mediaSrc: string, mediaFileName: string) => void
   onToggleCollapse?: () => void
   onResizeDragStart?: (dir: string, e: React.PointerEvent) => void
+  onTipDrag?: (tipAngle: number, tipLength: number) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -5324,13 +5737,15 @@ function SceneNode({
   const measureLabel = useCallback(() => {
     const el = isEditing ? editRef.current : labelRef.current
     if (!el) return
-    const pad = 32 + 4
-    const vPad = 28 + 4
+    // Cloud nodes need extra padding to keep text inside the puffy outline
+    const isCloud = node.cosmeticType === 'thinking-cloud'
+    const pad = isCloud ? 100 : 32 + 4
+    const vPad = isCloud ? 80 : 28 + 4
     setBaseSize({
       w: Math.max(NODE_MIN_W, el.scrollWidth + pad),
       h: Math.max(NODE_MIN_H, el.scrollHeight + vPad),
     })
-  }, [isEditing])
+  }, [isEditing, node.cosmeticType])
 
   useEffect(() => {
     if (progress > 0) return
@@ -5338,7 +5753,11 @@ function SceneNode({
   }, [node.label, measureLabel, progress])
 
   // Override base size with custom nodeWidth/nodeHeight if specified
-  const effectiveBase = {
+  // Cosmetic nodes: always grow to fit content (use max of specified and measured)
+  const effectiveBase = node.cosmeticType ? {
+    w: Math.max(node.nodeWidth ?? NODE_MIN_W, baseSize.w),
+    h: Math.max(node.nodeHeight ?? NODE_MIN_H, baseSize.h),
+  } : {
     w: node.nodeWidth ?? baseSize.w,
     h: node.nodeHeight ?? baseSize.h,
   }
@@ -5727,6 +6146,231 @@ function SceneNode({
       />
     ))
   })() : null
+
+  // Tip drag handle — shown when cosmetic node is selected
+  const showTipHandle = isSelected && !isEditing && progress === 0 && !!node.cosmeticType && !!onTipDrag
+
+  // Compute tip handle position for cosmetic nodes
+  const tipHandlePos = useMemo(() => {
+    if (!node.cosmeticType) return { x: 0, y: 0 }
+    const angle = node.tipAngle ?? Math.PI * 0.75
+    const tipLen = node.tipLength ?? 20
+    if (node.cosmeticType === 'chat-bubble') {
+      const r = Math.min(18, nodeW / 4, nodeH / 4)
+      const tipW = Math.min(15, tipLen * 0.75)
+      const cosA = Math.cos(angle), sinA = Math.sin(angle)
+      const isBottom = sinA >= 0
+      const edgeY = isBottom ? nodeH : 0
+      const centerX = nodeW / 2, centerY = nodeH / 2
+      let baseX: number
+      if (Math.abs(sinA) > 0.05) {
+        const t = (edgeY - centerY) / sinA
+        baseX = centerX + t * cosA
+      } else {
+        baseX = centerX
+      }
+      baseX = Math.max(r + tipW, Math.min(nodeW - r - tipW, baseX))
+      return { x: baseX + tipLen * cosA, y: edgeY + tipLen * sinA }
+    } else {
+      // thinking-cloud: position at the outermost trail circle
+      const trail = thinkingCloudTrail(nodeW, nodeH, angle, tipLen)
+      const last = trail[trail.length - 1]
+      return last ? { x: last.cx, y: last.cy } : { x: 0, y: 0 }
+    }
+  }, [node.cosmeticType, node.tipAngle, node.tipLength, nodeW, nodeH])
+
+  const handleTipPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0 || !onTipDrag) return
+    e.stopPropagation()
+    e.preventDefault()
+    const target = e.currentTarget as HTMLElement
+    target.setPointerCapture(e.pointerId)
+    const onMove = (ev: PointerEvent) => {
+      // Get cursor position relative to node top-left
+      const wrapperEl = target.parentElement
+      if (!wrapperEl) return
+      const rect = wrapperEl.getBoundingClientRect()
+      const cx = ev.clientX - rect.left
+      const cy = ev.clientY - rect.top
+      // Compute angle from node center to cursor (continuous)
+      const dx = cx - nodeW / 2
+      const dy = cy - nodeH / 2
+      const newAngle = Math.atan2(dy, dx)
+      // Compute distance from node edge to cursor along that direction
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const cosA = Math.cos(newAngle), sinA = Math.sin(newAngle)
+      let edgeDist: number
+      if (node.cosmeticType === 'thinking-cloud') {
+        const rx = nodeW / 2, ry = nodeH / 2
+        const denom = Math.sqrt((cosA * cosA) / (rx * rx) + (sinA * sinA) / (ry * ry))
+        edgeDist = denom > 1e-9 ? 1 / denom : Math.min(rx, ry)
+      } else {
+        const tx = Math.abs(cosA) > 1e-9 ? (nodeW / 2) / Math.abs(cosA) : Infinity
+        const ty = Math.abs(sinA) > 1e-9 ? (nodeH / 2) / Math.abs(sinA) : Infinity
+        edgeDist = Math.min(tx, ty)
+      }
+      const newTipLength = Math.max(8, Math.min(80, dist - edgeDist))
+      onTipDrag(newAngle, newTipLength)
+    }
+    const onUp = () => {
+      target.releasePointerCapture(e.pointerId)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [onTipDrag, nodeW, nodeH, node.cosmeticType])
+
+  const tipHandle = showTipHandle ? (
+    <div
+      style={{
+        position: 'absolute',
+        left: tipHandlePos.x - 5,
+        top: tipHandlePos.y - 5,
+        width: 10,
+        height: 10,
+        borderRadius: '50%',
+        background: 'rgba(14, 79, 143, 0.8)',
+        border: '2px solid white',
+        cursor: 'grab',
+        pointerEvents: 'auto',
+        zIndex: 25,
+      }}
+      onPointerDown={handleTipPointerDown}
+    />
+  ) : null
+
+  // Cosmetic nodes (chat-bubble, thinking-cloud) use custom SVG rendering
+  if (node.cosmeticType && chromeFade > 0.01) {
+    const tipAng = node.tipAngle ?? Math.PI * 0.75
+    const tipLen = node.tipLength ?? 20
+    const memStroke = isSelected
+      ? `rgba(14, 79, 143, ${chromeFade})`
+      : `rgba(${memRgb.r}, ${memRgb.g}, ${memRgb.b}, ${chromeFade})`
+    const fillGrad = `linear-gradient(145deg, rgba(${cellRgb.r},${cellRgb.g},${cellRgb.b},${chromeFade}), rgba(${cellEndRgb.r},${cellEndRgb.g},${cellEndRgb.b},${chromeFade}))`
+
+    if (node.cosmeticType === 'chat-bubble') {
+      const pathD = chatBubblePath(nodeW, nodeH, tipAng, tipLen)
+      const svgPad = Math.max(25, tipLen + 10) // extra space for the tip
+      return (
+        <div data-node-wrapper={node.id} style={{ ...positionStyle, pointerEvents: 'none' }}>
+          {membraneVisible && (
+            <svg
+              style={{
+                position: 'absolute',
+                left: -svgPad,
+                top: -svgPad,
+                width: nodeW + svgPad * 2,
+                height: nodeH + svgPad * 2,
+                pointerEvents: 'none',
+                overflow: 'visible',
+              }}
+            >
+              <g transform={`translate(${svgPad},${svgPad})`}>
+                <path
+                  d={pathD}
+                  fill={`rgba(${cellRgb.r},${cellRgb.g},${cellRgb.b},${chromeFade})`}
+                  stroke={memStroke}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                />
+              </g>
+            </svg>
+          )}
+          <article
+            className={`host-node${isSelected ? ' focused' : ''}${isFlowActive ? ' flow-active' : ''}`}
+            data-node-id={node.id}
+            style={{
+              ...vizStyle,
+              borderColor: 'transparent',
+              background: membraneVisible ? 'transparent' : fillGrad,
+              boxShadow: 'none',
+              clipPath: chatBubbleClipPath(nodeW, nodeH),
+              position: 'relative',
+              left: 0,
+              top: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'auto',
+            }}
+            {...articleEventHandlers}
+          >
+            {articleContent}
+          </article>
+          {tipHandle}
+          {resizeHandles}
+        </div>
+      )
+    }
+
+    if (node.cosmeticType === 'thinking-cloud') {
+      const cloudD = thinkingCloudPath(nodeW, nodeH)
+      const trail = thinkingCloudTrail(nodeW, nodeH, tipAng, tipLen)
+      const svgPad = Math.max(30, tipLen * 2.5 + 10)
+      return (
+        <div data-node-wrapper={node.id} style={{ ...positionStyle, pointerEvents: 'none' }}>
+          {membraneVisible && (
+            <svg
+              style={{
+                position: 'absolute',
+                left: -svgPad,
+                top: -svgPad,
+                width: nodeW + svgPad * 2,
+                height: nodeH + svgPad * 2,
+                pointerEvents: 'none',
+                overflow: 'visible',
+              }}
+            >
+              <g transform={`translate(${svgPad},${svgPad})`}>
+                <path
+                  d={cloudD}
+                  fill={`rgba(${cellRgb.r},${cellRgb.g},${cellRgb.b},${chromeFade})`}
+                  stroke={memStroke}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                />
+                {trail.map((c, i) => (
+                  <circle
+                    key={i}
+                    cx={c.cx}
+                    cy={c.cy}
+                    r={c.r}
+                    fill={`rgba(${cellRgb.r},${cellRgb.g},${cellRgb.b},${chromeFade * 0.7})`}
+                    stroke={memStroke}
+                    strokeWidth={1.5}
+                  />
+                ))}
+              </g>
+            </svg>
+          )}
+          <article
+            className={`host-node${isSelected ? ' focused' : ''}${isFlowActive ? ' flow-active' : ''}`}
+            data-node-id={node.id}
+            style={{
+              ...vizStyle,
+              borderColor: 'transparent',
+              background: membraneVisible ? 'transparent' : fillGrad,
+              boxShadow: 'none',
+              borderRadius: '50%',
+              padding: '35px 45px',
+              boxSizing: 'border-box' as const,
+              position: 'relative',
+              left: 0,
+              top: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'auto',
+            }}
+            {...articleEventHandlers}
+          >
+            {articleContent}
+          </article>
+          {tipHandle}
+          {resizeHandles}
+        </div>
+      )
+    }
+  }
 
   // Polygon shapes use a wrapper div so the SVG border is not clipped
   if (clipPath) {

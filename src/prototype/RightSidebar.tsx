@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle, TextFormatRange } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, CosmeticType, TipDirection, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle, TextFormatRange } from './sampleModels'
 import { useHybridZoomStore } from './useHybridZoomStore'
 import { applyFormatToRange } from './sampleModels'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
@@ -723,12 +723,42 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
               className="settings-select"
               value={node.shape ?? 'rounded-rect'}
               onChange={(e) => onUpdateShape(e.target.value as NodeShape)}
+              disabled={!!node.cosmeticType}
             >
               {shapeOptions.map((s) => (
                 <option key={s} value={s}>{s.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
               ))}
             </select>
           </div>
+          {node.cosmeticType && (
+            <>
+              <div className="settings-row">
+                <label className="settings-label" htmlFor="cosmetic-type">Cosmetic</label>
+                <select
+                  id="cosmetic-type"
+                  className="settings-select"
+                  value={node.cosmeticType}
+                  onChange={(e) => onUpdateProps({ cosmeticType: e.target.value as CosmeticType })}
+                >
+                  <option value="chat-bubble">Chat Bubble</option>
+                  <option value="thinking-cloud">Thinking Cloud</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <label className="settings-label" htmlFor="tip-angle">Tip Angle</label>
+                <input
+                  id="tip-angle"
+                  type="range"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={Math.round((node.tipAngle ?? Math.PI * 0.75) * 180 / Math.PI)}
+                  onChange={(e) => onUpdateProps({ tipAngle: parseFloat(e.target.value) * Math.PI / 180 })}
+                  className="settings-range"
+                />
+              </div>
+            </>
+          )}
           <div className="settings-row">
             <label className="settings-label" htmlFor="cell-color">Cell Color</label>
             <ColorInput
@@ -1168,6 +1198,8 @@ const effectKindLabels: Record<string, string> = {
   'play-media': 'Play media',
   'camera': 'Camera',
   'break': 'Break Apart',
+  'cloud-levitate': 'Cloudy Levitate',
+  'bubble-levitate': 'Soap Bubble Levitate',
 }
 
 function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
@@ -1177,6 +1209,7 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
 }) {
   const effects = node.flowEffects ?? []
   const hasLockedMedia = !!node.mediaType
+  const hasLockedCosmetic = !!node.cosmeticType
 
   const addEffect = () => {
     const effect: FlowEffect = {
@@ -1213,6 +1246,25 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
       _locked: true,
     })
   }
+  if (hasLockedCosmetic) {
+    const cosmeticKind = node.cosmeticType === 'thinking-cloud' ? 'cloud-levitate' as const : 'bubble-levitate' as const
+    const cosmeticLabel = node.cosmeticType === 'thinking-cloud' ? 'Cloudy Levitate' : 'Soap Bubble Levitate'
+    const existingLockedCosmetic = effects.find(e => e.locked && e.graph.nodes.some(n => n.kind === cosmeticKind))
+    displayEffects.push(existingLockedCosmetic ?? {
+      id: '__locked-cosmetic__',
+      label: cosmeticLabel,
+      locked: true,
+      alwaysPlay: true,
+      graph: {
+        nodes: [
+          { id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} },
+          { id: 'cosmetic-root', kind: cosmeticKind, label: cosmeticLabel, x: 300, y: 120, config: {} },
+        ],
+        edges: [{ from: '__entry__', to: 'cosmetic-root' }],
+      },
+      _locked: true,
+    })
+  }
   for (const e of effects) {
     if (!e.locked) displayEffects.push(e)
   }
@@ -1240,6 +1292,29 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
                 {effect.label}
               </span>
               <span className="flow-effect-summary">{summarize(effect)}</span>
+              {effect.graph.nodes.some(n => n.kind === 'cloud-levitate' || n.kind === 'bubble-levitate') && (
+                <label className="flow-effect-always-play">
+                  <input
+                    type="checkbox"
+                    checked={effect.alwaysPlay !== false}
+                    onChange={(e) => {
+                      const alwaysVal = e.target.checked
+                      const existing = effects.find(ex => ex.id === effect.id)
+                      if (existing) {
+                        onUpdateProps({
+                          flowEffects: effects.map(ex => ex.id === effect.id ? { ...ex, alwaysPlay: alwaysVal } : ex),
+                        })
+                      } else {
+                        // Materialise virtual locked cosmetic effect
+                        onUpdateProps({
+                          flowEffects: [...effects, { ...effect, id: `fx-cosmetic-${Date.now()}`, alwaysPlay: alwaysVal }],
+                        })
+                      }
+                    }}
+                  />
+                  Always play
+                </label>
+              )}
             </div>
             <span className="flow-effect-actions">
               <button

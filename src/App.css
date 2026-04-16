@@ -1353,6 +1353,22 @@
   text-overflow: ellipsis;
 }
 
+.flow-effect-always-play {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: var(--ug-text-muted);
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.flow-effect-always-play input[type="checkbox"] {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+}
+
 .flow-add-effect {
   flex: 1;
 }

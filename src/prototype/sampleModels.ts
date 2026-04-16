@@ -4,9 +4,13 @@ export type NodeShape = 'rectangle' | 'rounded-rect' | 'oval' | 'circle' | 'diam
 
 export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video' | 'markdown' | 'math'
 
+export type CosmeticType = 'chat-bubble' | 'thinking-cloud'
+
+export type TipDirection = 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
+
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format' | 'repeater'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format' | 'repeater' | 'cloud-levitate' | 'bubble-levitate'
 
 export interface TextFormatRange {
   start: number
@@ -69,6 +73,7 @@ export interface FlowEffect {
   id: string
   label: string
   locked?: boolean
+  alwaysPlay?: boolean
   graph: {
     nodes: EffectGraphNode[]
     edges: EffectGraphEdge[]
@@ -127,6 +132,16 @@ export interface ModelNode {
   contentFontSize?: number
   /** Inline text formatting ranges for the node label */
   textFormats?: TextFormatRange[]
+  /** Cosmetic node type — when set, the node renders as a comic-style shape */
+  cosmeticType?: CosmeticType
+  /** Direction the tip/pointer extends from (default: 'bottom-left') */
+  tipDirection?: TipDirection
+  /** Normalized 0–1 position of the tip along the chosen edge (default: 0.3) */
+  tipAnchor?: number
+  /** Continuous angle (radians) from node center outward for tip direction */
+  tipAngle?: number
+  /** How far the tip extends from the body in pixels (default: 20) */
+  tipLength?: number
 }
 
 export interface StudyEvidence {

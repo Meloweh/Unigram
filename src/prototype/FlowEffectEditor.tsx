@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge, EffectPortId } from './sampleModels'
+import type { FlowEffect, FlowEffectKind, EffectGraphNode, EffectGraphEdge, EffectPortId, CosmeticType } from './sampleModels'
 
 // ---- Host context passed from viewport ----
 
@@ -14,6 +14,8 @@ export interface EffectEditorHostContext {
   mpdLabels: Record<string, string>
   /** The media type of the host node (undefined if not a media node) */
   mediaType?: string
+  /** The cosmetic type of the host node (undefined if not a cosmetic node) */
+  cosmeticType?: CosmeticType
 }
 
 // ---- Spawn item type ----
@@ -67,6 +69,8 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'scale': 'Scale',
   'text-format': 'Text Format',
   'repeater': 'Repeater',
+  'cloud-levitate': 'Cloudy Levitate',
+  'bubble-levitate': 'Soap Bubble Levitate',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -91,6 +95,8 @@ const kindColors: Record<FlowEffectKind, string> = {
   'scale': '#34d399',
   'text-format': '#e879f9',
   'repeater': '#facc15',
+  'cloud-levitate': '#94a3b8',
+  'bubble-levitate': '#7dd3fc',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -132,8 +138,10 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
     case 'emerge': return { animation: 'scale-in', durationMs: 600 }
     case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false, keepPlaying: false }
-    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false }
+    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false, levitateStyle: 'none' }
     case 'repeater': return { repeatCount: 3 }
+    case 'cloud-levitate': return { amplitude: 8, speed: 0.8, durationMs: 3000 }
+    case 'bubble-levitate': return { amplitude: 10, speed: 0.5, durationMs: 4000, scalePulse: true }
   }
 }
 
@@ -179,6 +187,8 @@ export function FlowEffectEditor({
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
     ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
+    ...(hostContext.cosmeticType === 'thinking-cloud' ? ['cloud-levitate' as const] : []),
+    ...(hostContext.cosmeticType === 'chat-bubble' ? ['bubble-levitate' as const] : []),
   ]
 
   // Local working copy of the graph — ensure entry node exists
@@ -1450,6 +1460,17 @@ export function FlowEffectEditor({
                       />
                       <span>Keep playing until flow ends</span>
                     </label>
+                    <label className="fxeditor-field">
+                      <span>Levitate Style</span>
+                      <select
+                        value={(selectedNode.config.levitateStyle as string) ?? 'none'}
+                        onChange={(e) => updateNodeConfig('levitateStyle', e.target.value)}
+                      >
+                        <option value="none">None</option>
+                        <option value="cloudy">Cloudy</option>
+                        <option value="bubbly">Bubbly</option>
+                      </select>
+                    </label>
                   </>
                 )}
                 {/* ---- Repeater ---- */}
@@ -1464,6 +1485,58 @@ export function FlowEffectEditor({
                       <input type="number" min={1} max={100} step={1}
                         value={(selectedNode.config.repeatCount as number) ?? 3}
                         onChange={(e) => updateNodeConfig('repeatCount', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {/* ---- Cloud Levitate ---- */}
+                {selectedNode.kind === 'cloud-levitate' && (
+                  <>
+                    <label className="fxeditor-field">
+                      <span>Amplitude</span>
+                      <input type="number" min={1} max={50} step={1}
+                        value={(selectedNode.config.amplitude as number) ?? 8}
+                        onChange={(e) => updateNodeConfig('amplitude', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Speed</span>
+                      <input type="number" min={0.1} max={5} step={0.1}
+                        value={(selectedNode.config.speed as number) ?? 0.8}
+                        onChange={(e) => updateNodeConfig('speed', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={100} max={60000} step={100}
+                        value={(selectedNode.config.durationMs as number) ?? 3000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                  </>
+                )}
+                {/* ---- Bubble Levitate ---- */}
+                {selectedNode.kind === 'bubble-levitate' && (
+                  <>
+                    <label className="fxeditor-field">
+                      <span>Amplitude</span>
+                      <input type="number" min={1} max={50} step={1}
+                        value={(selectedNode.config.amplitude as number) ?? 10}
+                        onChange={(e) => updateNodeConfig('amplitude', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Speed</span>
+                      <input type="number" min={0.1} max={5} step={0.1}
+                        value={(selectedNode.config.speed as number) ?? 0.5}
+                        onChange={(e) => updateNodeConfig('speed', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Duration (ms)</span>
+                      <input type="number" min={100} max={60000} step={100}
+                        value={(selectedNode.config.durationMs as number) ?? 4000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                    <label className="fxeditor-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <input type="checkbox"
+                        checked={!!selectedNode.config.scalePulse}
+                        onChange={(e) => updateNodeConfig('scalePulse', e.target.checked)} />
+                      <span>Scale pulse</span>
                     </label>
                   </>
                 )}

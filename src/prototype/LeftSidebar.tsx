@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { ConnectionType, MediaNodeType } from './sampleModels'
+import type { ConnectionType, MediaNodeType, CosmeticType } from './sampleModels'
 
 interface SectionItem {
   id: string
@@ -31,6 +31,17 @@ const mediaNodeTypes: MediaTypeItem[] = [
   { id: 'video', label: 'Video Node', icon: '🎬' },
   { id: 'markdown', label: 'Markdown', icon: '𝕄' },
   { id: 'math', label: 'Math', icon: '∑' },
+]
+
+interface CosmeticItem {
+  id: CosmeticType
+  label: string
+  icon: string
+}
+
+const cosmeticNodeTypes: CosmeticItem[] = [
+  { id: 'chat-bubble', label: 'Chat Bubble', icon: '💬' },
+  { id: 'thinking-cloud', label: 'Thinking Cloud', icon: '💭' },
 ]
 
 function SidebarSection({ title, items, defaultOpen = false }: {
@@ -93,6 +104,41 @@ function NodeTypesSection() {
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData('application/unigram-media-type', item.id)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              title={`Drag to add ${item.label}`}
+            >
+              <span className="sidebar-shape-icon">{item.icon}</span>
+              <span className="sidebar-shape-label">{item.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CosmeticNodeSection() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="sidebar-section">
+      <button
+        type="button"
+        className="sidebar-section-header"
+        onClick={() => setOpen(!open)}
+      >
+        <span className={`sidebar-chevron ${open ? 'open' : ''}`}>›</span>
+        Cosmetic
+      </button>
+      {open && (
+        <div className="sidebar-section-body">
+          {cosmeticNodeTypes.map((item) => (
+            <div
+              key={item.id}
+              className="sidebar-shape-item"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/unigram-cosmetic-type', item.id)
                 e.dataTransfer.effectAllowed = 'copy'
               }}
               title={`Drag to add ${item.label}`}
@@ -173,6 +219,7 @@ export function LeftSidebar({ connectionType, onConnectionTypeChange, forceColla
           <div className="sidebar-title">Components</div>
           <SidebarSection title="Nodes" items={nodeShapes} defaultOpen />
           <NodeTypesSection />
+          <CosmeticNodeSection />
           <ConnectionTypesSection value={connectionType} onChange={onConnectionTypeChange} />
         </div>
       )}
