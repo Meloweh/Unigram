@@ -1,4 +1,4 @@
-import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, ConnectionType, FlowEffect, ConnectionDashStyle, ConnectionArrowStyle, ModelCosmetics, ThemeMode } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, ConnectionType, FlowEffect, ConnectionDashStyle, ConnectionArrowStyle, ModelCosmetics, ThemeMode, TextFormatRange } from './sampleModels'
 import JSZip from 'jszip'
 
 // ---- JSON file schema (what's on disk) ----
@@ -29,6 +29,7 @@ interface ModelFileNode {
   contentSource?: string
   contentCollapsed?: boolean
   contentFontSize?: number
+  textFormats?: TextFormatRange[]
 }
 
 interface ModelFileConnection {
@@ -251,6 +252,7 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (n.contentSource) fileNode.contentSource = n.contentSource
       if (n.contentCollapsed != null) fileNode.contentCollapsed = n.contentCollapsed
       if (n.contentFontSize != null) fileNode.contentFontSize = n.contentFontSize
+      if (n.textFormats?.length) fileNode.textFormats = n.textFormats
       return fileNode
     }),
     connections: model.connections.map((c) => {
@@ -530,6 +532,7 @@ export async function importBundle(
         if (n.contentSource) node.contentSource = n.contentSource
         if (n.contentCollapsed != null) node.contentCollapsed = n.contentCollapsed
         if (n.contentFontSize != null) node.contentFontSize = n.contentFontSize
+        if (n.textFormats?.length) node.textFormats = n.textFormats
         return node
       }),
       connections: mf.connections.map((c) => {

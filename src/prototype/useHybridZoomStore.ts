@@ -136,6 +136,10 @@ interface HybridZoomState {
   modelCosmetics: Record<string, ModelCosmetics>
   setAppThemeMode: (mode: ThemeMode) => void
   setModelCosmetics: (modelId: string, cosmetics: Partial<ModelCosmetics>) => void
+
+  // ---- Label selection tracking (for text formatting sidebar) ----
+  labelSelection: { start: number; end: number } | null
+  setLabelSelection: (sel: { start: number; end: number } | null) => void
 }
 
 const MAX_UNDO = 50
@@ -190,6 +194,9 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   // Cosmetics — not part of undo
   appThemeMode: 'light' as ThemeMode,
   modelCosmetics: {} as Record<string, ModelCosmetics>,
+
+  // Label selection — not part of undo
+  labelSelection: null as { start: number; end: number } | null,
 
   currentFrame: () => {
     const { stack } = get()
@@ -787,6 +794,10 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         [modelId]: { ...state.modelCosmetics[modelId], ...cosmetics },
       },
     }))
+  },
+
+  setLabelSelection: (sel) => {
+    set({ labelSelection: sel })
   },
 }
 })

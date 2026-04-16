@@ -65,6 +65,7 @@ const kindLabels: Record<FlowEffectKind, string> = {
   'float': 'Float',
   'emerge': 'Emerge',
   'scale': 'Scale',
+  'text-format': 'Text Format',
 }
 
 const kindColors: Record<FlowEffectKind, string> = {
@@ -87,6 +88,7 @@ const kindColors: Record<FlowEffectKind, string> = {
   'float': '#67e8f9',
   'emerge': '#a3e635',
   'scale': '#34d399',
+  'text-format': '#e879f9',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -128,6 +130,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
     case 'emerge': return { animation: 'scale-in', durationMs: 600 }
     case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false }
+    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000 }
   }
 }
 
@@ -164,7 +167,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
@@ -1259,6 +1262,110 @@ export function FlowEffectEditor({
                       />
                       <span>Keep new size (don't revert)</span>
                     </label>
+                  </>
+                )}
+                {selectedNode.kind === 'text-format' && (
+                  <>
+                    <div className="fxeditor-field-hint">
+                      Temporarily applies text formatting to part of the node label during flow playback.
+                    </div>
+                    <div className="fxeditor-radio-group">
+                      <span>Target Mode</span>
+                      <label>
+                        <input type="radio" name="textFmtTargetMode"
+                          checked={((selectedNode.config.targetMode as string) ?? 'indices') === 'indices'}
+                          onChange={() => updateNodeConfig('targetMode', 'indices')} />
+                        By Indices
+                      </label>
+                      <label>
+                        <input type="radio" name="textFmtTargetMode"
+                          checked={((selectedNode.config.targetMode as string) ?? 'indices') === 'suffix'}
+                          onChange={() => updateNodeConfig('targetMode', 'suffix')} />
+                        By Suffix
+                      </label>
+                    </div>
+                    {((selectedNode.config.targetMode as string) ?? 'indices') === 'indices' ? (
+                      <>
+                        <label className="fxeditor-field">
+                          <span>Start Index</span>
+                          <input type="number" min={0} step={1}
+                            value={(selectedNode.config.startIndex as number) ?? 0}
+                            onChange={(e) => updateNodeConfig('startIndex', Number(e.target.value))} />
+                        </label>
+                        <label className="fxeditor-field">
+                          <span>End Index</span>
+                          <input type="number" min={0} step={1}
+                            value={(selectedNode.config.endIndex as number) ?? 0}
+                            onChange={(e) => updateNodeConfig('endIndex', Number(e.target.value))} />
+                        </label>
+                      </>
+                    ) : (
+                      <label className="fxeditor-field">
+                        <span>Suffix Text</span>
+                        <input type="text"
+                          value={(selectedNode.config.suffix as string) ?? ''}
+                          onChange={(e) => updateNodeConfig('suffix', e.target.value)} />
+                      </label>
+                    )}
+                    <label className="fxeditor-checkbox">
+                      <input type="checkbox"
+                        checked={selectedNode.config.bold === true}
+                        onChange={(e) => updateNodeConfig('bold', e.target.checked)} />
+                      <span>Bold</span>
+                    </label>
+                    <label className="fxeditor-checkbox">
+                      <input type="checkbox"
+                        checked={selectedNode.config.italic === true}
+                        onChange={(e) => updateNodeConfig('italic', e.target.checked)} />
+                      <span>Italic</span>
+                    </label>
+                    <label className="fxeditor-checkbox">
+                      <input type="checkbox"
+                        checked={selectedNode.config.strikethrough === true}
+                        onChange={(e) => updateNodeConfig('strikethrough', e.target.checked)} />
+                      <span>Strikethrough</span>
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Color</span>
+                      <input type="color"
+                        value={(selectedNode.config.color as string) || '#000000'}
+                        onChange={(e) => updateNodeConfig('color', e.target.value)} />
+                    </label>
+                    <label className="fxeditor-field">
+                      <span>Font Size (px)</span>
+                      <input type="number" min={0} step={1}
+                        value={(selectedNode.config.fontSize as number) ?? 0}
+                        onChange={(e) => updateNodeConfig('fontSize', Number(e.target.value))} />
+                    </label>
+                    {((selectedNode.config.fontSize as number) ?? 0) > 0 && (
+                      <label className="fxeditor-field">
+                        <span>Rescale Duration (ms)</span>
+                        <input type="number" min={0} step={50}
+                          value={(selectedNode.config.rescaleDurationMs as number) ?? 0}
+                          onChange={(e) => updateNodeConfig('rescaleDurationMs', Number(e.target.value))} />
+                      </label>
+                    )}
+                    <label className="fxeditor-field">
+                      <span>Node Duration (ms)</span>
+                      <input type="number" min={0} step={50}
+                        value={(selectedNode.config.durationMs as number) ?? 1000}
+                        onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+                    </label>
+                    <div className="fxeditor-radio-group">
+                      <span>Reset Mode</span>
+                      <label>
+                        <input type="radio" name="textFmtResetMode"
+                          checked={((selectedNode.config.resetMode as string) ?? 'node') === 'node'}
+                          onChange={() => updateNodeConfig('resetMode', 'node')} />
+                        Revert after node duration
+                      </label>
+                      <label>
+                        <input type="radio" name="textFmtResetMode"
+                          checked={((selectedNode.config.resetMode as string) ?? 'node') === 'persist'}
+                          onChange={() => updateNodeConfig('resetMode', 'persist')} />
+                        Persist until flow stops
+                      </label>
+                    </div>
                   </>
                 )}
                 {/* Delete button */}

@@ -6,7 +6,17 @@ export type MediaNodeType = 'image' | 'gif' | 'audio' | 'video' | 'markdown' | '
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format'
+
+export interface TextFormatRange {
+  start: number
+  end: number
+  bold?: boolean
+  italic?: boolean
+  strikethrough?: boolean
+  color?: string
+  fontSize?: number
+}
 
 export type ConnectionArrowStyle = 'standard' | 'triangle' | 'diamond' | 'circle' | 'none'
 export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
@@ -111,6 +121,8 @@ export interface ModelNode {
   contentCollapsed?: boolean
   /** Font size (rem) for rendered content in markdown/math nodes */
   contentFontSize?: number
+  /** Inline text formatting ranges for the node label */
+  textFormats?: TextFormatRange[]
 }
 
 export interface StudyEvidence {
@@ -173,4 +185,63 @@ export function getInitialModels(): Record<string, Model> {
 
 export function getRootModel(): Model {
   return models['root']
+}
+
+/**
+ * Apply a formatting change to a character range within existing textFormats.
+ * Splits/merges overlapping ranges as needed and returns a new array.
+ */
+export function applyFormatToRange(
+  existing: TextFormatRange[],
+  start: number,
+  end: number,
+  format: Omit<TextFormatRange, 'start' | 'end'>,
+): TextFormatRange[] {
+  if (start >= end) return existing
+  // Flatten into per-character format map, then apply the new format, then coalesce
+  const maxEnd = Math.max(end, ...existing.map(r => r.end))
+  type CharFmt = { bold?: boolean; italic?: boolean; strikethrough?: boolean; color?: string; fontSize?: number }
+  const chars: CharFmt[] = Array.from({ length: maxEnd }, () => ({}))
+
+  // Lay down existing formats
+  for (const r of existing) {
+    for (let i = r.start; i < r.end && i < maxEnd; i++) {
+      if (r.bold != null) chars[i].bold = r.bold
+      if (r.italic != null) chars[i].italic = r.italic
+      if (r.strikethrough != null) chars[i].strikethrough = r.strikethrough
+      if (r.color != null) chars[i].color = r.color
+      if (r.fontSize != null) chars[i].fontSize = r.fontSize
+    }
+  }
+
+  // Apply new format
+  for (let i = start; i < end && i < maxEnd; i++) {
+    if (format.bold != null) chars[i].bold = format.bold
+    if (format.italic != null) chars[i].italic = format.italic
+    if (format.strikethrough != null) chars[i].strikethrough = format.strikethrough
+    if (format.color != null) chars[i].color = format.color
+    if (format.fontSize != null) chars[i].fontSize = format.fontSize
+  }
+
+  // Coalesce consecutive chars with identical formatting into ranges
+  const result: TextFormatRange[] = []
+  const fmtKey = (f: CharFmt) => `${f.bold ?? ''},${f.italic ?? ''},${f.strikethrough ?? ''},${f.color ?? ''},${f.fontSize ?? ''}`
+  const isEmpty = (f: CharFmt) => !f.bold && !f.italic && !f.strikethrough && !f.color && f.fontSize == null
+
+  let i = 0
+  while (i < maxEnd) {
+    if (isEmpty(chars[i])) { i++; continue }
+    const key = fmtKey(chars[i])
+    const rangeStart = i
+    while (i < maxEnd && fmtKey(chars[i]) === key) i++
+    const r: TextFormatRange = { start: rangeStart, end: i }
+    if (chars[rangeStart].bold) r.bold = true
+    if (chars[rangeStart].italic) r.italic = true
+    if (chars[rangeStart].strikethrough) r.strikethrough = true
+    if (chars[rangeStart].color) r.color = chars[rangeStart].color
+    if (chars[rangeStart].fontSize != null) r.fontSize = chars[rangeStart].fontSize
+    result.push(r)
+  }
+
+  return result
 }

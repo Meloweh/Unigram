@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle } from './sampleModels'
+import type { Model, ModelNode, ModelConnection, NodeShape, MediaNodeType, ConnectionType, ConnectionArrowStyle, ConnectionDashStyle, FlowEffect, ThemeMode, GridStyle, TextFormatRange } from './sampleModels'
 import { useHybridZoomStore } from './useHybridZoomStore'
+import { applyFormatToRange } from './sampleModels'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from './backgrounds'
 import { PARTICLE_PRESETS } from './particles'
 import { ALL_THEME_OPTIONS } from './themes'
@@ -545,6 +546,106 @@ function MultiNodeSettings({ nodes, onUpdateProps, onUpdateShape }: {
   )
 }
 
+function TextFormatSection({ node, onUpdateProps }: {
+  node: ModelNode
+  onUpdateProps: (props: Partial<ModelNode>) => void
+}) {
+  const labelSelection = useHybridZoomStore((s) => s.labelSelection)
+  const hasSel = labelSelection != null && labelSelection.start < labelSelection.end
+
+  const applyFormat = (fmt: Omit<TextFormatRange, 'start' | 'end'>) => {
+    if (!hasSel) return
+    const updated = applyFormatToRange(
+      node.textFormats ?? [],
+      labelSelection!.start,
+      labelSelection!.end,
+      fmt,
+    )
+    onUpdateProps({ textFormats: updated.length ? updated : undefined })
+  }
+
+  // Check if current selection has a particular format
+  const selHas = (prop: 'bold' | 'italic' | 'strikethrough'): boolean => {
+    if (!hasSel) return false
+    const ranges = node.textFormats ?? []
+    for (let i = labelSelection!.start; i < labelSelection!.end; i++) {
+      const hit = ranges.find(r => r.start <= i && i < r.end && r[prop])
+      if (!hit) return false
+    }
+    return true
+  }
+
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-section-header static">Text Format</div>
+      <div className="sidebar-section-body">
+        <div className="text-format-toolbar">
+          <button
+            type="button"
+            className={`text-format-btn${selHas('bold') ? ' active' : ''}`}
+            disabled={!hasSel}
+            title="Bold"
+            onClick={() => applyFormat({ bold: !selHas('bold') })}
+          ><b>B</b></button>
+          <button
+            type="button"
+            className={`text-format-btn${selHas('italic') ? ' active' : ''}`}
+            disabled={!hasSel}
+            title="Italic"
+            onClick={() => applyFormat({ italic: !selHas('italic') })}
+          ><i>I</i></button>
+          <button
+            type="button"
+            className={`text-format-btn${selHas('strikethrough') ? ' active' : ''}`}
+            disabled={!hasSel}
+            title="Strikethrough"
+            onClick={() => applyFormat({ strikethrough: !selHas('strikethrough') })}
+          ><s>S</s></button>
+        </div>
+        <div className="settings-row">
+          <label className="settings-label" htmlFor="fmt-color">Color</label>
+          <ColorInput
+            id="fmt-color"
+            value={(() => {
+              if (!hasSel) return '#000000'
+              const ranges = node.textFormats ?? []
+              const hit = ranges.find(r => r.start <= labelSelection!.start && labelSelection!.start < r.end && r.color)
+              return hit?.color ?? '#000000'
+            })()}
+            onChange={(v) => applyFormat({ color: v })}
+          />
+        </div>
+        <div className="settings-row">
+          <label className="settings-label" htmlFor="fmt-fontsize">Font Size</label>
+          <input
+            id="fmt-fontsize"
+            type="number"
+            className="settings-number-input"
+            min={8}
+            max={72}
+            step={1}
+            disabled={!hasSel}
+            value={(() => {
+              if (!hasSel) return ''
+              const ranges = node.textFormats ?? []
+              const hit = ranges.find(r => r.start <= labelSelection!.start && labelSelection!.start < r.end && r.fontSize != null)
+              return hit?.fontSize ?? ''
+            })()}
+            placeholder="default"
+            onChange={(e) => {
+              const v = e.target.value
+              applyFormat({ fontSize: v ? Number(v) : undefined })
+            }}
+          />
+        </div>
+        {!hasSel && (
+          <div className="settings-hint">Select text in a node label to format it.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegisterModel, onUpdateModelLabel, onEditEffect, onEditContent }: {
   node: ModelNode
   onUpdateShape: (shape: NodeShape) => void
@@ -708,6 +809,8 @@ function NodeSettings({ node, onUpdateShape, onUpdateProps, allModels, onRegiste
           </div>
         </div>
       </div>
+      {/* Text Format section — visible when editing */}
+      <TextFormatSection node={node} onUpdateProps={onUpdateProps} />
       {/* Media section — only for media node types */}
       {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && (
         <MediaSettings node={node} onUpdateProps={onUpdateProps} />

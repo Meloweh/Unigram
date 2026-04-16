@@ -2339,3 +2339,50 @@
   background: linear-gradient(180deg, #f0f5fa, #e8f0f8);
   border-color: #d0dde8;
 }
+
+/* ---- Text Format Toolbar ---- */
+
+.text-format-toolbar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.text-format-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--ug-membrane);
+  border-radius: 4px;
+  background: var(--ug-cell-bg);
+  color: var(--ug-label);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.text-format-btn:hover:not(:disabled) {
+  background: var(--ug-membrane);
+  color: #fff;
+}
+
+.text-format-btn.active {
+  background: var(--ug-membrane);
+  color: #fff;
+  border-color: var(--ug-membrane);
+}
+
+.text-format-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--ug-label);
+  opacity: 0.6;
+  padding: 2px 0;
+}

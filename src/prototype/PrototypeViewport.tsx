@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
-import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle, type GridConfig } from './sampleModels'
+import { type Model, type ModelConnection, type ModelNode, type NodeShape, type MediaNodeType, type ConnectionType, type ConnectionArrowStyle, type ConnectionDashStyle, type GridConfig, type TextFormatRange } from './sampleModels'
 import { UnzipPopup } from './UnzipPopup'
 import { DEFAULT_GRID_SNAP, snapToGrid, useHybridZoomStore, type UnzipPopupState } from './useHybridZoomStore'
 import { MpdDial } from './MpdDial'
@@ -36,6 +36,53 @@ function gridBackgroundImage(cfg?: GridConfig): string {
   }
   // dots (default)
   return `radial-gradient(circle, ${color} ${size}px, transparent ${size}px)`
+}
+
+/** Render a label string with inline TextFormatRange styling as React elements.
+ *  Always wraps text runs in <span data-offset="N"> so flow effect nodes can target them. */
+function renderFormattedLabel(label: string, formats?: TextFormatRange[]): React.ReactNode {
+  if (!label) return '\u00A0'
+
+  // Build per-character format lookup
+  type CharFmt = { bold?: boolean; italic?: boolean; strikethrough?: boolean; color?: string; fontSize?: number }
+  const chars: CharFmt[] = Array.from({ length: label.length }, () => ({}))
+  if (formats) {
+    for (const r of formats) {
+      for (let i = r.start; i < r.end && i < label.length; i++) {
+        if (r.bold) chars[i].bold = true
+        if (r.italic) chars[i].italic = true
+        if (r.strikethrough) chars[i].strikethrough = true
+        if (r.color) chars[i].color = r.color
+        if (r.fontSize != null) chars[i].fontSize = r.fontSize
+      }
+    }
+  }
+
+  // Coalesce into styled spans — always produces <span data-offset> elements
+  const fmtKey = (f: CharFmt) => `${f.bold ?? ''},${f.italic ?? ''},${f.strikethrough ?? ''},${f.color ?? ''},${f.fontSize ?? ''}`
+  const segments: React.ReactNode[] = []
+  let si = 0
+  while (si < label.length) {
+    // Handle newlines
+    if (label[si] === '\n') {
+      segments.push(<br key={`br-${si}`} />)
+      si++
+      continue
+    }
+    const key = fmtKey(chars[si])
+    const start = si
+    while (si < label.length && fmtKey(chars[si]) === key && label[si] !== '\n') si++
+    const text = label.slice(start, si)
+    const f = chars[start]
+    const style: React.CSSProperties = {}
+    if (f.bold) style.fontWeight = 'bold'
+    if (f.italic) style.fontStyle = 'italic'
+    if (f.strikethrough) style.textDecoration = 'line-through'
+    if (f.color) style.color = f.color
+    if (f.fontSize != null) style.fontSize = `${f.fontSize}px`
+    segments.push(<span key={`s-${start}`} data-offset={start} style={Object.keys(style).length ? style : undefined}>{text}</span>)
+  }
+  return segments
 }
 
 /** Drives unzip open/close animation (0→1 open, 1→0 close) */
@@ -1256,6 +1303,9 @@ export function PrototypeViewport() {
   const emergeHiddenElementsRef = useRef<HTMLElement[]>([])
   const scaleRevertTimersRef = useRef<number[]>([])
   const flowColorBackupsRef = useRef<{ el: HTMLElement; bg: string }[]>([])
+  const flowTextFormatTimersRef = useRef<number[]>([])
+  const flowTextFormatBackupsRef = useRef<{ el: HTMLElement; orig: { fontWeight: string; fontStyle: string; textDecoration: string; color: string; fontSize: string; transition: string } }[]>([])
+  const flowTextFormatWrapperBackupsRef = useRef<{ el: HTMLElement; orig: { width: string; minWidth: string; height: string; minHeight: string; transition: string } }[]>([])
 
   const restoreBrokenNodes = useCallback(() => {
     for (const el of brokenNodeElementsRef.current) {
@@ -1321,6 +1371,26 @@ export function PrototypeViewport() {
       setTimeout(() => { el.style.transition = '' }, 400)
     }
     flowColorBackupsRef.current = []
+    // Restore text formatting applied by text-format effect nodes
+    for (const t of flowTextFormatTimersRef.current) clearTimeout(t)
+    flowTextFormatTimersRef.current = []
+    for (const { el, orig } of flowTextFormatBackupsRef.current) {
+      el.style.fontWeight = orig.fontWeight
+      el.style.fontStyle = orig.fontStyle
+      el.style.textDecoration = orig.textDecoration
+      el.style.color = orig.color
+      el.style.fontSize = orig.fontSize
+      el.style.transition = orig.transition
+    }
+    flowTextFormatBackupsRef.current = []
+    for (const { el, orig } of flowTextFormatWrapperBackupsRef.current) {
+      el.style.width = orig.width
+      el.style.minWidth = orig.minWidth
+      el.style.height = orig.height
+      el.style.minHeight = orig.minHeight
+      el.style.transition = orig.transition
+    }
+    flowTextFormatWrapperBackupsRef.current = []
     // Stop all playing media elements
     document.querySelectorAll('[data-node-id] video, [data-node-id] audio').forEach(el => {
       const media = el as HTMLVideoElement | HTMLAudioElement
@@ -2137,6 +2207,200 @@ export function PrototypeViewport() {
                 layerMaxDuration = Math.max(layerMaxDuration, persistent ? scaleDur : scaleDur * 2 + 200)
                 break
               }
+              case 'text-format': {
+                const targetMode = (gNode.config.targetMode as string) ?? 'indices'
+                let startIdx = (gNode.config.startIndex as number) ?? 0
+                let endIdx = (gNode.config.endIndex as number) ?? 0
+                const suffix = (gNode.config.suffix as string) ?? ''
+                const fmtBold = gNode.config.bold === true
+                const fmtItalic = gNode.config.italic === true
+                const fmtStrike = gNode.config.strikethrough === true
+                const fmtColor = (gNode.config.color as string) || ''
+                const fmtFontSize = (gNode.config.fontSize as number) ?? 0
+                const rescaleDur = (gNode.config.rescaleDurationMs as number) ?? 0
+                const resetMode = (gNode.config.resetMode as string) ?? 'node'
+                const holdDur = (gNode.config.durationMs as number) ?? 1000
+
+                // Resolve target range
+                if (targetMode === 'suffix' && suffix && node) {
+                  const idx = node.label.lastIndexOf(suffix)
+                  if (idx >= 0) {
+                    startIdx = idx
+                    endIdx = idx + suffix.length
+                  }
+                }
+
+                if (startIdx >= endIdx) break
+
+                setTimeout(() => {
+                  const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+                  if (!article) return
+                  const labelEl = article.querySelector('.host-label:not(.host-label-editing)') as HTMLElement | null
+                  if (!labelEl) return
+
+                  // Each span has data-offset="N" (character offset of its first char)
+                  const spans = labelEl.querySelectorAll<HTMLElement>('span[data-offset]')
+                  if (spans.length === 0) return
+
+                  // Build span ranges from data-offset + textContent length
+                  const spanRanges: { el: HTMLElement; start: number; end: number }[] = []
+                  spans.forEach(sp => {
+                    const off = parseInt(sp.getAttribute('data-offset') ?? '0', 10)
+                    const len = (sp.textContent ?? '').length
+                    spanRanges.push({ el: sp, start: off, end: off + len })
+                  })
+
+                  // The wrapper is the article's parent if it has absolute/fixed positioning, else the article
+                  const wrapper = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
+                    ? article.parentElement : article
+
+                  // Capture original wrapper size for revert
+                  const origWrapperStyles = {
+                    width: wrapper.style.width,
+                    minWidth: wrapper.style.minWidth,
+                    height: wrapper.style.height,
+                    minHeight: wrapper.style.minHeight,
+                    transition: wrapper.style.transition,
+                  }
+
+                  // Collect affected spans and their original styles
+                  const affected: { sr: typeof spanRanges[0]; origStyles: Record<string, string> }[] = []
+                  for (const sr of spanRanges) {
+                    if (sr.end <= startIdx || sr.start >= endIdx) continue
+                    affected.push({
+                      sr,
+                      origStyles: {
+                        fontWeight: sr.el.style.fontWeight,
+                        fontStyle: sr.el.style.fontStyle,
+                        textDecoration: sr.el.style.textDecoration,
+                        color: sr.el.style.color,
+                        fontSize: sr.el.style.fontSize,
+                        transition: sr.el.style.transition,
+                      },
+                    })
+                  }
+
+                  // If font size changes with rescale, measure target size synchronously
+                  // by temporarily applying font-size without transition
+                  const pad = 32 + 4
+                  const vPad = 28 + 4
+                  let targetW = 0
+                  let targetH = 0
+                  if (fmtFontSize > 0 && rescaleDur > 0) {
+                    // Temporarily set font-size without transition to measure
+                    for (const { sr } of affected) {
+                      sr.el.style.transition = 'none'
+                      sr.el.style.fontSize = `${fmtFontSize}px`
+                    }
+                    // Force layout to measure
+                    targetW = Math.max(160, labelEl.scrollWidth + pad)
+                    targetH = Math.max(60, labelEl.scrollHeight + vPad)
+                    // Revert font-size so we can animate from original
+                    for (const { sr, origStyles } of affected) {
+                      sr.el.style.fontSize = origStyles.fontSize
+                    }
+                    // Force layout flush so browser registers the reverted value
+                    void labelEl.offsetHeight
+                  }
+
+                  // Apply formatting to overlapping spans
+                  for (const { sr, origStyles } of affected) {
+                    if (fmtBold) sr.el.style.fontWeight = 'bold'
+                    if (fmtItalic) sr.el.style.fontStyle = 'italic'
+                    if (fmtStrike) sr.el.style.textDecoration = 'line-through'
+                    if (fmtColor) sr.el.style.color = fmtColor
+                    if (fmtFontSize > 0) {
+                      if (rescaleDur > 0) {
+                        sr.el.style.transition = `font-size ${rescaleDur}ms ease`
+                      }
+                      sr.el.style.fontSize = `${fmtFontSize}px`
+                    }
+
+                    // Schedule revert
+                    if (resetMode === 'node') {
+                      const timer = window.setTimeout(() => {
+                        sr.el.style.fontWeight = origStyles.fontWeight
+                        sr.el.style.fontStyle = origStyles.fontStyle
+                        sr.el.style.textDecoration = origStyles.textDecoration
+                        sr.el.style.color = origStyles.color
+                        if (fmtFontSize > 0 && rescaleDur > 0) {
+                          // Transition still active — just set original font-size to animate back
+                          sr.el.style.fontSize = origStyles.fontSize || ''
+                          setTimeout(() => { sr.el.style.transition = origStyles.transition }, rescaleDur)
+                        } else {
+                          sr.el.style.fontSize = origStyles.fontSize || ''
+                          sr.el.style.transition = origStyles.transition
+                        }
+                      }, holdDur)
+                      flowTextFormatTimersRef.current.push(timer)
+                    } else {
+                      // persist — store cleanup for stopFlowAnimation
+                      flowTextFormatBackupsRef.current.push({ el: sr.el, orig: origStyles })
+                    }
+                  }
+
+                  // Animate wrapper to match font-size change
+                  if (fmtFontSize > 0) {
+                    if (rescaleDur > 0) {
+                      // Animated: set wrapper transition and target size simultaneously with font-size
+                      const wrapTrans = `width ${rescaleDur}ms ease, min-width ${rescaleDur}ms ease, height ${rescaleDur}ms ease, min-height ${rescaleDur}ms ease`
+                      wrapper.style.transition = wrapTrans
+                      wrapper.style.width = `${targetW}px`
+                      wrapper.style.minWidth = `${targetW}px`
+                      wrapper.style.height = `${targetH}px`
+                      wrapper.style.minHeight = `${targetH}px`
+
+                      if (resetMode === 'node') {
+                        // Revert wrapper smoothly after hold duration
+                        const wrapTimer = window.setTimeout(() => {
+                          // Ensure transition is still set for revert animation
+                          wrapper.style.transition = wrapTrans
+                          wrapper.style.width = origWrapperStyles.width || ''
+                          wrapper.style.minWidth = origWrapperStyles.minWidth || ''
+                          wrapper.style.height = origWrapperStyles.height || ''
+                          wrapper.style.minHeight = origWrapperStyles.minHeight || ''
+                          // Clean up transition after revert animation completes
+                          setTimeout(() => {
+                            wrapper.style.transition = origWrapperStyles.transition
+                          }, rescaleDur)
+                        }, holdDur)
+                        flowTextFormatTimersRef.current.push(wrapTimer)
+                      } else {
+                        flowTextFormatWrapperBackupsRef.current.push({
+                          el: wrapper, orig: origWrapperStyles,
+                        })
+                      }
+                    } else {
+                      // Instant: measure after one frame and set immediately
+                      requestAnimationFrame(() => {
+                        const newW = Math.max(160, labelEl.scrollWidth + pad)
+                        const newH = Math.max(60, labelEl.scrollHeight + vPad)
+                        wrapper.style.width = `${newW}px`
+                        wrapper.style.minWidth = `${newW}px`
+                        wrapper.style.height = `${newH}px`
+                        wrapper.style.minHeight = `${newH}px`
+
+                        if (resetMode === 'node') {
+                          const wrapTimer = window.setTimeout(() => {
+                            wrapper.style.width = origWrapperStyles.width
+                            wrapper.style.minWidth = origWrapperStyles.minWidth
+                            wrapper.style.height = origWrapperStyles.height
+                            wrapper.style.minHeight = origWrapperStyles.minHeight
+                            wrapper.style.transition = origWrapperStyles.transition
+                          }, holdDur)
+                          flowTextFormatTimersRef.current.push(wrapTimer)
+                        } else {
+                          flowTextFormatWrapperBackupsRef.current.push({
+                            el: wrapper, orig: origWrapperStyles,
+                          })
+                        }
+                      })
+                    }
+                  }
+                }, delay)
+                layerMaxDuration = Math.max(layerMaxDuration, resetMode === 'persist' ? 0 : holdDur)
+                break
+              }
               case 'record': {
                 const captureMode = (gNode.config.captureMode as string) ?? 'tab'
                 const hideCursor = gNode.config.hideCursor !== false
@@ -2746,6 +3010,26 @@ export function PrototypeViewport() {
             setTimeout(() => { el.style.transition = '' }, 400)
           }
           flowColorBackupsRef.current = []
+          // Clear text format timers and restore persistent formats
+          for (const t of flowTextFormatTimersRef.current) clearTimeout(t)
+          flowTextFormatTimersRef.current = []
+          for (const { el, orig } of flowTextFormatBackupsRef.current) {
+            el.style.fontWeight = orig.fontWeight
+            el.style.fontStyle = orig.fontStyle
+            el.style.textDecoration = orig.textDecoration
+            el.style.color = orig.color
+            el.style.fontSize = orig.fontSize
+            el.style.transition = orig.transition
+          }
+          flowTextFormatBackupsRef.current = []
+          for (const { el, orig } of flowTextFormatWrapperBackupsRef.current) {
+            el.style.width = orig.width
+            el.style.minWidth = orig.minWidth
+            el.style.height = orig.height
+            el.style.minHeight = orig.minHeight
+            el.style.transition = orig.transition
+          }
+          flowTextFormatWrapperBackupsRef.current = []
           // Clear scale revert timers
           for (const t of scaleRevertTimersRef.current) clearTimeout(t)
           scaleRevertTimersRef.current = []
@@ -5123,7 +5407,23 @@ function SceneNode({
           rows={1}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
-          onBlur={() => {
+          onSelect={() => {
+            const el = editRef.current
+            if (el && el.selectionStart !== el.selectionEnd) {
+              useHybridZoomStore.getState().setLabelSelection({ start: el.selectionStart, end: el.selectionEnd })
+            } else {
+              useHybridZoomStore.getState().setLabelSelection(null)
+            }
+          }}
+          onBlur={(e) => {
+            // If focus is moving to a sidebar element, keep editing alive
+            const related = e.relatedTarget as HTMLElement | null
+            if (related?.closest('.sidebar')) {
+              // Re-focus the textarea after a tick so selection is preserved
+              setTimeout(() => editRef.current?.focus(), 0)
+              return
+            }
+            useHybridZoomStore.getState().setLabelSelection(null)
             if (!finishedRef.current) {
               finishedRef.current = true
               onFinishEditing(getEditText())
@@ -5141,14 +5441,7 @@ function SceneNode({
             ...((node.mediaType === 'markdown' || node.mediaType === 'math') && node.contentSource ? { display: 'none' } : {}),
           }}
         >
-          {node.label ? (node.label.includes('\n')
-            ? node.label.split('\n').map((line, i, arr) => (
-              i < arr.length - 1
-                ? <span key={i}>{line}<br /></span>
-                : <span key={i}>{line}</span>
-            ))
-            : node.label
-          ) : '\u00A0'}
+          {renderFormattedLabel(node.label, node.textFormats)}
         </div>
       )}
       {isZooming && childModel && (() => {
