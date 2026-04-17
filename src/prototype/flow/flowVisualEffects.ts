@@ -1,5 +1,7 @@
 import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx, TextFormatOrigStyles } from './flowTypes'
+import { playGenSound } from './textGeneratorSounds'
+import type { TextGenSoundPreset } from './textGeneratorSounds'
 
 // Visual effect handlers: spawn-circular, emerge, scale, text-format, record, and no-op kinds.
 // Each handler returns the layerMaxDuration contribution for that effect.
@@ -239,7 +241,8 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
   const targetMode = (gNode.config.targetMode as string) ?? 'indices'
   let startIdx = (gNode.config.startIndex as number) ?? 0
   let endIdx = (gNode.config.endIndex as number) ?? 0
-  const suffix = (gNode.config.suffix as string) ?? ''
+  const startSubstring = (gNode.config.startSubstring as string) ?? ''
+  const endSubstring = (gNode.config.endSubstring as string) ?? ''
   const fmtBold = gNode.config.bold === true
   const fmtItalic = gNode.config.italic === true
   const fmtStrike = gNode.config.strikethrough === true
@@ -252,12 +255,16 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
   const holdDur = (gNode.config.durationMs as number) ?? 1000
   const levitateStyle = (gNode.config.levitateStyle as string) ?? 'none'
 
-  // Resolve target range
-  if (targetMode === 'suffix' && suffix && ctx.node) {
-    const idx = ctx.node.label.lastIndexOf(suffix)
-    if (idx >= 0) {
-      startIdx = idx
-      endIdx = idx + suffix.length
+  // Resolve target range from two substrings
+  if (targetMode === 'substrings' && ctx.node) {
+    const label = ctx.node.label
+    if (startSubstring) {
+      const idx = label.indexOf(startSubstring)
+      if (idx >= 0) startIdx = idx
+    }
+    if (endSubstring) {
+      const idx = label.indexOf(endSubstring)
+      if (idx >= 0) endIdx = idx + endSubstring.length
     }
   }
 
@@ -280,6 +287,45 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
       const len = (sp.textContent ?? '').length
       spanRanges.push({ el: sp, start: off, end: off + len })
     })
+
+    // Split spans at the format boundaries [startIdx, endIdx) so that
+    // formatting applies only to the in-range portion of partially-overlapping spans.
+    for (let i = spanRanges.length - 1; i >= 0; i--) {
+      const sr = spanRanges[i]
+      const text = sr.el.textContent ?? ''
+      if (sr.start < startIdx && sr.end > startIdx) {
+        // Split at startIdx: [sr.start, startIdx) stays, [startIdx, sr.end) is new
+        const splitOff = startIdx - sr.start
+        const before = document.createElement('span')
+        before.setAttribute('data-offset', String(sr.start))
+        before.textContent = text.slice(0, splitOff)
+        // Copy inline styles
+        before.style.cssText = sr.el.style.cssText
+        sr.el.parentNode!.insertBefore(before, sr.el)
+        sr.el.setAttribute('data-offset', String(startIdx))
+        sr.el.textContent = text.slice(splitOff)
+        spanRanges.splice(i, 0, { el: before, start: sr.start, end: startIdx })
+        sr.start = startIdx
+        i++ // re-check the right half for endIdx split
+      }
+    }
+    for (let i = spanRanges.length - 1; i >= 0; i--) {
+      const sr = spanRanges[i]
+      const text = sr.el.textContent ?? ''
+      if (sr.start < endIdx && sr.end > endIdx) {
+        // Split at endIdx: [sr.start, endIdx) stays, [endIdx, sr.end) is new
+        const splitOff = endIdx - sr.start
+        const after = document.createElement('span')
+        after.setAttribute('data-offset', String(endIdx))
+        after.textContent = text.slice(splitOff)
+        // Copy inline styles
+        after.style.cssText = sr.el.style.cssText
+        sr.el.parentNode!.insertBefore(after, sr.el.nextSibling)
+        sr.el.textContent = text.slice(0, splitOff)
+        spanRanges.splice(i + 1, 0, { el: after, start: endIdx, end: sr.end })
+        sr.end = endIdx
+      }
+    }
 
     // The wrapper is the article's parent if it has absolute/fixed positioning, else the article
     const wrapper = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
@@ -397,7 +443,24 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
             const dy = Math.sin(s * 0.5 + phase) * 5
             const rot = Math.sin(s * 0.3 + phase) * 2
             spanEl.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg)`
+          } else if (levitateStyle === 'jittery') {
+            const dx = (Math.random() - 0.5) * 4
+            const dy = (Math.random() - 0.5) * 4
+            spanEl.style.transform = `translate(${dx}px, ${dy}px)`
+          } else if (levitateStyle === 'drunken') {
+            const dx = Math.sin(s * 0.3 + phase) * 8
+            const dy = Math.sin(s * 0.2 + phase * 1.3) * 3
+            const rot = Math.sin(s * 0.25 + phase) * 6
+            const sc = 1 + Math.sin(s * 0.4 + phase) * 0.06
+            spanEl.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${sc})`
+          } else if (levitateStyle === 'watery') {
+            const dx = Math.sin(s * 0.4 + phase) * 2
+            const dy = Math.sin(s * 0.6 + phase * 0.8) * 3
+            const skX = Math.sin(s * 0.5 + phase) * 3
+            const scY = 1 + Math.sin(s * 0.3 + phase * 1.2) * 0.05
+            spanEl.style.transform = `translate(${dx}px, ${dy}px) skewX(${skX}deg) scaleY(${scY})`
           } else {
+            // bubbly (default)
             const dx = Math.sin(s * 0.6 + phase) * 4
             const dy = Math.sin(s * 0.4 + phase) * 5
             const sc = 1 + Math.sin(s * 0.8 + phase) * 0.04
@@ -584,4 +647,273 @@ export function handleCloudLevitate(_ctx: FlowEffectCtx, _gNode: EffectGraphNode
 export function handleBubbleLevitate(_ctx: FlowEffectCtx, _gNode: EffectGraphNode, _delay: number): number {
   // These animations are always-playing; flow should not reset them
   return 0
+}
+
+export function handleTextGenerator(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
+  const targetMode = (gNode.config.targetMode as string) ?? 'indices'
+  let startIdx = (gNode.config.startIndex as number) ?? 0
+  let endIdx = (gNode.config.endIndex as number) ?? 0
+  const startSubstring = (gNode.config.startSubstring as string) ?? ''
+  const endSubstring = (gNode.config.endSubstring as string) ?? ''
+  const speed = (gNode.config.speed as number) || 50
+  const mode = (gNode.config.mode as string) ?? 'letter'
+  const soundPreset = (gNode.config.soundPreset as TextGenSoundPreset) ?? 'none'
+  const useNodeDuration = !!(gNode.config.useNodeDuration)
+  const nodeDurationMs = (gNode.config.nodeDurationMs as number) ?? 1000
+  const useDegeneration = !!(gNode.config.useDegeneration)
+  const degenerationDurationMs = (gNode.config.degenerationDurationMs as number) ?? 0
+
+  // Resolve target range from two substrings
+  if (targetMode === 'substrings' && ctx.node) {
+    const label = ctx.node.label
+    if (startSubstring) {
+      const idx = label.indexOf(startSubstring)
+      if (idx >= 0) startIdx = idx
+    }
+    if (endSubstring) {
+      const idx = label.indexOf(endSubstring)
+      if (idx >= 0) endIdx = idx + endSubstring.length
+    }
+  }
+
+  // Default: generate the entire label when indices are both 0
+  if (startIdx === 0 && endIdx === 0 && ctx.node) {
+    endIdx = ctx.node.label.length
+  }
+
+  if (startIdx >= endIdx) {
+    return 0
+  }
+
+  ctx.scheduleEffect(() => {
+    const article = document.querySelector(`[data-node-id="${CSS.escape(ctx.nodeId)}"]`) as HTMLElement | null
+    if (!article) return
+    const labelEl = article.querySelector('.host-label:not(.host-label-editing)') as HTMLElement | null
+    if (!labelEl) return
+
+    const spans = labelEl.querySelectorAll<HTMLElement>('span[data-offset]')
+    if (spans.length === 0) return
+
+    // Build span range map. Use data-textgen-orig (set by a prior generator) for range
+    // calculation so that a second generator can still find its target spans even though
+    // a prior generator already emptied their textContent.
+    const spanRanges: { el: HTMLElement; start: number; end: number; origText: string; managed: boolean }[] = []
+    spans.forEach(sp => {
+      const off = parseInt(sp.getAttribute('data-offset') ?? '0', 10)
+      const backupText = sp.getAttribute('data-textgen-orig')
+      const text = backupText ?? sp.textContent ?? ''
+      spanRanges.push({ el: sp, start: off, end: off + text.length, origText: text, managed: backupText != null })
+    })
+
+    // Split spans at [startIdx, endIdx) boundaries so the generator only
+    // operates on the exact range, leaving pre/post-range text untouched.
+    // When splitting a managed span (already hidden by another generator),
+    // the new fragment spans must also be managed (empty textContent + data-textgen-orig).
+    for (let i = spanRanges.length - 1; i >= 0; i--) {
+      const sr = spanRanges[i]
+      if (sr.start < startIdx && sr.end > startIdx) {
+        const splitOff = startIdx - sr.start
+        const before = document.createElement('span')
+        before.setAttribute('data-offset', String(sr.start))
+        before.style.cssText = sr.el.style.cssText
+        const beforeText = sr.origText.slice(0, splitOff)
+        if (sr.managed) {
+          before.setAttribute('data-textgen-orig', beforeText)
+          before.textContent = ''
+          ctx.cleanup.textGenHiddenSpans.push({ el: before, origVisibility: '__textgen_text__' })
+        } else {
+          before.textContent = beforeText
+        }
+        sr.el.parentNode!.insertBefore(before, sr.el)
+        const newOrigText = sr.origText.slice(splitOff)
+        sr.el.setAttribute('data-offset', String(startIdx))
+        if (sr.managed) {
+          sr.el.setAttribute('data-textgen-orig', newOrigText)
+          sr.el.textContent = ''
+        } else {
+          sr.el.textContent = newOrigText
+        }
+        spanRanges.splice(i, 0, { el: before, start: sr.start, end: startIdx, origText: beforeText, managed: sr.managed })
+        sr.start = startIdx
+        sr.origText = newOrigText
+        i++ // re-check right half for endIdx split
+      }
+    }
+    for (let i = spanRanges.length - 1; i >= 0; i--) {
+      const sr = spanRanges[i]
+      if (sr.start < endIdx && sr.end > endIdx) {
+        const splitOff = endIdx - sr.start
+        const after = document.createElement('span')
+        after.setAttribute('data-offset', String(endIdx))
+        after.style.cssText = sr.el.style.cssText
+        const afterText = sr.origText.slice(splitOff)
+        if (sr.managed) {
+          after.setAttribute('data-textgen-orig', afterText)
+          after.textContent = ''
+          ctx.cleanup.textGenHiddenSpans.push({ el: after, origVisibility: '__textgen_text__' })
+        } else {
+          after.textContent = afterText
+        }
+        sr.el.parentNode!.insertBefore(after, sr.el.nextSibling)
+        const newOrigText = sr.origText.slice(0, splitOff)
+        if (sr.managed) {
+          sr.el.setAttribute('data-textgen-orig', newOrigText)
+          sr.el.textContent = ''
+        } else {
+          sr.el.textContent = newOrigText
+        }
+        spanRanges.splice(i + 1, 0, { el: after, start: endIdx, end: sr.end, origText: afterText, managed: sr.managed })
+        sr.end = endIdx
+        sr.origText = newOrigText
+      }
+    }
+
+    // Collect only spans fully within [startIdx, endIdx)
+    const affected = spanRanges.filter(sr => sr.start >= startIdx && sr.end <= endIdx && sr.end > sr.start)
+    if (affected.length === 0) return
+
+    // Store original textContent for cleanup via data attribute + sentinel
+    for (const sr of affected) {
+      sr.el.setAttribute('data-textgen-orig', sr.origText)
+      ctx.cleanup.textGenHiddenSpans.push({ el: sr.el, origVisibility: '__textgen_text__' })
+    }
+
+    // Truncate affected spans to empty — they are exactly [startIdx, endIdx) after splitting
+    for (const sr of affected) {
+      sr.el.textContent = ''
+    }
+
+    // Hide spans outside our range that aren't already managed by another generator.
+    // Each text portion must be explicitly generated by its own Generator Node.
+    for (const sr of spanRanges) {
+      if (sr.start >= startIdx && sr.end <= endIdx) continue // in-range, handled above
+      if (sr.el.hasAttribute('data-textgen-orig')) continue // already managed by another generator
+      sr.el.setAttribute('data-textgen-orig', sr.origText)
+      sr.el.textContent = ''
+      ctx.cleanup.textGenHiddenSpans.push({ el: sr.el, origVisibility: '__textgen_text__' })
+    }
+
+    // Wrapper for resize animation
+    const wrapper = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
+      ? article.parentElement : article
+    const pad = 32 + 4
+    const vPad = 28 + 4
+
+    // Back up wrapper sizing for cleanup
+    if (wrapper) {
+      wrapper.setAttribute('data-textgen-orig-width', wrapper.style.width)
+      wrapper.setAttribute('data-textgen-orig-minwidth', wrapper.style.minWidth)
+      wrapper.setAttribute('data-textgen-orig-height', wrapper.style.height)
+      wrapper.setAttribute('data-textgen-orig-minheight', wrapper.style.minHeight)
+      wrapper.setAttribute('data-textgen-orig-transition', wrapper.style.transition)
+      ctx.cleanup.textGenHiddenSpans.push({ el: wrapper as HTMLElement, origVisibility: '__textgen_wrapper__' })
+    }
+
+    // Recalculate wrapper size based on currently visible text
+    const resizeToContent = () => {
+      requestAnimationFrame(() => {
+        const newW = Math.max(160, labelEl.scrollWidth + pad)
+        const newH = Math.max(60, labelEl.scrollHeight + vPad)
+        wrapper.style.transition = 'width 150ms ease, min-width 150ms ease, height 150ms ease, min-height 150ms ease'
+        wrapper.style.width = `${newW}px`
+        wrapper.style.minWidth = `${newW}px`
+        wrapper.style.height = `${newH}px`
+        wrapper.style.minHeight = `${newH}px`
+      })
+    }
+
+    // Reveal up to a given character index across affected spans
+    const revealUpTo = (charEnd: number) => {
+      for (const sr of affected) {
+        const visEnd = Math.min(charEnd, sr.end) - sr.start
+        if (visEnd <= 0) {
+          sr.el.textContent = ''
+        } else if (visEnd >= sr.origText.length) {
+          sr.el.textContent = sr.origText
+          sr.el.style.visibility = 'visible'
+        } else {
+          sr.el.textContent = sr.origText.slice(0, visEnd)
+          sr.el.style.visibility = 'visible'
+        }
+      }
+    }
+
+    // Build reveal steps based on mode
+    type RevealStep = { charEnd: number }
+    const steps: RevealStep[] = []
+    if (mode === 'word') {
+      const label = ctx.node.label
+      let pos = startIdx
+      while (pos < endIdx) {
+        while (pos < endIdx && /\s/.test(label[pos])) pos++
+        if (pos >= endIdx) break
+        while (pos < endIdx && !/\s/.test(label[pos])) pos++
+        // Include trailing whitespace in this step
+        while (pos < endIdx && /\s/.test(label[pos])) pos++
+        steps.push({ charEnd: pos })
+      }
+      if (steps.length === 0) steps.push({ charEnd: endIdx })
+    } else {
+      for (let i = startIdx + 1; i <= endIdx; i++) {
+        steps.push({ charEnd: i })
+      }
+    }
+
+    const stepCount = steps.length
+
+    // Schedule generation steps
+    for (let i = 0; i < stepCount; i++) {
+      const t = window.setTimeout(() => {
+        revealUpTo(steps[i].charEnd)
+        if (soundPreset !== 'none' && speed >= 15) {
+          const snd = playGenSound(soundPreset, i)
+          if (snd) ctx.cleanup.textGenAudioNodes.push(snd)
+        }
+        resizeToContent()
+      }, i * speed)
+      ctx.cleanup.textGenTimers.push(t)
+    }
+
+    // Schedule degeneration if enabled
+    if (useDegeneration) {
+      const genDuration = speed * stepCount
+      const degenStart = genDuration + (useNodeDuration ? nodeDurationMs : 0)
+      const degenStepDelay = stepCount > 1 ? degenerationDurationMs / stepCount : degenerationDurationMs
+      for (let i = 0; i < stepCount; i++) {
+        const prevCharEnd = (stepCount - 1 - i > 0) ? steps[stepCount - 2 - i].charEnd : startIdx
+        const t = window.setTimeout(() => {
+          revealUpTo(prevCharEnd)
+          resizeToContent()
+        }, degenStart + i * degenStepDelay)
+        ctx.cleanup.textGenTimers.push(t)
+      }
+    }
+
+    // Initial resize
+    resizeToContent()
+  }, delay)
+
+  // Compute total duration
+  const stepCount = (() => {
+    if (startIdx >= endIdx) return 0
+    if (mode === 'word' && ctx.node) {
+      const genText = ctx.node.label.slice(startIdx, endIdx)
+      let count = 0
+      let pos = 0
+      while (pos < genText.length) {
+        while (pos < genText.length && /\s/.test(genText[pos])) pos++
+        if (pos >= genText.length) break
+        count++
+        while (pos < genText.length && !/\s/.test(genText[pos])) pos++
+        while (pos < genText.length && /\s/.test(genText[pos])) pos++
+      }
+      return count || 1
+    }
+    return endIdx - startIdx
+  })()
+  const genDuration = speed * stepCount
+  let total = genDuration
+  if (useNodeDuration) total += nodeDurationMs
+  if (useDegeneration) total += degenerationDurationMs
+  return total
 }

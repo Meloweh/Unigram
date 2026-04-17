@@ -1,5 +1,6 @@
 import type { EffectGraphNode, FlowEffectKind } from '../model/sampleModels'
 import type { EffectEditorHostContext, MoveWaypoint, SpawnItem, SpawnCircularItem } from './FlowEffectEditor'
+import { TextGeneratorConfigPanel } from './TextGeneratorConfigPanel'
 
 export function FlowNodeConfigPanel({
   selectedNode,
@@ -811,9 +812,9 @@ export function FlowNodeConfigPanel({
               </label>
               <label>
                 <input type="radio" name="textFmtTargetMode"
-                  checked={((selectedNode.config.targetMode as string) ?? 'indices') === 'suffix'}
-                  onChange={() => updateNodeConfig('targetMode', 'suffix')} />
-                By Suffix
+                  checked={((selectedNode.config.targetMode as string) ?? 'indices') === 'substrings'}
+                  onChange={() => updateNodeConfig('targetMode', 'substrings')} />
+                By Substrings
               </label>
             </div>
             {((selectedNode.config.targetMode as string) ?? 'indices') === 'indices' ? (
@@ -832,12 +833,20 @@ export function FlowNodeConfigPanel({
                 </label>
               </>
             ) : (
-              <label className="fxeditor-field">
-                <span>Suffix Text</span>
-                <input type="text"
-                  value={(selectedNode.config.suffix as string) ?? ''}
-                  onChange={(e) => updateNodeConfig('suffix', e.target.value)} />
-              </label>
+              <>
+                <label className="fxeditor-field">
+                  <span>Start Substring</span>
+                  <input type="text"
+                    value={(selectedNode.config.startSubstring as string) ?? ''}
+                    onChange={(e) => updateNodeConfig('startSubstring', e.target.value)} />
+                </label>
+                <label className="fxeditor-field">
+                  <span>End Substring</span>
+                  <input type="text"
+                    value={(selectedNode.config.endSubstring as string) ?? ''}
+                    onChange={(e) => updateNodeConfig('endSubstring', e.target.value)} />
+                </label>
+              </>
             )}
             <label className="fxeditor-checkbox">
               <input type="checkbox"
@@ -894,7 +903,7 @@ export function FlowNodeConfigPanel({
               <span>Keep playing until flow ends</span>
             </label>
             <label className="fxeditor-field">
-              <span>Levitate Style</span>
+              <span>Animation Style</span>
               <select
                 value={(selectedNode.config.levitateStyle as string) ?? 'none'}
                 onChange={(e) => updateNodeConfig('levitateStyle', e.target.value)}
@@ -902,9 +911,15 @@ export function FlowNodeConfigPanel({
                 <option value="none">None</option>
                 <option value="cloudy">Cloudy</option>
                 <option value="bubbly">Bubbly</option>
+                <option value="jittery">Jittery</option>
+                <option value="drunken">Drunken</option>
+                <option value="watery">Watery</option>
               </select>
             </label>
           </>
+        )}
+        {selectedNode.kind === 'text-generator' && (
+          <TextGeneratorConfigPanel selectedNode={selectedNode} updateNodeConfig={updateNodeConfig} />
         )}
         {selectedNode.kind === 'repeater' && (
           <>

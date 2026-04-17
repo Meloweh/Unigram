@@ -4,6 +4,7 @@ import type { FlowEffectCtx } from './flowTypes'
 import {
   handleSpawnCircular, handleEmerge, handleScale, handleTextFormat,
   handleRecord, handleRepeater, handleCloudLevitate, handleBubbleLevitate,
+  handleTextGenerator,
 } from './flowVisualEffects'
 
 // Each handler returns the layerMaxDuration contribution for that effect.
@@ -583,6 +584,7 @@ export function dispatchEffect(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay
     case 'repeater': return handleRepeater(ctx, gNode, delay)
     case 'cloud-levitate': return handleCloudLevitate(ctx, gNode, delay)
     case 'bubble-levitate': return handleBubbleLevitate(ctx, gNode, delay)
+    case 'text-generator': return handleTextGenerator(ctx, gNode, delay)
     default: return 0
   }
 }

@@ -46,6 +46,9 @@ export interface FlowCleanupState {
   levitateAnims: { rafId: number; cleanup: () => void }[]
   effectTimers: number[]
   mediaDone: Set<string>
+  textGenTimers: number[]
+  textGenHiddenSpans: { el: HTMLElement; origVisibility: string }[]
+  textGenAudioNodes: { osc?: OscillatorNode; gain?: GainNode; source?: AudioBufferSourceNode; ctx: AudioContext }[]
 }
 
 /** Context passed to effect handler functions */
@@ -102,5 +105,8 @@ export function createCleanupState(): FlowCleanupState {
     levitateAnims: [],
     effectTimers: [],
     mediaDone: new Set(),
+    textGenTimers: [],
+    textGenHiddenSpans: [],
+    textGenAudioNodes: [],
   }
 }

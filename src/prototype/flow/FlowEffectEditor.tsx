@@ -72,6 +72,7 @@ export const kindLabels: Record<FlowEffectKind, string> = {
   'repeater': 'Repeater',
   'cloud-levitate': 'Cloudy Levitate',
   'bubble-levitate': 'Soap Bubble Levitate',
+  'text-generator': 'Text Generator',
 }
 
 export const kindColors: Record<FlowEffectKind, string> = {
@@ -98,6 +99,7 @@ export const kindColors: Record<FlowEffectKind, string> = {
   'repeater': '#facc15',
   'cloud-levitate': '#94a3b8',
   'bubble-levitate': '#7dd3fc',
+  'text-generator': '#c084fc',
 }
 
 const ENTRY_NODE_ID = '__entry__'
@@ -139,10 +141,11 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
     case 'emerge': return { animation: 'scale-in', durationMs: 600 }
     case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false, keepPlaying: false }
-    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, suffix: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false, levitateStyle: 'none' }
+    case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, startSubstring: '', endSubstring: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false, levitateStyle: 'none' }
     case 'repeater': return { repeatCount: 3 }
     case 'cloud-levitate': return { amplitude: 8, speed: 0.8, durationMs: 3000 }
     case 'bubble-levitate': return { amplitude: 10, speed: 0.5, durationMs: 4000, scalePulse: true }
+    case 'text-generator': return { targetMode: 'indices', startIndex: 0, endIndex: 0, startSubstring: '', endSubstring: '', speed: 50, mode: 'letter', soundPreset: 'none', useNodeDuration: false, nodeDurationMs: 1000, useDegeneration: false, degenerationDurationMs: 0 }
   }
 }
 
@@ -183,7 +186,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'repeater',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'text-generator', 'repeater',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),

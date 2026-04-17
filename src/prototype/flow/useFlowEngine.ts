@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { Model, ModelNode, ModelConnection } from '../model/sampleModels'
 import type { FlowTask, FlowDAG, FlowEffectCtx } from './flowTypes'
 import { dispatchEffect } from './flowEffectHandlers'
+import { cleanupTextGenerator } from './textGeneratorCleanup'
 import { audioCtxCache, SCENE_W, SCENE_H } from '../scene/sceneConstants'
 
 export interface FlowEngineDeps {
@@ -83,6 +84,9 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const flowTextFormatTimersRef = useRef<number[]>([])
   const flowTextFormatBackupsRef = useRef<{ el: HTMLElement; orig: { fontWeight: string; fontStyle: string; textDecoration: string; color: string; fontSize: string; transition: string } }[]>([])
   const flowTextFormatWrapperBackupsRef = useRef<{ el: HTMLElement; orig: { width: string; minWidth: string; height: string; minHeight: string; transition: string } }[]>([])
+  const textGenTimersRef = useRef<number[]>([])
+  const textGenHiddenSpansRef = useRef<{ el: HTMLElement; origVisibility: string }[]>([])
+  const textGenAudioNodesRef = useRef<{ osc?: OscillatorNode; gain?: GainNode; source?: AudioBufferSourceNode; ctx: AudioContext }[]>([])
   const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
@@ -181,6 +185,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       el.style.transition = orig.transition
     }
     flowTextFormatWrapperBackupsRef.current = []
+    cleanupTextGenerator(textGenTimersRef, textGenHiddenSpansRef, textGenAudioNodesRef)
     // Stop keep-playing looping animations (jitter, float, move)
     for (const { rafId, cleanup } of flowKeepPlayingAnimsRef.current) {
       cancelAnimationFrame(rafId)
@@ -268,6 +273,9 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         levitateAnims: flowLevitateAnimsRef.current,
         effectTimers: flowEffectTimersRef.current,
         mediaDone: flowMediaDoneRef.current,
+        textGenTimers: textGenTimersRef.current,
+        textGenHiddenSpans: textGenHiddenSpansRef.current,
+        textGenAudioNodes: textGenAudioNodesRef.current,
       },
       triggerMediaPlay,
       audioCtxCache,
@@ -889,6 +897,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
             el.style.transition = orig.transition
           }
           flowTextFormatWrapperBackupsRef.current = []
+          cleanupTextGenerator(textGenTimersRef, textGenHiddenSpansRef, textGenAudioNodesRef)
           // Clear scale revert timers
           for (const t of scaleRevertTimersRef.current) clearTimeout(t)
           scaleRevertTimersRef.current = []
