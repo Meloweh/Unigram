@@ -2,7 +2,7 @@ import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx } from './flowTypes'
 import {
-  handleSpawnCircular, handleEmerge, handleScale, handleTextFormat,
+  handleSpawnCircular, handleEmerge, handleDismiss, handleScale, handleTextFormat,
   handleRecord, handleRepeater, handleCloudLevitate, handleBubbleLevitate,
   handleTextGenerator,
 } from './flowVisualEffects'
@@ -578,6 +578,7 @@ export function dispatchEffect(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay
     case 'float': return handleFloat(ctx, gNode, delay)
     case 'spawn-circular': return handleSpawnCircular(ctx, gNode, delay)
     case 'emerge': return handleEmerge(ctx, gNode, delay)
+    case 'dismiss': return handleDismiss(ctx, gNode, delay)
     case 'scale': return handleScale(ctx, gNode, delay)
     case 'text-format': return handleTextFormat(ctx, gNode, delay)
     case 'record': return handleRecord(ctx, gNode, delay)

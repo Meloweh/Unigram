@@ -764,6 +764,30 @@ export function FlowNodeConfigPanel({
             </label>
           </>
         )}
+        {selectedNode.kind === 'dismiss' && (
+          <>
+            <div className="fxeditor-field-hint">
+              Dismisses this node when reached, animating it away with a scale-out, fade-out, or scale-to-source transition.
+            </div>
+            <label className="fxeditor-field">
+              <span>Animation</span>
+              <select
+                value={(selectedNode.config.animation as string) ?? 'scale-out'}
+                onChange={(e) => updateNodeConfig('animation', e.target.value)}
+              >
+                <option value="scale-out">Scale out</option>
+                <option value="fade-out">Fade out</option>
+                <option value="scale-to-source">Scale to source</option>
+              </select>
+            </label>
+            <label className="fxeditor-field">
+              <span>Duration (ms)</span>
+              <input type="number" min={100} step={50}
+                value={(selectedNode.config.durationMs as number) ?? 600}
+                onChange={(e) => updateNodeConfig('durationMs', Number(e.target.value))} />
+            </label>
+          </>
+        )}
         {selectedNode.kind === 'scale' && (
           <>
             <div className="fxeditor-field-hint">

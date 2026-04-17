@@ -38,6 +38,7 @@ export interface FlowCleanupState {
   colorBackups: { el: HTMLElement; bg: string }[]
   brokenElements: HTMLElement[]
   emergeHidden: HTMLElement[]
+  dismissHidden: HTMLElement[]
   scaleTimers: number[]
   textFormatTimers: number[]
   textFormatBackups: { el: HTMLElement; orig: TextFormatOrigStyles }[]
@@ -97,6 +98,7 @@ export function createCleanupState(): FlowCleanupState {
     colorBackups: [],
     brokenElements: [],
     emergeHidden: [],
+    dismissHidden: [],
     scaleTimers: [],
     textFormatTimers: [],
     textFormatBackups: [],

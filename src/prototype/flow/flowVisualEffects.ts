@@ -155,6 +155,97 @@ export function handleEmerge(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: 
   return emergeDur
 }
 
+export function handleDismiss(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
+  const animation = (gNode.config.animation as string) ?? 'scale-out'
+  const dismissDur = (gNode.config.durationMs as number) ?? 600
+  ctx.scheduleEffect(() => {
+    const wrapperEl = document.querySelector(`[data-node-wrapper="${CSS.escape(ctx.nodeId)}"]`) as HTMLElement | null
+    const articleEl = document.querySelector(`[data-node-id="${CSS.escape(ctx.nodeId)}"]`) as HTMLElement | null
+    const el = wrapperEl ?? articleEl
+    if (!el) return
+
+    // Track for restoration when flow ends
+    ctx.cleanup.dismissHidden.push(el)
+
+    if (animation === 'fade-out') {
+      el.style.transition = `opacity ${dismissDur}ms ease`
+      requestAnimationFrame(() => {
+        el.style.opacity = '0'
+        setTimeout(() => {
+          el.style.transition = ''
+        }, dismissDur)
+      })
+    } else if (animation === 'scale-to-source') {
+      // Find the parent node via incoming flow connections (reverse of emerge scale-in)
+      const incomingConn = ctx.model.connections.find(c => c.to === ctx.nodeId && c.type === 'flow')
+      const parentEl = incomingConn
+        ? document.querySelector(`[data-node-id="${CSS.escape(incomingConn.from)}"]`) as HTMLElement | null
+        : null
+
+      if (parentEl) {
+        const parentRect = parentEl.getBoundingClientRect()
+        const selfRect = el.getBoundingClientRect()
+        const dx = parentRect.left + parentRect.width / 2 - (selfRect.left + selfRect.width / 2)
+        const dy = parentRect.top + parentRect.height / 2 - (selfRect.top + selfRect.height / 2)
+
+        el.style.transition = 'none'
+        const startTime = performance.now()
+        const easeInCubic = (t: number) => t ** 3
+        const animateDismiss = (now: number) => {
+          const raw = Math.min((now - startTime) / dismissDur, 1)
+          const t = easeInCubic(raw)
+          const s = 1 - t
+          const currDx = dx * t
+          const currDy = dy * t
+          el.style.transform = `translate(calc(-50% + ${currDx}px), calc(-50% + ${currDy}px)) scale(${s})`
+          if (raw < 1) {
+            requestAnimationFrame(animateDismiss)
+          } else {
+            el.style.opacity = '0'
+            el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0)`
+          }
+        }
+        requestAnimationFrame(animateDismiss)
+      } else {
+        // No parent — just scale out from self center
+        const startTime = performance.now()
+        const easeInCubic = (t: number) => t ** 3
+        const animateDismiss = (now: number) => {
+          const raw = Math.min((now - startTime) / dismissDur, 1)
+          const t = easeInCubic(raw)
+          const s = 1 - t
+          el.style.transform = `translate(-50%, -50%) scale(${s})`
+          if (raw < 1) {
+            requestAnimationFrame(animateDismiss)
+          } else {
+            el.style.opacity = '0'
+            el.style.transform = 'translate(-50%, -50%) scale(0)'
+          }
+        }
+        requestAnimationFrame(animateDismiss)
+      }
+    } else {
+      // scale-out: shrink to center
+      const startTime = performance.now()
+      const easeInCubic = (t: number) => t ** 3
+      const animateDismiss = (now: number) => {
+        const raw = Math.min((now - startTime) / dismissDur, 1)
+        const t = easeInCubic(raw)
+        const s = 1 - t
+        el.style.transform = `translate(-50%, -50%) scale(${s})`
+        if (raw < 1) {
+          requestAnimationFrame(animateDismiss)
+        } else {
+          el.style.opacity = '0'
+          el.style.transform = 'translate(-50%, -50%) scale(0)'
+        }
+      }
+      requestAnimationFrame(animateDismiss)
+    }
+  }, delay)
+  return dismissDur
+}
+
 export function handleScale(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
   const targetWidth = (gNode.config.targetWidth as number) ?? 200
   const targetHeight = (gNode.config.targetHeight as number) ?? 120

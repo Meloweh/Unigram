@@ -10,7 +10,7 @@ export type TipDirection = 'bottom-left' | 'bottom-right' | 'top-left' | 'top-ri
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'scale' | 'text-format' | 'text-generator' | 'repeater' | 'cloud-levitate' | 'bubble-levitate'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'dismiss' | 'scale' | 'text-format' | 'text-generator' | 'repeater' | 'cloud-levitate' | 'bubble-levitate'
 
 export interface TextFormatRange {
   start: number

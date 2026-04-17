@@ -67,6 +67,7 @@ export const kindLabels: Record<FlowEffectKind, string> = {
   'jitter': 'Jitter',
   'float': 'Float',
   'emerge': 'Emerge',
+  'dismiss': 'Dismiss',
   'scale': 'Scale',
   'text-format': 'Text Format',
   'repeater': 'Repeater',
@@ -94,6 +95,7 @@ export const kindColors: Record<FlowEffectKind, string> = {
   'jitter': '#fb923c',
   'float': '#67e8f9',
   'emerge': '#a3e635',
+  'dismiss': '#fb923c',
   'scale': '#34d399',
   'text-format': '#e879f9',
   'repeater': '#facc15',
@@ -140,6 +142,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'float': return { amplitude: 6, speed: 1, durationMs: 3000, keepPlaying: false }
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }
     case 'emerge': return { animation: 'scale-in', durationMs: 600 }
+    case 'dismiss': return { animation: 'scale-out', durationMs: 600 }
     case 'scale': return { targetWidth: 200, targetHeight: 120, durationMs: 500, persistent: false, keepPlaying: false }
     case 'text-format': return { targetMode: 'indices', startIndex: 0, endIndex: 0, startSubstring: '', endSubstring: '', bold: false, italic: false, strikethrough: false, color: '', fontSize: 0, rescaleDurationMs: 0, resetMode: 'node', durationMs: 1000, keepPlaying: false, levitateStyle: 'none' }
     case 'repeater': return { repeatCount: 3 }
@@ -186,7 +189,7 @@ export function FlowEffectEditor({
   // Build the addable kinds based on host context
   const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
   const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'text-generator', 'repeater',
+    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'dismiss', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'text-generator', 'repeater',
     ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
     ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
     ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),

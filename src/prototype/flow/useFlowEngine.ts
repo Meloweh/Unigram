@@ -79,6 +79,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const [shakeOffset, setShakeOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const brokenNodeElementsRef = useRef<HTMLElement[]>([])
   const emergeHiddenElementsRef = useRef<HTMLElement[]>([])
+  const dismissHiddenElementsRef = useRef<HTMLElement[]>([])
   const scaleRevertTimersRef = useRef<number[]>([])
   const flowColorBackupsRef = useRef<{ el: HTMLElement; bg: string }[]>([])
   const flowTextFormatTimersRef = useRef<number[]>([])
@@ -111,6 +112,15 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       el.style.transition = ''
     }
     emergeHiddenElementsRef.current = []
+  }
+
+  const restoreDismissNodes = () => {
+    for (const el of dismissHiddenElementsRef.current) {
+      el.style.opacity = ''
+      el.style.transform = 'translate(-50%, -50%)'
+      el.style.transition = ''
+    }
+    dismissHiddenElementsRef.current = []
   }
 
   // ---- stopFlowAnimation ----
@@ -156,6 +166,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
     setFlowActiveNodes(new Set())
     restoreBrokenNodes()
     restoreEmergeNodes()
+    restoreDismissNodes()
     for (const t of scaleRevertTimersRef.current) clearTimeout(t)
     scaleRevertTimersRef.current = []
     // Restore colors changed by permanent color effects
@@ -265,6 +276,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         colorBackups: flowColorBackupsRef.current,
         brokenElements: brokenNodeElementsRef.current,
         emergeHidden: emergeHiddenElementsRef.current,
+        dismissHidden: dismissHiddenElementsRef.current,
         scaleTimers: scaleRevertTimersRef.current,
         textFormatTimers: flowTextFormatTimersRef.current,
         textFormatBackups: flowTextFormatBackupsRef.current,
