@@ -577,6 +577,18 @@ export function FlowNodeConfigPanel({
                 onChange={(e) => updateNodeConfig('recordingHeight', Number(e.target.value))} />
             </label>
             <label className="fxeditor-field">
+              <span>Frame Rate</span>
+              <select
+                value={(selectedNode.config.fps as number) ?? 30}
+                onChange={(e) => updateNodeConfig('fps', Number(e.target.value))}
+              >
+                <option value={24}>24 fps (cinematic)</option>
+                <option value={30}>30 fps (default)</option>
+                <option value={60}>60 fps (smooth)</option>
+                <option value={120}>120 fps</option>
+              </select>
+            </label>
+            <label className="fxeditor-field">
               <span>Codec</span>
               <select
                 value={(selectedNode.config.codec as string) ?? 'vp9'}

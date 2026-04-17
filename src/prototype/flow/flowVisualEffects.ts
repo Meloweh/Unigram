@@ -634,6 +634,7 @@ export function handleRecord(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: 
   const recWidth = (gNode.config.recordingWidth as number) || undefined
   const recHeight = (gNode.config.recordingHeight as number) || undefined
   const videoBitrateMbps = (gNode.config.videoBitrateMbps as number) || 32
+  const fps = (gNode.config.fps as number) || 30
   const codecPref = (gNode.config.codec as string) ?? 'vp9'
   const mimeTypes: Record<string, string[]> = {
     vp9: ['video/webm;codecs=vp09.00.10.08', 'video/webm;codecs=vp9', 'video/webm'],
@@ -652,6 +653,7 @@ export function handleRecord(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: 
         video: {
           width: { ideal: recWidth },
           height: { ideal: recHeight },
+          frameRate: { ideal: fps },
         },
         audio: true,
         // @ts-expect-error -- preferCurrentTab is a newer Chrome API
