@@ -882,6 +882,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
           flowCameraFadeoutRef.current = null
           restoreBrokenNodes()
           restoreEmergeNodes()
+          restoreDismissNodes()
           // Restore colors changed by permanent color effects
           for (const { el, bg } of flowColorBackupsRef.current) {
             el.style.transition = 'background 400ms ease'

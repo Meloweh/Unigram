@@ -81,12 +81,93 @@ export function SceneNode({
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream)
+      // Request raw mic input — disable browser-level processing so our chain handles it
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      })
+
+      // Build a Web Audio processing chain for quality enhancement
+      const audioCtx = new AudioContext()
+      const source = audioCtx.createMediaStreamSource(stream)
+
+      // --- Plosive / pop protection (2-cascaded highpass at 100 Hz → 24 dB/oct) ---
+      const hp1 = audioCtx.createBiquadFilter()
+      hp1.type = 'highpass'; hp1.frequency.value = 100; hp1.Q.value = 0.7
+      const hp2 = audioCtx.createBiquadFilter()
+      hp2.type = 'highpass'; hp2.frequency.value = 100; hp2.Q.value = 0.7
+
+      // Low-pass filter: cut high-frequency noise above 15 kHz
+      const lowpass = audioCtx.createBiquadFilter()
+      lowpass.type = 'lowpass'
+      lowpass.frequency.value = 15000
+      lowpass.Q.value = 0.7
+
+      // --- De-esser: targeted narrow notches at sibilant frequencies ---
+      // These stay in a single signal path (no crossover → no phase cancellation)
+      const deess1 = audioCtx.createBiquadFilter()
+      deess1.type = 'peaking'; deess1.frequency.value = 5500; deess1.Q.value = 3.0; deess1.gain.value = -7
+      const deess2 = audioCtx.createBiquadFilter()
+      deess2.type = 'peaking'; deess2.frequency.value = 7000; deess2.Q.value = 3.0; deess2.gain.value = -7
+      const deess3 = audioCtx.createBiquadFilter()
+      deess3.type = 'peaking'; deess3.frequency.value = 8500; deess3.Q.value = 2.5; deess3.gain.value = -5
+      // Gentle shelf rolloff above 9 kHz for remaining sibilant tail
+      const deessShelf = audioCtx.createBiquadFilter()
+      deessShelf.type = 'highshelf'; deessShelf.frequency.value = 9000; deessShelf.gain.value = -4
+
+      // Mouth sound reduction: attenuate clicks/smacks/lip noise in the 1–4 kHz range
+      const declick = audioCtx.createBiquadFilter()
+      declick.type = 'peaking'
+      declick.frequency.value = 2500
+      declick.Q.value = 1.0
+      declick.gain.value = -3
+
+      // Main compressor: tame spikes and even out dynamics
+      const compressor = audioCtx.createDynamicsCompressor()
+      compressor.threshold.value = -24
+      compressor.knee.value = 12
+      compressor.ratio.value = 4
+      compressor.attack.value = 0.003
+      compressor.release.value = 0.15
+
+      // Brick-wall limiter: catch any remaining transient spikes (blows, pops)
+      const limiter = audioCtx.createDynamicsCompressor()
+      limiter.threshold.value = -3
+      limiter.knee.value = 0
+      limiter.ratio.value = 20
+      limiter.attack.value = 0.001
+      limiter.release.value = 0.05
+
+      // Makeup gain to restore volume after compression
+      const makeupGain = audioCtx.createGain()
+      makeupGain.gain.value = 1.4
+
+      // Wire chain (single path, no splits):
+      // source → hp1 → hp2 → lowpass → deess1 → deess2 → deess3 → deessShelf → declick → compressor → limiter → gain → dest
+      source.connect(hp1)
+      hp1.connect(hp2)
+      hp2.connect(lowpass)
+      lowpass.connect(deess1)
+      deess1.connect(deess2)
+      deess2.connect(deess3)
+      deess3.connect(deessShelf)
+      deessShelf.connect(declick)
+      declick.connect(compressor)
+      compressor.connect(limiter)
+      limiter.connect(makeupGain)
+
+      const dest = audioCtx.createMediaStreamDestination()
+      makeupGain.connect(dest)
+
+      const recorder = new MediaRecorder(dest.stream)
       const chunks: BlobPart[] = []
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
       recorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
+        audioCtx.close()
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
         const reader = new FileReader()
         reader.onload = () => {

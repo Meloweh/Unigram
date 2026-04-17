@@ -450,8 +450,9 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
 
     // If font size changes with rescale, measure target size synchronously
     // by temporarily applying font-size without transition
-    const pad = 32 + 4
-    const vPad = 28 + 4
+    const artCS = getComputedStyle(article)
+    const pad = parseFloat(artCS.paddingLeft) + parseFloat(artCS.paddingRight) + 4
+    const vPad = parseFloat(artCS.paddingTop) + parseFloat(artCS.paddingBottom) + 4
     let targetW = 0
     let targetH = 0
     if (fmtFontSize > 0 && rescaleDur > 0) {
@@ -887,8 +888,9 @@ export function handleTextGenerator(ctx: FlowEffectCtx, gNode: EffectGraphNode, 
     // Wrapper for resize animation
     const wrapper = (article.parentElement?.style.position === 'absolute' || article.parentElement?.style.position === 'fixed')
       ? article.parentElement : article
-    const pad = 32 + 4
-    const vPad = 28 + 4
+    const artCS = getComputedStyle(article)
+    const pad = parseFloat(artCS.paddingLeft) + parseFloat(artCS.paddingRight) + 4
+    const vPad = parseFloat(artCS.paddingTop) + parseFloat(artCS.paddingBottom) + 4
 
     // Back up wrapper sizing for cleanup
     if (wrapper) {
