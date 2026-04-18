@@ -137,7 +137,7 @@ function defaultConfig(kind: FlowEffectKind): Record<string, unknown> {
     case 'break': return { axis: 'horizontal', shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600 }
     case 'expand': return { durationMs: 300 }
     case 'collapse': return { durationMs: 300 }
-    case 'record': return { captureMode: 'tab', hideCursor: true, recordingWidth: 1920, recordingHeight: 1080, videoBitrateMbps: 32, codec: 'vp9', fps: 30 }
+    case 'record': return { recordMode: 'browser', captureMode: 'tab', hideCursor: true, recordingWidth: 1920, recordingHeight: 1080, videoBitrateMbps: 32, codec: 'vp9', fps: 30, obsHost: 'localhost', obsPort: 4455, obsPassword: '' }
     case 'jitter': return { intensity: 4, durationMs: 1000, keepPlaying: false }
     case 'float': return { amplitude: 6, speed: 1, durationMs: 3000, keepPlaying: false }
     case 'spawn-circular': return { spawnCircularItems: [], distance: 120, delayBetweenMs: 200 }

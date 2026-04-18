@@ -542,19 +542,59 @@ export function FlowNodeConfigPanel({
               Records a video of the flow playback. Hides UI chrome, starts recording, then downloads the .webm when the flow finishes or is stopped.
             </div>
             <label className="fxeditor-field">
-              <span>Capture Mode</span>
+              <span>Record Mode</span>
               <select
-                value={(selectedNode.config.captureMode as string) ?? 'tab'}
-                onChange={(e) => updateNodeConfig('captureMode', e.target.value)}
+                value={(selectedNode.config.recordMode as string) ?? 'browser'}
+                onChange={(e) => updateNodeConfig('recordMode', e.target.value)}
               >
-                <option value="tab">Browser Tab</option>
-                <option value="viewport">Viewport Only (Chrome)</option>
+                <option value="browser">Browser (built-in)</option>
+                <option value="obs">OBS Studio (WebSocket)</option>
               </select>
             </label>
-            {(selectedNode.config.captureMode as string) === 'viewport' && (
-              <div className="fxeditor-field-hint" style={{ color: '#f59e0b', fontSize: '0.75rem' }}>
-                Viewport-only capture uses the CropTarget API, supported in Chrome 104+ only. Other browsers will fall back to full tab capture.
-              </div>
+            {(selectedNode.config.recordMode as string) === 'obs' && (
+              <>
+                <div className="fxeditor-field-hint" style={{ color: '#38bdf8', fontSize: '0.75rem' }}>
+                  Controls OBS via its WebSocket server. Enable it in OBS → Tools → WebSocket Server Settings. Recording settings (codec, resolution, fps) are configured in OBS itself.
+                </div>
+                <label className="fxeditor-field">
+                  <span>OBS Host</span>
+                  <input type="text"
+                    value={(selectedNode.config.obsHost as string) ?? 'localhost'}
+                    onChange={(e) => updateNodeConfig('obsHost', e.target.value)} />
+                </label>
+                <label className="fxeditor-field">
+                  <span>OBS Port</span>
+                  <input type="number" min={1} max={65535}
+                    value={(selectedNode.config.obsPort as number) ?? 4455}
+                    onChange={(e) => updateNodeConfig('obsPort', Number(e.target.value))} />
+                </label>
+                <label className="fxeditor-field">
+                  <span>OBS Password</span>
+                  <input type="password"
+                    value={(selectedNode.config.obsPassword as string) ?? ''}
+                    placeholder="(leave empty if none)"
+                    onChange={(e) => updateNodeConfig('obsPassword', e.target.value)} />
+                </label>
+              </>
+            )}
+            {(selectedNode.config.recordMode as string) !== 'obs' && (
+              <>
+                <label className="fxeditor-field">
+                  <span>Capture Mode</span>
+                  <select
+                    value={(selectedNode.config.captureMode as string) ?? 'tab'}
+                    onChange={(e) => updateNodeConfig('captureMode', e.target.value)}
+                  >
+                    <option value="tab">Browser Tab</option>
+                    <option value="viewport">Viewport Only (Chrome)</option>
+                  </select>
+                </label>
+                {(selectedNode.config.captureMode as string) === 'viewport' && (
+                  <div className="fxeditor-field-hint" style={{ color: '#f59e0b', fontSize: '0.75rem' }}>
+                    Viewport-only capture uses the CropTarget API, supported in Chrome 104+ only. Other browsers will fall back to full tab capture.
+                  </div>
+                )}
+              </>
             )}
             <label className="fxeditor-checkbox">
               <input
@@ -564,55 +604,59 @@ export function FlowNodeConfigPanel({
               />
               <span>Hide cursor during recording</span>
             </label>
-            <label className="fxeditor-field">
-              <span>Recording Width (px)</span>
-              <input type="number" min={320} max={7680} step={10}
-                value={(selectedNode.config.recordingWidth as number) ?? 1920}
-                onChange={(e) => updateNodeConfig('recordingWidth', Number(e.target.value))} />
-            </label>
-            <label className="fxeditor-field">
-              <span>Recording Height (px)</span>
-              <input type="number" min={240} max={4320} step={10}
-                value={(selectedNode.config.recordingHeight as number) ?? 1080}
-                onChange={(e) => updateNodeConfig('recordingHeight', Number(e.target.value))} />
-            </label>
-            <label className="fxeditor-field">
-              <span>Frame Rate</span>
-              <select
-                value={(selectedNode.config.fps as number) ?? 30}
-                onChange={(e) => updateNodeConfig('fps', Number(e.target.value))}
-              >
-                <option value={24}>24 fps (cinematic)</option>
-                <option value={30}>30 fps (default)</option>
-                <option value={60}>60 fps (smooth)</option>
-                <option value={120}>120 fps</option>
-              </select>
-            </label>
-            <label className="fxeditor-field">
-              <span>Codec</span>
-              <select
-                value={(selectedNode.config.codec as string) ?? 'vp9'}
-                onChange={(e) => updateNodeConfig('codec', e.target.value)}
-              >
-                <option value="vp9">VP9 (recommended)</option>
-                <option value="vp8">VP8 (smaller files)</option>
-                <option value="h264">H.264 (wide compat)</option>
-              </select>
-            </label>
-            <label className="fxeditor-field">
-              <span>Video Bitrate</span>
-              <select
-                value={(selectedNode.config.videoBitrateMbps as number) ?? 32}
-                onChange={(e) => updateNodeConfig('videoBitrateMbps', Number(e.target.value))}
-              >
-                <option value={8}>8 Mbps</option>
-                <option value={16}>16 Mbps</option>
-                <option value={32}>32 Mbps (default)</option>
-                <option value={64}>64 Mbps</option>
-                <option value={100}>100 Mbps</option>
-                <option value={200}>200 Mbps (near lossless)</option>
-              </select>
-            </label>
+            {(selectedNode.config.recordMode as string) !== 'obs' && (
+              <>
+                <label className="fxeditor-field">
+                  <span>Recording Width (px)</span>
+                  <input type="number" min={320} max={7680} step={10}
+                    value={(selectedNode.config.recordingWidth as number) ?? 1920}
+                    onChange={(e) => updateNodeConfig('recordingWidth', Number(e.target.value))} />
+                </label>
+                <label className="fxeditor-field">
+                  <span>Recording Height (px)</span>
+                  <input type="number" min={240} max={4320} step={10}
+                    value={(selectedNode.config.recordingHeight as number) ?? 1080}
+                    onChange={(e) => updateNodeConfig('recordingHeight', Number(e.target.value))} />
+                </label>
+                <label className="fxeditor-field">
+                  <span>Frame Rate</span>
+                  <select
+                    value={(selectedNode.config.fps as number) ?? 30}
+                    onChange={(e) => updateNodeConfig('fps', Number(e.target.value))}
+                  >
+                    <option value={24}>24 fps (cinematic)</option>
+                    <option value={30}>30 fps (default)</option>
+                    <option value={60}>60 fps (smooth)</option>
+                    <option value={120}>120 fps</option>
+                  </select>
+                </label>
+                <label className="fxeditor-field">
+                  <span>Codec</span>
+                  <select
+                    value={(selectedNode.config.codec as string) ?? 'vp9'}
+                    onChange={(e) => updateNodeConfig('codec', e.target.value)}
+                  >
+                    <option value="vp9">VP9 (recommended)</option>
+                    <option value="vp8">VP8 (smaller files)</option>
+                    <option value="h264">H.264 (wide compat)</option>
+                  </select>
+                </label>
+                <label className="fxeditor-field">
+                  <span>Video Bitrate</span>
+                  <select
+                    value={(selectedNode.config.videoBitrateMbps as number) ?? 32}
+                    onChange={(e) => updateNodeConfig('videoBitrateMbps', Number(e.target.value))}
+                  >
+                    <option value={8}>8 Mbps</option>
+                    <option value={16}>16 Mbps</option>
+                    <option value={32}>32 Mbps (default)</option>
+                    <option value={64}>64 Mbps</option>
+                    <option value={100}>100 Mbps</option>
+                    <option value={200}>200 Mbps (near lossless)</option>
+                  </select>
+                </label>
+              </>
+            )}
           </>
         )}
         {selectedNode.kind === 'jitter' && (

@@ -49,6 +49,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const flowRecorderRef = useRef<MediaRecorder | null>(null)
   const flowRecordChunksRef = useRef<BlobPart[]>([])
   const flowRecordStreamRef = useRef<MediaStream | null>(null)
+  const obsWsRef = useRef<import('./obsWebSocket').OBSConnection | null>(null)
 
   // ---- Flow effect editor state ----
   const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
@@ -228,6 +229,15 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       setHideToolbar(false)
       document.documentElement.style.cursor = ''
     }
+    // Stop OBS recording if active
+    if (obsWsRef.current) {
+      obsWsRef.current.request('StopRecord').catch(() => {})
+      obsWsRef.current.close()
+      obsWsRef.current = null
+      setForceCollapseSidebars(false)
+      setHideToolbar(false)
+      document.documentElement.style.cursor = ''
+    }
   }, [])
 
   const stopFlowAnimationRef = useRef(stopFlowAnimation)
@@ -312,6 +322,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       flowRecorderRef,
       flowRecordChunksRef,
       flowRecordStreamRef,
+      obsWsRef,
       viewportRef: depsRef.current.viewportRef,
       startFlowAnimationRef,
     }
@@ -875,6 +886,14 @@ export function useFlowEngine(deps: FlowEngineDeps) {
               flowRecordStreamRef.current.getTracks().forEach(t => t.stop())
               flowRecordStreamRef.current = null
             }
+            setForceCollapseSidebars(false)
+            setHideToolbar(false)
+          }
+          // Stop OBS recording if active
+          if (obsWsRef.current) {
+            obsWsRef.current.request('StopRecord').catch(() => {})
+            obsWsRef.current.close()
+            obsWsRef.current = null
             setForceCollapseSidebars(false)
             setHideToolbar(false)
           }

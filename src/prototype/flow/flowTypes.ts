@@ -1,5 +1,6 @@
 import type { MutableRefObject, Dispatch, SetStateAction, RefObject } from 'react'
 import type { Model, ModelNode, ModelConnection, EffectGraphNode } from '../model/sampleModels'
+import type { OBSConnection } from './obsWebSocket'
 
 export type FlowTask =
   | { id: string; kind: 'node'; nodeId: string; durationMs: number; dependsOn: string[]; startTime: number }
@@ -88,6 +89,7 @@ export interface FlowEffectCtx {
   flowRecorderRef: MutableRefObject<MediaRecorder | null>
   flowRecordChunksRef: MutableRefObject<BlobPart[]>
   flowRecordStreamRef: MutableRefObject<MediaStream | null>
+  obsWsRef: MutableRefObject<OBSConnection | null>
   viewportRef: RefObject<HTMLDivElement | null>
   // Recursive call
   startFlowAnimationRef: RefObject<(nodeId: string) => void>

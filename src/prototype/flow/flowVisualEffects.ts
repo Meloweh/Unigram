@@ -2,6 +2,7 @@ import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx, TextFormatOrigStyles } from './flowTypes'
 import { playGenSound } from './textGeneratorSounds'
 import type { TextGenSoundPreset } from './textGeneratorSounds'
+import { connectOBS } from './obsWebSocket'
 
 // Visual effect handlers: spawn-circular, emerge, scale, text-format, record, and no-op kinds.
 // Each handler returns the layerMaxDuration contribution for that effect.
@@ -629,6 +630,7 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
 }
 
 export function handleRecord(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
+  const recordMode = (gNode.config.recordMode as string) ?? 'browser'
   const captureMode = (gNode.config.captureMode as string) ?? 'tab'
   const hideCursor = gNode.config.hideCursor !== false
   const recWidth = (gNode.config.recordingWidth as number) || undefined
@@ -636,17 +638,44 @@ export function handleRecord(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: 
   const videoBitrateMbps = (gNode.config.videoBitrateMbps as number) || 32
   const fps = (gNode.config.fps as number) || 30
   const codecPref = (gNode.config.codec as string) ?? 'vp9'
+  const capturedNodeId = ctx.nodeId
+
+  // Collapse sidebars and hide toolbar before recording starts
+  ctx.setForceCollapseSidebars(true)
+  ctx.setHideToolbar(true)
+  if (hideCursor) document.documentElement.style.cursor = 'none'
+
+  if (recordMode === 'obs') {
+    // ---- OBS WebSocket mode ----
+    const obsHost = (gNode.config.obsHost as string) || 'localhost'
+    const obsPort = (gNode.config.obsPort as number) || 4455
+    const obsPassword = (gNode.config.obsPassword as string) || ''
+
+    ctx.scheduleEffect(async () => {
+      try {
+        const conn = await connectOBS(obsHost, obsPort, obsPassword)
+        ctx.obsWsRef.current = conn
+        await conn.request('StartRecord')
+        ctx.cleanup.mediaDone.add(capturedNodeId)
+      } catch (err) {
+        // Connection or auth failed — restore UI and let flow proceed
+        console.error('OBS recording failed:', err)
+        document.documentElement.style.cursor = ''
+        ctx.setForceCollapseSidebars(false)
+        ctx.setHideToolbar(false)
+        ctx.cleanup.mediaDone.add(capturedNodeId)
+      }
+    }, delay + 400)
+    return 600000
+  }
+
+  // ---- Browser recording mode ----
   const mimeTypes: Record<string, string[]> = {
     vp9: ['video/webm;codecs=vp09.00.10.08', 'video/webm;codecs=vp9', 'video/webm'],
     vp8: ['video/webm;codecs=vp8', 'video/webm'],
     h264: ['video/mp4;codecs=avc1.640034', 'video/webm;codecs=h264', 'video/webm'],
   }
   const chosenMime = (mimeTypes[codecPref] ?? mimeTypes.vp9).find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm'
-  const capturedNodeId = ctx.nodeId
-  // Collapse sidebars and hide toolbar before recording starts
-  ctx.setForceCollapseSidebars(true)
-  ctx.setHideToolbar(true)
-  if (hideCursor) document.documentElement.style.cursor = 'none'
   ctx.scheduleEffect(async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
