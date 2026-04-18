@@ -197,7 +197,8 @@ export function computeEdgeAnchors(
   posOf: (n: ModelNode) => { x: number; y: number },
   nodeSizes?: Map<string, { w: number; h: number }>,
 ): Record<string, Anchor> {
-  const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const nodeMap = new Map<string, ModelNode>()
+  for (const n of nodes) nodeMap.set(n.id, n)
   const sizeOf = (n: ModelNode) => nodeSizes?.get(n.id) ?? estimateNodePx(n.label)
 
   // Per-endpoint info for grouping by (node, edge)
@@ -265,15 +266,17 @@ export function computeEdgeAnchors(
       return (adx * tangentX + ady * tangentY) - (bdx * tangentX + bdy * tangentY)
     })
 
-    // Assign slot positions
+    // Assign slot positions — return primitives to avoid allocating { x, y } objects
     const n = eps.length
-    function slotPos(idx: number): { x: number; y: number } {
+    const edgeFixedX = edge === 'left' ? np.x - hw : np.x + hw
+    const edgeFixedY = edge === 'top' ? np.y - hh : np.y + hh
+    function slotX(idx: number): number {
       const t = (idx + 1) / (n + 1)
-      if (horiz) {
-        return { x: np.x - hw + t * 2 * hw, y: edge === 'top' ? np.y - hh : np.y + hh }
-      } else {
-        return { x: edge === 'left' ? np.x - hw : np.x + hw, y: np.y - hh + t * 2 * hh }
-      }
+      return horiz ? np.x - hw + t * 2 * hw : edgeFixedX
+    }
+    function slotY(idx: number): number {
+      const t = (idx + 1) / (n + 1)
+      return horiz ? edgeFixedY : np.y - hh + t * 2 * hh
     }
 
     // Bubble-sort pass: swap adjacent slots when their connection lines cross.
@@ -283,9 +286,8 @@ export function computeEdgeAnchors(
     while (swapped && maxPasses-- > 0) {
       swapped = false
       for (let i = 0; i < n - 1; i++) {
-        const sA = slotPos(i), sB = slotPos(i + 1)
         const pA = eps[i].otherCenter, pB = eps[i + 1].otherCenter
-        if (segmentsIntersect(sA.x, sA.y, pA.x, pA.y, sB.x, sB.y, pB.x, pB.y)) {
+        if (segmentsIntersect(slotX(i), slotY(i), pA.x, pA.y, slotX(i + 1), slotY(i + 1), pB.x, pB.y)) {
           const tmp = eps[i]
           eps[i] = eps[i + 1]
           eps[i + 1] = tmp
@@ -295,26 +297,28 @@ export function computeEdgeAnchors(
     }
 
     // Write final anchor positions (projected onto actual shape boundary)
+    const nodeShape = node.shape
+    const nodeCosmeticType = node.cosmeticType
+    const needShapeAdjust = !!(nodeCosmeticType || (nodeShape && nodeShape !== 'rectangle' && nodeShape !== 'rounded-rect'))
     for (let i = 0; i < n; i++) {
-      let sp = slotPos(i)
+      let spx = slotX(i), spy = slotY(i)
       const ep = eps[i]
       const a = result[ep.connKey]
       if (!a) continue
 
       // Adjust anchor to sit on shape boundary instead of bounding rect
-      const nodeShape = node.shape
-      const nodeCosmeticType = node.cosmeticType
-      if (nodeCosmeticType || (nodeShape && nodeShape !== 'rectangle' && nodeShape !== 'rounded-rect')) {
-        const dirX = sp.x - np.x
-        const dirY = sp.y - np.y
+      if (needShapeAdjust) {
+        const dirX = spx - np.x
+        const dirY = spy - np.y
         if (Math.abs(dirX) > 1e-9 || Math.abs(dirY) > 1e-9) {
           const pt = shapeEdgeIntersect(nodeShape, hw, hh, dirX, dirY, nodeCosmeticType)
-          sp = { x: np.x + pt.x, y: np.y + pt.y }
+          spx = np.x + pt.x
+          spy = np.y + pt.y
         }
       }
 
-      if (ep.isFrom) { a.fx = sp.x; a.fy = sp.y }
-      else            { a.tx = sp.x; a.ty = sp.y }
+      if (ep.isFrom) { a.fx = spx; a.fy = spy }
+      else            { a.tx = spx; a.ty = spy }
     }
   }
 

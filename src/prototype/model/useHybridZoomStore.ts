@@ -98,8 +98,8 @@ interface HybridZoomState {
   /** Snapshot current state for undo before an edit sequence */
   beginEditNode: (modelId: string) => void
   addNode: (modelId: string, node: ModelNode) => void
-  /** Batch-add nodes and connections without undo (used by benchmark) */
-  addNodeBatch: (modelId: string, nodes: ModelNode[], connections: ModelConnection[]) => void
+  /** Batch-add nodes and connections (optionally push undo in the same set()) */
+  addNodeBatch: (modelId: string, nodes: ModelNode[], connections: ModelConnection[], withUndo?: boolean) => void
   updateNodeLabel: (modelId: string, nodeId: string, label: string) => void
   updateNodeShape: (modelId: string, nodeId: string, shape: NodeShape) => void
   /** Update arbitrary visual properties on a node (with undo) */
@@ -440,13 +440,14 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     })
   },
 
-  addNodeBatch: (modelId, nodes, connections) => {
+  addNodeBatch: (modelId, nodes, connections, withUndo) => {
     set((state) => {
       const model = state.models[modelId]
       if (!model) return state
       const snap = state.gridSnap
       const existingConns = new Set(model.connections.map(c => `${c.from}->${c.to}`))
       return {
+        ...(withUndo ? pushUndo(state, modelId) : {}),
         models: {
           ...state.models,
           [modelId]: {

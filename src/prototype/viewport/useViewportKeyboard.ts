@@ -19,10 +19,12 @@ export interface ViewportKeyboardDeps {
   redo: (modelId: string) => void
   beginEditNode: (modelId: string) => void
   addNode: (modelId: string, node: Partial<ModelNode>) => void
+  addNodeBatch: (modelId: string, nodes: ModelNode[], connections: ModelConnection[]) => void
   addConnection: (modelId: string, conn: Partial<ModelConnection>) => void
   unzipPopup: UnzipPopupState | null
   setEditingNodeId: (id: string | null) => void
   clipboardRef: React.MutableRefObject<{ nodes: ModelNode[]; connections: ModelConnection[] } | null>
+  lastPasteRef: React.MutableRefObject<number>
 }
 
 export function useViewportKeyboard(deps: ViewportKeyboardDeps) {
@@ -30,8 +32,8 @@ export function useViewportKeyboard(deps: ViewportKeyboardDeps) {
     frameSelectedNodeId, frameModelId, editingNodeId,
     modelNodes, modelConnections, selectedNodeIds, setSelectedNodeIds,
     removeNode, removeConnection, clearSelection, closeUnzip,
-    undo, redo, beginEditNode, addNode, addConnection,
-    unzipPopup, setEditingNodeId, clipboardRef,
+    undo, redo, beginEditNode, addNode, addNodeBatch, addConnection,
+    unzipPopup, setEditingNodeId, clipboardRef, lastPasteRef,
   } = deps
 
   // ---- Keyboard shortcuts ----
@@ -75,34 +77,42 @@ export function useViewportKeyboard(deps: ViewportKeyboardDeps) {
         const clip = clipboardRef.current
         if (!clip || clip.nodes.length === 0) return
         e.preventDefault()
+        // Throttle paste to prevent crash from keyboard repeat (~30Hz)
+        const now = Date.now()
+        if (now - lastPasteRef.current < 100) return
+        lastPasteRef.current = now
         const idMap = new Map<string, string>()
         const pastedIds = new Set<string>()
         // Create new IDs and offset positions
         for (const node of clip.nodes) {
-          const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          const newId = `node-${now}-${Math.random().toString(36).slice(2, 6)}`
           idMap.set(node.id, newId)
           pastedIds.add(newId)
         }
-        beginEditNode(frameModelId) // push undo snapshot
+        const pastedNodes: ModelNode[] = []
         for (const node of clip.nodes) {
           const newId = idMap.get(node.id)!
-          addNode(frameModelId, {
-            ...node,
+          // Deep-clone to avoid shared mutable references (e.g. flowEffects)
+          const cloned: ModelNode = JSON.parse(JSON.stringify(node))
+          pastedNodes.push({
+            ...cloned,
             id: newId,
             x: snapToGrid(node.x + 4),
             y: snapToGrid(node.y + 4),
-            // Don't copy RMM/MPD references — those are specific to the source node
             childModelId: undefined,
             mpdIds: undefined,
           })
         }
+        const pastedConns: ModelConnection[] = []
         for (const conn of clip.connections) {
           const newFrom = idMap.get(conn.from)
           const newTo = idMap.get(conn.to)
           if (newFrom && newTo) {
-            addConnection(frameModelId, { from: newFrom, to: newTo, type: conn.type })
+            pastedConns.push({ ...conn, from: newFrom, to: newTo })
           }
         }
+        // Single set() call: push undo + add nodes (avoids separate beginEditNode)
+        addNodeBatch(frameModelId, pastedNodes, pastedConns, true)
         // Select the pasted nodes
         setSelectedNodeIds(pastedIds)
         clearSelection() // clear single-select

@@ -1,13 +1,87 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState, memo } from 'react'
 import { type Model, type ModelNode, type ConnectionType } from '../model/sampleModels'
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { resolvePalette } from '../theme/themes'
-import { computeEdgeAnchors } from './edgeAnchoring'
+import { computeEdgeAnchors, type Anchor } from './edgeAnchoring'
 import { SCENE_W, SCENE_H, LOD_FULL, LOD_SIMPLE } from './sceneConstants'
 import { SceneNode } from './SceneNode'
 import { ConnectionLine } from './ConnectionLine'
 import { SimplifiedNode } from './SimplifiedNode'
 import { buildNodeMap } from './spatialIndex'
+
+/* ---- Memoized single-connection group ---- */
+const MemoConnection = memo(function MemoConnection({
+  connKey, anchor, hasEvidence, connectionType, flowProgress, emergeT,
+  gapT, vpSize, popupSize, connectionAngle,
+  strokeColor, strokeWidth: customStrokeWidth, strokeDash, arrowStyle, label, labelFontSize,
+}: {
+  connKey: string
+  anchor: Anchor
+  hasEvidence: boolean
+  connectionType?: ConnectionType
+  flowProgress?: number
+  emergeT?: number
+  gapT: number
+  vpSize: { w: number; h: number }
+  popupSize: { w: number; h: number } | null
+  connectionAngle: number
+  strokeColor?: string
+  strokeWidth?: number
+  strokeDash?: import('../model/sampleModels').ConnectionDashStyle
+  arrowStyle?: import('../model/sampleModels').ConnectionArrowStyle
+  label?: string
+  labelFontSize?: number
+}) {
+  const a = anchor
+  const effToX = emergeT != null ? a.fx + (a.tx - a.fx) * emergeT : a.tx
+  const effToY = emergeT != null ? a.fy + (a.ty - a.fy) * emergeT : a.ty
+  const midX = (a.fx + a.tx) / 2
+  const midY = (a.fy + a.ty) / 2
+  const isFlow = connectionType === 'flow'
+  const baseStrokeWidth = customStrokeWidth ?? (isFlow ? 3 : 2)
+  const emergeStrokeWidth = emergeT != null ? baseStrokeWidth * emergeT : undefined
+  const isUnzipping = gapT > 0
+
+  return (
+    <g>
+      <line
+        x1={`${a.fx}%`} y1={`${a.fy}%`}
+        x2={`${effToX}%`} y2={`${effToY}%`}
+        className="connection-hit-area"
+        data-conn-key={connKey}
+        data-mid-x={midX}
+        data-mid-y={midY}
+      />
+      <ConnectionLine
+        fromX={a.fx} fromY={a.fy}
+        toX={effToX} toY={effToY}
+        hasEvidence={hasEvidence}
+        connectionType={connectionType}
+        flowProgress={flowProgress}
+        gapProgress={gapT}
+        vpSize={vpSize}
+        popupSize={popupSize}
+        connectionAngle={connectionAngle}
+        strokeColor={strokeColor}
+        strokeWidth={emergeStrokeWidth ?? customStrokeWidth}
+        strokeDash={strokeDash}
+        arrowStyle={arrowStyle}
+      />
+      {label && !isUnzipping && (
+        <text
+          x={`${midX}%`}
+          y={`${midY}%`}
+          className="connection-label"
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{ fontSize: `${labelFontSize ?? 0.85}rem` }}
+        >
+          {label}
+        </text>
+      )}
+    </g>
+  )
+})
 
 /** Renders all nodes and connections for a model */
 export function ModelSceneContent({
@@ -85,6 +159,7 @@ export function ModelSceneContent({
   }
   const frozenSizes = !!initialNodeSizes
   const [sizeGen, setSizeGen] = useState(0)
+  const pendingSizeFlush = useRef(false)
   const onNodeSizesChangedRef = useRef(onNodeSizesChanged)
   onNodeSizesChangedRef.current = onNodeSizesChanged
   const handleNodeResize = useCallback((id: string, size: { w: number; h: number }) => {
@@ -93,8 +168,15 @@ export function ModelSceneContent({
     const prev = map.get(id)
     if (!prev || prev.w !== size.w || prev.h !== size.h) {
       map.set(id, size)
-      setSizeGen(g => g + 1)
       onNodeSizesChangedRef.current?.(map)
+      // Debounce to one anchor recomputation per frame
+      if (!pendingSizeFlush.current) {
+        pendingSizeFlush.current = true
+        requestAnimationFrame(() => {
+          pendingSizeFlush.current = false
+          setSizeGen(g => g + 1)
+        })
+      }
     }
   }, [frozenSizes])
 
@@ -146,12 +228,8 @@ export function ModelSceneContent({
     return offsets
   }, [model, unzipGap])
 
-  const pos = (node: ModelNode) => {
-    const off = spreadOffsets[node.id]
-    return off
-      ? { x: node.x + off.dx, y: node.y + off.dy }
-      : { x: node.x, y: node.y }
-  }
+  // Reuse memoized positionMap entries instead of allocating new { x, y } per call
+  const pos = (node: ModelNode) => positionMap.get(node.id) ?? { x: node.x, y: node.y }
 
   // Memoized position map — avoids creating new { x, y } objects on every render
   const positionMap = useMemo(() => {
@@ -226,9 +304,20 @@ export function ModelSceneContent({
     return markers
   }, [model.connections])
 
+  // Event delegation for connection clicks — one handler instead of 900 closures
+  const handleSvgClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    const target = (e.target as SVGElement).closest<SVGElement>('[data-conn-key]')
+    if (!target) return
+    e.stopPropagation()
+    const key = target.dataset.connKey!
+    const midX = Number(target.dataset.midX)
+    const midY = Number(target.dataset.midY)
+    onClickConnection(key, midX, midY)
+  }, [onClickConnection])
+
   return (
     <>
-      <svg className="child-scene-connections">
+      <svg className="child-scene-connections" onClick={handleSvgClick}>
         <defs>
           <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
@@ -248,7 +337,6 @@ export function ModelSceneContent({
           const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
           if (c.hideDuringFlow && isFlowRunning) return null
           const key = `${c.from}->${c.to}`
-          const hasEvidence = !!c.evidence?.length
           const a = anchors[key]
           if (!a) return null
           // Viewport cull: skip if both anchor endpoints are outside the visible rect
@@ -257,55 +345,27 @@ export function ModelSceneContent({
             const txIn = a.tx >= visibleRect.minX && a.tx <= visibleRect.maxX && a.ty >= visibleRect.minY && a.ty <= visibleRect.maxY
             if (!fxIn && !txIn) return null
           }
-          const midX = (a.fx + a.tx) / 2
-          const midY = (a.fy + a.ty) / 2
           const isUnzipping = unzipGap?.connectionKey === key
-          const gapT = isUnzipping ? unzipGap.progress : 0
-          const emergeT = emergeAnimations.get(key)
-          const effToX = emergeT != null ? a.fx + (a.tx - a.fx) * emergeT : a.tx
-          const effToY = emergeT != null ? a.fy + (a.ty - a.fy) * emergeT : a.ty
-          const isFlow = c.type === 'flow'
-          const baseStrokeWidth = c.strokeWidth ?? (isFlow ? 3 : 2)
-          const emergeStrokeWidth = emergeT != null ? baseStrokeWidth * emergeT : undefined
           return (
-            <g key={key}>
-              <line
-                x1={`${a.fx}%`} y1={`${a.fy}%`}
-                x2={`${effToX}%`} y2={`${effToY}%`}
-                className="connection-hit-area"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onClickConnection(key, midX, midY)
-                }}
-              />
-              <ConnectionLine
-                fromX={a.fx} fromY={a.fy}
-                toX={effToX} toY={effToY}
-                hasEvidence={hasEvidence}
-                connectionType={c.type}
-                flowProgress={flowAnimations.get(key)}
-                gapProgress={gapT}
-                vpSize={vpSize}
-                popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
-                connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
-                strokeColor={c.strokeColor}
-                strokeWidth={emergeStrokeWidth ?? c.strokeWidth}
-                strokeDash={c.strokeDash}
-                arrowStyle={c.arrowStyle}
-              />
-              {c.label && !isUnzipping && (
-                <text
-                  x={`${midX}%`}
-                  y={`${midY}%`}
-                  className="connection-label"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  style={{ fontSize: `${c.labelFontSize ?? 0.85}rem` }}
-                >
-                  {c.label}
-                </text>
-              )}
-            </g>
+            <MemoConnection
+              key={key}
+              connKey={key}
+              anchor={a}
+              hasEvidence={!!c.evidence?.length}
+              connectionType={c.type}
+              flowProgress={flowAnimations.get(key)}
+              emergeT={emergeAnimations.get(key)}
+              gapT={isUnzipping ? unzipGap.progress : 0}
+              vpSize={vpSize}
+              popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
+              connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
+              strokeColor={c.strokeColor}
+              strokeWidth={c.strokeWidth}
+              strokeDash={c.strokeDash}
+              arrowStyle={c.arrowStyle}
+              label={c.label}
+              labelFontSize={c.labelFontSize}
+            />
           )
         })}
         {connectionDraft && (

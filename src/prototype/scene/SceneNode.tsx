@@ -430,7 +430,7 @@ export const SceneNode = memo(function SceneNode({
               ref={mediaRef as React.RefObject<HTMLVideoElement>}
               src={node.mediaSrc}
               controls={!isFlowRunning}
-              preload="metadata"
+              preload="none"
               draggable={false}
               onTimeUpdate={handleMediaTimeUpdate}
               onPointerDown={(e) => {

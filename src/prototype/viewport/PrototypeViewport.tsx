@@ -83,7 +83,29 @@ export function PrototypeViewport() {
   const freeScaleRef = useRef(frame.freeScale)
   freeScaleRef.current = frame.freeScale
 
-  // RAF-throttled panning — coalesces pointer moves to one store update per frame
+  // Ref for the scene div — used to apply pan transforms directly to the DOM
+  const sceneRef = useRef<HTMLDivElement>(null)
+  // Accumulated pan delta not yet committed to Zustand
+  const uncommittedPanRef = useRef({ dx: 0, dy: 0 })
+
+  // Flush uncommitted pan delta into the Zustand store (triggers one React re-render)
+  const flushPan = useCallback(() => {
+    // Drain any queued pointer deltas not yet processed by RAF
+    const { dx: qdx, dy: qdy } = queuedPanRef.current
+    if (qdx !== 0 || qdy !== 0) {
+      uncommittedPanRef.current.dx += qdx
+      uncommittedPanRef.current.dy += qdy
+      queuedPanRef.current.dx = 0
+      queuedPanRef.current.dy = 0
+    }
+    const { dx, dy } = uncommittedPanRef.current
+    if (dx !== 0 || dy !== 0) {
+      uncommittedPanRef.current = { dx: 0, dy: 0 }
+      panBy(dx, dy)
+    }
+  }, [panBy])
+
+  // RAF-throttled panning — applies CSS transform directly, bypasses React re-renders
   const panRafRef = useRef<number | null>(null)
   const queuedPanRef = useRef({ dx: 0, dy: 0 })
   const rafPanBy = useCallback((dx: number, dy: number) => {
@@ -93,14 +115,26 @@ export function PrototypeViewport() {
       panRafRef.current = requestAnimationFrame(() => {
         const { dx: qdx, dy: qdy } = queuedPanRef.current
         if (qdx !== 0 || qdy !== 0) {
-          panBy(qdx, qdy)
+          // Accumulate without touching Zustand
+          uncommittedPanRef.current.dx += qdx
+          uncommittedPanRef.current.dy += qdy
           queuedPanRef.current.dx = 0
           queuedPanRef.current.dy = 0
+          // Apply directly to DOM for zero-cost visual update
+          const el = sceneRef.current
+          if (el) {
+            const totalX = sceneTxRef.current + uncommittedPanRef.current.dx
+            const totalY = sceneTyRef.current + uncommittedPanRef.current.dy
+            const es = effectiveScaleRef.current
+            const rot = flowRotationRef.current
+            const rotStr = rot !== 0 ? ` rotate(${rot}deg)` : ''
+            el.style.transform = `translate(${totalX}px, ${totalY}px) scale(${es})${rotStr}`
+          }
         }
         panRafRef.current = null
       })
     }
-  }, [panBy])
+  }, [])
 
   // FPS counter — writes to DOM directly, never triggers re-render
   const fpsSpanRef = useRef<HTMLSpanElement>(null)
@@ -277,6 +311,12 @@ export function PrototypeViewport() {
     }
   }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap, flowRotation])
 
+  // Keep sceneTx/sceneTy in a ref so the RAF pan callback can build the correct transform
+  const sceneTxRef = useRef(sceneTx)
+  sceneTxRef.current = sceneTx
+  const sceneTyRef = useRef(sceneTy)
+  sceneTyRef.current = sceneTy
+
   // Compute visible scene rectangle (in 0-100% scene coordinates) for viewport culling
   const visibleRect = useMemo(() => {
     const BUFFER = 15 // percentage-point margin on each side
@@ -299,32 +339,13 @@ export function PrototypeViewport() {
     }
   }, [isChild, selectedNode?.childModelId, selectedNode?.id, frame.lastChildModelId, pushModel])
 
-  // Compute the centering offset currently applied for the selected node
-  // so we can bake it into panOffset when switching nodes (prevents visual jump)
-  const handleSelectNode = useCallback((nodeId: string) => {
-    const { currentFrame, getModel } = useHybridZoomStore.getState()
-    const f = currentFrame()
-    const m = getModel(f.modelId)
-    const selNode = f.selectedNodeId ? m?.nodes.find(n => n.id === f.selectedNodeId) : undefined
-    if (selNode && f.snapshot.nodeProgress > 0) {
-      const np = f.snapshot.nodeProgress
-      const cs = effectiveScaleRef.current
-      const vp = vpSizeRef.current
-      const residual = {
-        x: (vp.w / 2 - selNode.x / 100 * SCENE_W) * np * cs,
-        y: (vp.h / 2 - selNode.y / 100 * SCENE_H) * np * cs,
-      }
-      selectNode(nodeId, residual)
-    } else {
-      selectNode(nodeId)
-    }
-  }, [selectNode])
+  // handleSelectNode defined below useViewportDrag (needs setSelectedNodeIds)
 
   // ---- Drag, resize, selection, connection hooks ----
   const {
     clientToScene, draggingNodeRef, draggingNodeId, multiDragOffsetsRef,
     resizingRef, selectionRect, setSelectionRect, selectedNodeIds, setSelectedNodeIds,
-    selectionStartRef, justFinishedSelectionRef, clipboardRef,
+    selectionStartRef, justFinishedSelectionRef, clipboardRef, lastPasteRef,
     connectionDraft, setConnectionDraft, activeConnectionType, setActiveConnectionType,
     handleNodeDragStart, handleNodeDragMove, handleNodeDragEnd,
     handleResizeDragStart, handleResizeDragMove, handleResizeDragEnd,
@@ -351,6 +372,29 @@ export function PrototypeViewport() {
     setFreeScale,
     setPanOffset,
   })
+
+  // Compute the centering offset currently applied for the selected node
+  // so we can bake it into panOffset when switching nodes (prevents visual jump)
+  const handleSelectNode = useCallback((nodeId: string) => {
+    // Clear multi-selection when clicking a single node
+    setSelectedNodeIds(new Set())
+    const { currentFrame, getModel } = useHybridZoomStore.getState()
+    const f = currentFrame()
+    const m = getModel(f.modelId)
+    const selNode = f.selectedNodeId ? m?.nodes.find(n => n.id === f.selectedNodeId) : undefined
+    if (selNode && f.snapshot.nodeProgress > 0) {
+      const np = f.snapshot.nodeProgress
+      const cs = effectiveScaleRef.current
+      const vp = vpSizeRef.current
+      const residual = {
+        x: (vp.w / 2 - selNode.x / 100 * SCENE_W) * np * cs,
+        y: (vp.h / 2 - selNode.y / 100 * SCENE_H) * np * cs,
+      }
+      selectNode(nodeId, residual)
+    } else {
+      selectNode(nodeId)
+    }
+  }, [selectNode, setSelectedNodeIds])
 
   // MPD curtain transition
   const { mpdCurtain, particleContainerRef, liveNodeSizesRef, handleMpdSelect } = useMpdCurtain({
@@ -422,10 +466,12 @@ export function PrototypeViewport() {
     redo,
     beginEditNode,
     addNode,
+    addNodeBatch,
     addConnection,
     unzipPopup,
     setEditingNodeId,
     clipboardRef,
+    lastPasteRef,
   })
 
   const handleSave = useCallback(async () => {
@@ -597,6 +643,7 @@ export function PrototypeViewport() {
           }
           setSelectedNodeIds(ids)
           setSelectionRect(null)
+          clearSelection() // clear single-node selection
           justFinishedSelectionRef.current = true
           return
         }
@@ -608,6 +655,7 @@ export function PrototypeViewport() {
           handleConnectionDragEnd(event)
           return
         }
+        flushPan()
         endDrag()
         lastPointer.current = null
         pause()
@@ -620,6 +668,7 @@ export function PrototypeViewport() {
         }
         handleNodeDragEnd()
         setConnectionDraft(null)
+        flushPan()
         endDrag()
         lastPointer.current = null
       }}
@@ -795,6 +844,7 @@ export function PrototypeViewport() {
         />
       )}
       <div
+        ref={sceneRef}
         className="scene"
         style={{
           ...sceneStyle,
