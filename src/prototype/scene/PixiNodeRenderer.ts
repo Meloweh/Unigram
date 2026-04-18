@@ -409,6 +409,16 @@ export function hitTestPixiNode(scenePxX: number, scenePxY: number): string | nu
   return hitId
 }
 
+// ─── Viewport culling — called from PixiJS ticker ─────────────────────
+
+export function cullFullNodes(minPx: number, maxPx: number, minPy: number, maxPy: number) {
+  for (const [, entry] of pool.entries()) {
+    const cx = entry.container.x + entry.effectiveW / 2
+    const cy = entry.container.y + entry.effectiveH / 2
+    entry.container.visible = cx >= minPx && cx <= maxPx && cy >= minPy && cy <= maxPy
+  }
+}
+
 // ─── Cleanup ──────────────────────────────────────────────────────────
 
 export function destroyAllFullNodes() {

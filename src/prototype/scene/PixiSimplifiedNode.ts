@@ -125,6 +125,14 @@ export function syncSimplifiedNodes(
   }
 }
 
+export function cullSimplifiedNodes(minPx: number, maxPx: number, minPy: number, maxPy: number) {
+  for (const [, entry] of pool.entries()) {
+    const cx = entry.container.x + (entry.lastW / 2)
+    const cy = entry.container.y + (entry.lastH / 2)
+    entry.container.visible = cx >= minPx && cx <= maxPx && cy >= minPy && cy <= maxPy
+  }
+}
+
 export function destroyAllSimplifiedNodes() {
   for (const [id, entry] of pool.entries()) {
     entry.container.destroy({ children: true })

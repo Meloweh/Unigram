@@ -24,6 +24,7 @@ import { useAutoUntangle } from './useAutoUntangle'
 import { useUnzipAnim } from '../ui/useUnzipAnim'
 import { useViewportDrag } from './useViewportDrag'
 import { hitTestPixiNode } from '../scene/PixiNodeRenderer'
+import { setPixiVisibleRect } from '../scene/pixiViewportState'
 import { EditorToolbar } from '../ui/EditorToolbar'
 import { useMpdLogic } from '../mpd/useMpdLogic'
 import { useMpdCurtain } from '../mpd/useMpdCurtain'
@@ -286,12 +287,15 @@ export function PrototypeViewport() {
     const maxSx = (vpSize.w / 2 - sceneTx) / effectiveScale + vpSize.w / 2
     const minSy = (-vpSize.h / 2 - sceneTy) / effectiveScale + vpSize.h / 2
     const maxSy = (vpSize.h / 2 - sceneTy) / effectiveScale + vpSize.h / 2
-    return {
+    const rect = {
       minX: minSx / SCENE_W * 100 - BUFFER,
       maxX: maxSx / SCENE_W * 100 + BUFFER,
       minY: minSy / SCENE_H * 100 - BUFFER,
       maxY: maxSy / SCENE_H * 100 + BUFFER,
     }
+    // Write to module-level state for PixiJS ticker culling
+    setPixiVisibleRect(rect)
+    return rect
   }, [sceneTx, sceneTy, effectiveScale, vpSize.w, vpSize.h])
 
   // At handoff, push into child model (prefer lastChildModelId to preserve MPD switch)

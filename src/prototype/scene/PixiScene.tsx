@@ -11,7 +11,11 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Application, Container } from 'pixi.js'
 import { pixiLayers } from './pixiLayers'
-import { tickNodeAnimations } from './PixiNodeRenderer'
+import { tickNodeAnimations, cullFullNodes } from './PixiNodeRenderer'
+import { cullDotNodes } from './PixiDotNode'
+import { cullSimplifiedNodes } from './PixiSimplifiedNode'
+import { cullConnections } from './PixiConnectionRenderer'
+import { getPixiVisibleRect, getPixiVisibleRectPx } from './pixiViewportState'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 
 // ─── Context ──────────────────────────────────────────────────────────
@@ -130,6 +134,14 @@ export function PixiScene({ sceneTx, sceneTy, effectiveScale, rotation, vpSize, 
 
         // Animate selection/flow glow pulse
         tickNodeAnimations()
+
+        // Viewport culling — hide off-screen containers
+        const pxRect = getPixiVisibleRectPx()
+        cullFullNodes(pxRect.minX, pxRect.maxX, pxRect.minY, pxRect.maxY)
+        cullDotNodes(pxRect.minX, pxRect.maxX, pxRect.minY, pxRect.maxY)
+        cullSimplifiedNodes(pxRect.minX, pxRect.maxX, pxRect.minY, pxRect.maxY)
+        const pctRect = getPixiVisibleRect()
+        cullConnections(pctRect.minX, pctRect.maxX, pctRect.minY, pctRect.maxY)
       })
 
       setCtx({ app, sceneContainer, connectionsLayer, nodesLayer, overlaysLayer })

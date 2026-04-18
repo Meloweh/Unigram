@@ -364,6 +364,17 @@ export function syncDraftLine(
   draftGfx.stroke({ color, alpha, width: 2, dash: [6, 4] })
 }
 
+// ─── Viewport culling — called from PixiJS ticker ─────────────────────
+
+export function cullConnections(minX: number, maxX: number, minY: number, maxY: number) {
+  // lastFromX/Y and lastToX/Y are in %-of-scene coords
+  for (const [, entry] of pool.entries()) {
+    const fxIn = entry.lastFromX >= minX && entry.lastFromX <= maxX && entry.lastFromY >= minY && entry.lastFromY <= maxY
+    const txIn = entry.lastToX >= minX && entry.lastToX <= maxX && entry.lastToY >= minY && entry.lastToY <= maxY
+    entry.container.visible = fxIn || txIn
+  }
+}
+
 // ─── Cleanup on unmount ───────────────────────────────────────────────
 
 export function destroyAllConnections() {

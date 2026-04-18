@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type Model, type ModelNode, type ConnectionType } from '../model/sampleModels'
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { resolvePalette } from '../theme/themes'
@@ -16,7 +16,7 @@ import { syncFullNodes, destroyAllFullNodes } from './PixiNodeRenderer'
 import type { FullNodeData } from './PixiNodeRenderer'
 
 /** Renders all nodes and connections for a model */
-export function ModelSceneContent({
+function ModelSceneContentInner({
   model,
   selectedNodeId,
   selectedNodeIds,
@@ -193,12 +193,6 @@ export function ModelSceneContent({
       const hasEvidence = !!c.evidence?.length
       const a = anchors[key]
       if (!a) continue
-      // Viewport cull
-      if (visibleRect) {
-        const fxIn = a.fx >= visibleRect.minX && a.fx <= visibleRect.maxX && a.fy >= visibleRect.minY && a.fy <= visibleRect.maxY
-        const txIn = a.tx >= visibleRect.minX && a.tx <= visibleRect.maxX && a.ty >= visibleRect.minY && a.ty <= visibleRect.maxY
-        if (!fxIn && !txIn) continue
-      }
       const isUnzipping = unzipGap?.connectionKey === key
       const gapT = isUnzipping ? unzipGap.progress : 0
       const emergeT = emergeAnimations.get(key)
@@ -229,7 +223,7 @@ export function ModelSceneContent({
       })
     }
     return result
-  }, [model.connections, nodeMap, anchors, visibleRect, flowAnimations, emergeAnimations, flowActiveNodes, unzipGap])
+  }, [model.connections, nodeMap, anchors, flowAnimations, emergeAnimations, flowActiveNodes, unzipGap])
 
   useEffect(() => {
     const layer = pixiLayers.connections
@@ -268,9 +262,6 @@ export function ModelSceneContent({
         || (selectedNodeIds?.has(node.id) ?? false)
         || (draggingMultiIds?.has(node.id) ?? false)
       if (isImportant) continue
-      if (visibleRect) {
-        if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) continue
-      }
       if (scale < LOD_SIMPLE) {
         dots.push({ id: node.id, x: p.x, y: p.y, cellColor: node.cellColor ?? palette.nodeCell })
       } else if (scale < LOD_FULL) {
@@ -285,7 +276,7 @@ export function ModelSceneContent({
       }
     }
     return { dots, simplified }
-  }, [model.nodes, positionMap, effectiveScale, visibleRect, flowActiveNodes, flowAnimations, selectedNodeId, editingNodeId, draggingNodeId, selectedNodeIds, draggingMultiIds, palette])
+  }, [model.nodes, positionMap, effectiveScale, flowActiveNodes, flowAnimations, selectedNodeId, editingNodeId, draggingNodeId, selectedNodeIds, draggingMultiIds, palette])
 
   useEffect(() => {
     const layer = pixiLayers.nodes
@@ -322,9 +313,6 @@ export function ModelSceneContent({
         || node.id === draggingNodeId
         || (selectedNodeIds?.has(node.id) ?? false)
         || (draggingMultiIds?.has(node.id) ?? false)
-      if (visibleRect && !isImportant) {
-        if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) continue
-      }
       const nodeProgress = node.id === selectedNodeId ? progress : 0
       const chromeFade = nodeProgress > 0.7 ? 1 - (nodeProgress - 0.7) / 0.3 : 1
       result.push({
@@ -347,7 +335,7 @@ export function ModelSceneContent({
       })
     }
     return result
-  }, [model.nodes, positionMap, effectiveScale, selectedNodeId, selectedNodeIds, editingNodeId, draggingNodeId, draggingMultiIds, flowActiveNodes, flowAnimations, visibleRect, progress, palette, needsSceneNode])
+  }, [model.nodes, positionMap, effectiveScale, selectedNodeId, selectedNodeIds, editingNodeId, draggingNodeId, draggingMultiIds, flowActiveNodes, flowAnimations, progress, palette, needsSceneNode])
 
   useEffect(() => {
     const layer = pixiLayers.nodes
@@ -566,3 +554,16 @@ export function ModelSceneContent({
     </>
   )
 }
+
+/**
+ * React.memo with custom comparator — skip re-render when only
+ * visibleRect changes (PixiJS ticker handles viewport culling).
+ */
+export const ModelSceneContent = memo(ModelSceneContentInner, (prev, next) => {
+  const keys = Object.keys(next) as (keyof typeof next)[]
+  for (const key of keys) {
+    if (key === 'visibleRect') continue
+    if (prev[key] !== next[key]) return false
+  }
+  return true
+})
