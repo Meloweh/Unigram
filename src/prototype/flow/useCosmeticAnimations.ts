@@ -7,7 +7,7 @@ import type { Model } from '../model/sampleModels'
  */
 export function useCosmeticAnimations(
   model: Model,
-  alwaysPlayAnimsRef: MutableRefObject<Map<string, { rafId: number; cleanup: () => void }>>,
+  alwaysPlayAnimsRef: MutableRefObject<Map<string, { rafId: number; el: HTMLElement; cleanup: () => void }>>,
 ) {
   // ---- Always-play autonomous animation for cosmetic nodes ----
   useEffect(() => {
@@ -37,6 +37,15 @@ export function useCosmeticAnimations(
     // Stop animations for nodes no longer wanted
     for (const [nodeId, entry] of activeMap) {
       if (!wantedNodeIds.has(nodeId)) {
+        cancelAnimationFrame(entry.rafId)
+        entry.cleanup()
+        activeMap.delete(nodeId)
+      }
+    }
+
+    // Restart animations whose DOM element was culled (unmounted) and recreated
+    for (const [nodeId, entry] of activeMap) {
+      if (!entry.el || !entry.el.isConnected) {
         cancelAnimationFrame(entry.rafId)
         entry.cleanup()
         activeMap.delete(nodeId)
@@ -79,6 +88,7 @@ export function useCosmeticAnimations(
       const start = performance.now()
       const entry = {
         rafId: 0,
+        el,
         cleanup: () => { el.style.transform = isWrapper ? 'translate(-50%, -50%)' : ''; el.style.filter = '' },
       }
 

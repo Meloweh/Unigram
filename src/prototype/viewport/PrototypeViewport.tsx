@@ -83,58 +83,22 @@ export function PrototypeViewport() {
   const freeScaleRef = useRef(frame.freeScale)
   freeScaleRef.current = frame.freeScale
 
-  // ---- DOM-level panning (bypasses React entirely during drag) ----
-  const sceneRef = useRef<HTMLDivElement>(null)
+  // RAF-throttled panning — coalesces pointer moves to one store update per frame
   const panRafRef = useRef<number | null>(null)
-  // Accumulated delta since last store flush
-  const livePanDelta = useRef({ dx: 0, dy: 0 })
-
-  /** Queue a pan increment — applies CSS transform directly, zero React re-renders */
+  const queuedPanRef = useRef({ dx: 0, dy: 0 })
   const rafPanBy = useCallback((dx: number, dy: number) => {
-    livePanDelta.current.dx += dx
-    livePanDelta.current.dy += dy
+    queuedPanRef.current.dx += dx
+    queuedPanRef.current.dy += dy
     if (panRafRef.current == null) {
       panRafRef.current = requestAnimationFrame(() => {
-        panRafRef.current = null
-        const el = sceneRef.current
-        if (!el) return
-        // Read the base pan from the store ref (set at last React render)
-        const baseTx = panOffsetRef.current.x + livePanDelta.current.dx
-        const baseTy = panOffsetRef.current.y + livePanDelta.current.dy
-        // Recompute centering identical to sceneStyle useMemo
-        const { currentFrame, getModel } = useHybridZoomStore.getState()
-        const f = currentFrame()
-        const m = getModel(f.modelId)
-        const selN = f.selectedNodeId ? m?.nodes.find(n => n.id === f.selectedNodeId) : undefined
-        let cx = 0, cy = 0
-        if (selN) {
-          const np = f.snapshot.nodeProgress
-          const cs = f.snapshot.cameraScale * f.freeScale
-          const vp = vpSizeRef.current
-          cx = (vp.w / 2 - selN.x / 100 * SCENE_W) * np * cs
-          cy = (vp.h / 2 - selN.y / 100 * SCENE_H) * np * cs
+        const { dx: qdx, dy: qdy } = queuedPanRef.current
+        if (qdx !== 0 || qdy !== 0) {
+          panBy(qdx, qdy)
+          queuedPanRef.current.dx = 0
+          queuedPanRef.current.dy = 0
         }
-        const scale = effectiveScaleRef.current
-        const rot = flowRotationRef.current
-        const rotStr = rot !== 0 ? ` rotate(${rot}deg)` : ''
-        const vp = vpSizeRef.current
-        el.style.transform = `translate(${cx + baseTx}px, ${cy + baseTy}px) scale(${scale})${rotStr}`
-        el.style.transformOrigin = `${vp.w / 2}px ${vp.h / 2}px`
+        panRafRef.current = null
       })
-    }
-  }, [])
-
-  /** Flush accumulated pan delta to the Zustand store (triggers one React render) */
-  const flushPan = useCallback(() => {
-    if (panRafRef.current != null) {
-      cancelAnimationFrame(panRafRef.current)
-      panRafRef.current = null
-    }
-    const { dx, dy } = livePanDelta.current
-    if (dx !== 0 || dy !== 0) {
-      panBy(dx, dy)
-      livePanDelta.current.dx = 0
-      livePanDelta.current.dy = 0
     }
   }, [panBy])
 
@@ -645,8 +609,6 @@ export function PrototypeViewport() {
           return
         }
         endDrag()
-        // Flush accumulated DOM pan to Zustand store (one React render)
-        flushPan()
         lastPointer.current = null
         pause()
       }}
@@ -659,7 +621,6 @@ export function PrototypeViewport() {
         handleNodeDragEnd()
         setConnectionDraft(null)
         endDrag()
-        flushPan()
         lastPointer.current = null
       }}
       onClick={(event) => {
@@ -834,7 +795,6 @@ export function PrototypeViewport() {
         />
       )}
       <div
-        ref={sceneRef}
         className="scene"
         style={{
           ...sceneStyle,

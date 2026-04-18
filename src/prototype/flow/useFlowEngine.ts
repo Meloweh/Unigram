@@ -92,7 +92,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
-  const alwaysPlayAnimsRef = useRef<Map<string, { rafId: number; cleanup: () => void }>>(new Map())
+  const alwaysPlayAnimsRef = useRef<Map<string, { rafId: number; el: HTMLElement; cleanup: () => void }>>(new Map())
 
   const [flowRotation, setFlowRotation] = useState(0)
   const flowRotationRef = useRef(flowRotation)
