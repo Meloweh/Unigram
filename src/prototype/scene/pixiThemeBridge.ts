@@ -24,7 +24,7 @@ export interface PixiThemeColors {
 let cache: PixiThemeColors | null = null
 
 /** Parse CSS color strings into { color: 0xRRGGBB, alpha: 0-1 } */
-function parseColor(raw: string): { color: number; alpha: number } {
+export function parseColor(raw: string): { color: number; alpha: number } {
   raw = raw.trim()
 
   // rgba(r, g, b, a)

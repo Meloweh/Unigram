@@ -3,13 +3,17 @@ import { type Model, type ModelNode, type ConnectionType } from '../model/sample
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { resolvePalette } from '../theme/themes'
 import { computeEdgeAnchors } from './edgeAnchoring'
-import { SCENE_W, SCENE_H, LOD_FULL, LOD_SIMPLE } from './sceneConstants'
+import { SCENE_W, SCENE_H, LOD_FULL, LOD_SIMPLE, NODE_MIN_W, NODE_MIN_H } from './sceneConstants'
 import { SceneNode } from './SceneNode'
-import { SimplifiedNode } from './SimplifiedNode'
 import { buildNodeMap } from './spatialIndex'
 import { pixiLayers } from './pixiLayers'
 import { syncConnections, syncDraftLine, destroyAllConnections } from './PixiConnectionRenderer'
 import type { ConnectionRenderData } from './PixiConnectionRenderer'
+import { syncDotNodes, destroyAllDotNodes } from './PixiDotNode'
+import { syncSimplifiedNodes, destroyAllSimplifiedNodes } from './PixiSimplifiedNode'
+import type { SimplifiedNodeData } from './PixiSimplifiedNode'
+import { syncFullNodes, destroyAllFullNodes } from './PixiNodeRenderer'
+import type { FullNodeData } from './PixiNodeRenderer'
 
 /** Renders all nodes and connections for a model */
 export function ModelSceneContent({
@@ -249,13 +253,270 @@ export function ModelSceneContent({
   // Cleanup PixiJS connections on unmount
   useEffect(() => destroyAllConnections, [])
 
+  // ─── PixiJS LOD node sync (dots + simplified) ───────────────────────
+  const pixiLodData = useMemo(() => {
+    const dots: { id: string; x: number; y: number; cellColor: string }[] = []
+    const simplified: SimplifiedNodeData[] = []
+    const scale = effectiveScale ?? 1
+    const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
+    for (const node of model.nodes) {
+      if (node.hideDuringFlow && isFlowRunning) continue
+      const p = positionMap.get(node.id) ?? { x: node.x, y: node.y }
+      const isImportant = node.id === selectedNodeId
+        || node.id === editingNodeId
+        || node.id === draggingNodeId
+        || (selectedNodeIds?.has(node.id) ?? false)
+        || (draggingMultiIds?.has(node.id) ?? false)
+      if (isImportant) continue
+      if (visibleRect) {
+        if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) continue
+      }
+      if (scale < LOD_SIMPLE) {
+        dots.push({ id: node.id, x: p.x, y: p.y, cellColor: node.cellColor ?? palette.nodeCell })
+      } else if (scale < LOD_FULL) {
+        simplified.push({
+          id: node.id, x: p.x, y: p.y,
+          cellColor: node.cellColor ?? palette.nodeCell,
+          membraneColor: node.membraneColor ?? palette.nodeMembrane,
+          w: node.nodeWidth ?? NODE_MIN_W,
+          h: node.nodeHeight ?? NODE_MIN_H,
+          label: node.label,
+        })
+      }
+    }
+    return { dots, simplified }
+  }, [model.nodes, positionMap, effectiveScale, visibleRect, flowActiveNodes, flowAnimations, selectedNodeId, editingNodeId, draggingNodeId, selectedNodeIds, draggingMultiIds, palette])
+
+  useEffect(() => {
+    const layer = pixiLayers.nodes
+    if (!layer) return
+    syncDotNodes(layer, pixiLodData.dots)
+    syncSimplifiedNodes(layer, pixiLodData.simplified)
+  }, [pixiLodData])
+
+  // Cleanup PixiJS LOD nodes on unmount
+  useEffect(() => () => { destroyAllDotNodes(); destroyAllSimplifiedNodes() }, [])
+
+  // ─── Determine which nodes use PixiJS vs SceneNode ──────────────────
+  // Nodes needing SceneNode: cosmetic, media/content, or zooming with child
+  const needsSceneNode = useCallback((node: ModelNode) => {
+    if (node.cosmeticType) return true
+    if (node.mediaType) return true
+    return false
+  }, [])
+
+  // ─── PixiJS full-node sync (standard label nodes at LOD_FULL) ───────
+  const pixiFullNodeData = useMemo(() => {
+    const result: FullNodeData[] = []
+    const scale = effectiveScale ?? 1
+    if (scale < LOD_FULL) return result // LOD handles lower zooms
+    const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
+    for (const node of model.nodes) {
+      if (node.hideDuringFlow && isFlowRunning) continue
+      if (needsSceneNode(node)) continue
+      // Nodes being zoomed with a child model need SceneNode for the preview
+      if (node.id === selectedNodeId && progress > 0) continue
+      const p = positionMap.get(node.id) ?? { x: node.x, y: node.y }
+      const isImportant = node.id === selectedNodeId
+        || node.id === editingNodeId
+        || node.id === draggingNodeId
+        || (selectedNodeIds?.has(node.id) ?? false)
+        || (draggingMultiIds?.has(node.id) ?? false)
+      if (visibleRect && !isImportant) {
+        if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) continue
+      }
+      const nodeProgress = node.id === selectedNodeId ? progress : 0
+      const chromeFade = nodeProgress > 0.7 ? 1 - (nodeProgress - 0.7) / 0.3 : 1
+      result.push({
+        id: node.id,
+        x: p.x,
+        y: p.y,
+        label: node.label,
+        shape: node.shape ?? 'rounded-rect',
+        cellColor: node.cellColor ?? palette.nodeCell,
+        membraneColor: node.membraneColor ?? palette.nodeMembrane,
+        membraneVisible: node.membraneVisible !== false,
+        nodeWidth: node.nodeWidth,
+        nodeHeight: node.nodeHeight,
+        isSelected: node.id === selectedNodeId || (selectedNodeIds?.has(node.id) ?? false),
+        isMultiSelected: selectedNodeIds?.has(node.id) ?? false,
+        isFlowActive: flowActiveNodes.has(node.id),
+        isFlowRunning: isFlowRunning,
+        isEditing: node.id === editingNodeId,
+        chromeFade,
+      })
+    }
+    return result
+  }, [model.nodes, positionMap, effectiveScale, selectedNodeId, selectedNodeIds, editingNodeId, draggingNodeId, draggingMultiIds, flowActiveNodes, flowAnimations, visibleRect, progress, palette, needsSceneNode])
+
+  useEffect(() => {
+    const layer = pixiLayers.nodes
+    if (!layer) return
+    syncFullNodes(layer, pixiFullNodeData, handleNodeResize)
+  }, [pixiFullNodeData, handleNodeResize])
+
+  // Cleanup PixiJS full nodes on unmount
+  useEffect(() => destroyAllFullNodes, [])
+
+  // ─── Editing textarea for PixiJS-rendered nodes ─────────────────────
+  const editRef = useRef<HTMLTextAreaElement>(null)
+  const pendingFocusRef = useRef(false)
+
+  // Set of node IDs rendered by PixiJS (for the current frame)
+  const pixiRenderedIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const d of pixiFullNodeData) s.add(d.id)
+    return s
+  }, [pixiFullNodeData])
+
+  // Auto-focus textarea when entering edit mode on a PixiJS node
+  useEffect(() => {
+    if (editingNodeId && pixiRenderedIds.has(editingNodeId)) {
+      pendingFocusRef.current = true
+    }
+  }, [editingNodeId, pixiRenderedIds])
+
+  useEffect(() => {
+    if (pendingFocusRef.current && editRef.current) {
+      pendingFocusRef.current = false
+      const el = editRef.current
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+    }
+  })
+
   return (
     <>
+      {/* ── Editing textarea overlay for the single PixiJS node being edited ── */}
+      {editingNodeId && pixiRenderedIds.has(editingNodeId) && (() => {
+        const data = pixiFullNodeData.find(d => d.id === editingNodeId)
+        const node = nodeMap.get(editingNodeId)
+        if (!data || !node) return null
+        const storedSize = nodeSizesRef.current.get(editingNodeId)
+        const w = storedSize?.w ?? node.nodeWidth ?? NODE_MIN_W
+        const h = storedSize?.h ?? node.nodeHeight ?? NODE_MIN_H
+        return (
+          <div
+            key={`edit-${editingNodeId}`}
+            data-node-id={editingNodeId}
+            style={{
+              position: 'absolute',
+              left: `${data.x}%`,
+              top: `${data.y}%`,
+              width: w,
+              height: h,
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'auto',
+              zIndex: 1,
+              boxSizing: 'border-box',
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <textarea
+              ref={editRef}
+              className="host-label host-label-editing"
+              defaultValue={node.label}
+              rows={1}
+              style={{
+                width: '100%',
+                minHeight: '100%',
+                padding: '14px 16px',
+                boxSizing: 'border-box',
+                border: 'none',
+                background: 'transparent',
+                resize: 'none',
+                outline: 'none',
+                fontFamily: 'inherit',
+                fontSize: 'inherit',
+                color: 'inherit',
+                whiteSpace: 'pre',
+                fieldSizing: 'content' as any,
+              }}
+              onInput={(e) => {
+                const el = e.currentTarget
+                el.style.height = 'auto'
+                el.style.height = el.scrollHeight + 'px'
+                onLiveEditLabel(editingNodeId, el.value)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  onFinishEditing(editingNodeId, (e.target as HTMLTextAreaElement).value.trim())
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  onFinishEditing(editingNodeId, '')
+                }
+              }}
+              onBlur={() => {
+                if (editRef.current) {
+                  onFinishEditing(editingNodeId, editRef.current.value.trim())
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            />
+          </div>
+        )
+      })()}
+
+      {/* ── Resize handles for the single selected PixiJS node ── */}
+      {selectedNodeId && !editingNodeId && pixiRenderedIds.has(selectedNodeId) && onResizeDragStart && (() => {
+        const data = pixiFullNodeData.find(d => d.id === selectedNodeId)
+        if (!data || data.isFlowRunning) return null
+        const storedSize = nodeSizesRef.current.get(selectedNodeId)
+        const node = nodeMap.get(selectedNodeId)
+        if (!node) return null
+        const w = storedSize?.w ?? node.nodeWidth ?? NODE_MIN_W
+        const h = storedSize?.h ?? node.nodeHeight ?? NODE_MIN_H
+        return (
+          <div
+            key={`resize-${selectedNodeId}`}
+            style={{
+              position: 'absolute',
+              left: `${data.x}%`,
+              top: `${data.y}%`,
+              width: w,
+              height: h,
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'none',
+              zIndex: 1,
+              boxSizing: 'border-box',
+            }}
+          >
+            {[
+              { dir: 'n', style: { top: -3, left: 8, right: 8, height: 6 } as const, cursor: 'n-resize' },
+              { dir: 's', style: { bottom: -3, left: 8, right: 8, height: 6 } as const, cursor: 's-resize' },
+              { dir: 'w', style: { left: -3, top: 8, bottom: 8, width: 6 } as const, cursor: 'w-resize' },
+              { dir: 'e', style: { right: -3, top: 8, bottom: 8, width: 6 } as const, cursor: 'e-resize' },
+              { dir: 'nw', style: { top: -4, left: -4, width: 8, height: 8 } as const, cursor: 'nw-resize' },
+              { dir: 'ne', style: { top: -4, right: -4, width: 8, height: 8 } as const, cursor: 'ne-resize' },
+              { dir: 'sw', style: { bottom: -4, left: -4, width: 8, height: 8 } as const, cursor: 'sw-resize' },
+              { dir: 'se', style: { bottom: -4, right: -4, width: 8, height: 8 } as const, cursor: 'se-resize' },
+            ].map(({ dir, style, cursor }) => (
+              <div
+                key={dir}
+                style={{
+                  position: 'absolute',
+                  ...style,
+                  cursor,
+                  zIndex: 20,
+                  pointerEvents: 'auto',
+                }}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  onResizeDragStart!(selectedNodeId, dir, e)
+                }}
+              />
+            ))}
+          </div>
+        )
+      })()}
+
+      {/* ── SceneNode for cosmetic/media/content/zooming nodes ── */}
       {model.nodes.map((node) => {
         const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
         if (node.hideDuringFlow && isFlowRunning) return null
         const p = positionMap.get(node.id) ?? { x: node.x, y: node.y }
-        // Viewport cull: skip nodes outside visible rect (always render selected/editing/dragging)
         const isImportant = node.id === selectedNodeId
           || node.id === editingNodeId
           || node.id === draggingNodeId
@@ -265,41 +526,11 @@ export function ModelSceneContent({
           if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) return null
         }
         const scale = effectiveScale ?? 1
-        // LOD: at very low zoom, render dot; at medium zoom, render simplified node
-        if (!isImportant && scale < LOD_SIMPLE) {
-          const cellColor = node.cellColor ?? palette.nodeCell
-          return (
-            <div
-              key={node.id}
-              data-node-id={node.id}
-              style={{
-                position: 'absolute',
-                left: `${p.x}%`,
-                top: `${p.y}%`,
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: cellColor,
-                transform: 'translate(-50%, -50%)',
-                pointerEvents: 'auto',
-              }}
-            />
-          )
-        }
-        if (!isImportant && scale < LOD_FULL) {
-          return (
-            <SimplifiedNode
-              key={node.id}
-              node={node}
-              posX={p.x}
-              posY={p.y}
-              isSelected={false}
-              isDragging={!!noTransition}
-              defaultCellColor={palette.nodeCell}
-              defaultMembraneColor={palette.nodeMembrane}
-            />
-          )
-        }
+        // LOD: dots and simplified nodes are rendered via PixiJS — skip DOM for those
+        if (!isImportant && scale < LOD_FULL) return null
+        // Skip nodes rendered by PixiJS full-node renderer
+        if (pixiRenderedIds.has(node.id)) return null
+        // This node needs SceneNode: cosmetic, media/content, or zooming with child preview
         return (
           <SceneNode
             key={node.id}

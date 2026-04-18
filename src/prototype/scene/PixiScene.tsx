@@ -11,6 +11,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Application, Container } from 'pixi.js'
 import { pixiLayers } from './pixiLayers'
+import { tickNodeAnimations } from './PixiNodeRenderer'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 
 // ─── Context ──────────────────────────────────────────────────────────
@@ -126,6 +127,9 @@ export function PixiScene({ sceneTx, sceneTy, effectiveScale, rotation, vpSize, 
         )
         sceneContainer.scale.set(s)
         sceneContainer.rotation = rotRef.current * Math.PI / 180
+
+        // Animate selection/flow glow pulse
+        tickNodeAnimations()
       })
 
       setCtx({ app, sceneContainer, connectionsLayer, nodesLayer, overlaysLayer })

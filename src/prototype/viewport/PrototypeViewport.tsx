@@ -23,6 +23,7 @@ import { handleSave as doSave, handleLoad as doLoad } from './projectIO'
 import { useAutoUntangle } from './useAutoUntangle'
 import { useUnzipAnim } from '../ui/useUnzipAnim'
 import { useViewportDrag } from './useViewportDrag'
+import { hitTestPixiNode } from '../scene/PixiNodeRenderer'
 import { EditorToolbar } from '../ui/EditorToolbar'
 import { useMpdLogic } from '../mpd/useMpdLogic'
 import { useMpdCurtain } from '../mpd/useMpdCurtain'
@@ -384,6 +385,22 @@ export function PrototypeViewport() {
   const [editingContentNodeId, setEditingContentNodeId] = useState<string | null>(null)
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    // Check if a PixiJS node was double-clicked
+    const scenePos = clientToScene(e.clientX, e.clientY)
+    const pixiHitId = hitTestPixiNode(scenePos.x / 100 * SCENE_W, scenePos.y / 100 * SCENE_H)
+    if (pixiHitId) {
+      const { currentFrame, getModel, beginEditNode: beginEdit } = useHybridZoomStore.getState()
+      const f = currentFrame()
+      const m = getModel(f.modelId)
+      const n = m?.nodes.find(nd => nd.id === pixiHitId)
+      if (n && (n.mediaType === 'markdown' || n.mediaType === 'math')) {
+        setEditingContentNodeId(pixiHitId)
+      } else {
+        beginEdit(f.modelId)
+        setEditingNodeId(pixiHitId)
+      }
+      return
+    }
     // Only on empty space (the viewport itself)
     if (e.target !== e.currentTarget) return
     const pos = clientToScene(e.clientX, e.clientY)
@@ -535,6 +552,17 @@ export function PrototypeViewport() {
       onPointerDown={(event) => {
         const el = event.target as HTMLElement
         if (el.closest('.sidebar') || el.closest('.editor-toolbar')) return
+
+        // PixiJS node hit-test (replaces 500 DOM hit-area divs)
+        const scenePos = clientToScene(event.clientX, event.clientY)
+        const pixiHitId = hitTestPixiNode(scenePos.x / 100 * SCENE_W, scenePos.y / 100 * SCENE_H)
+
+        // Right-click on a PixiJS node → connection drag
+        if (event.button === 2 && pixiHitId && !draggingNodeRef.current && !connectionDraft) {
+          event.preventDefault()
+          handleConnectionDragStart(pixiHitId, event)
+          return
+        }
         // Right-click on empty space: start selection rectangle
         if (event.button === 2 && !draggingNodeRef.current && !connectionDraft) {
           if (!el.closest('.host-node')) {
@@ -546,6 +574,13 @@ export function PrototypeViewport() {
           }
         }
         if (event.button !== 0) return
+
+        // Left-click on a PixiJS node → node drag
+        if (pixiHitId && editingNodeId !== pixiHitId) {
+          handleNodeDragStart(pixiHitId, event)
+          return
+        }
+
         beginDrag()
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
@@ -627,6 +662,14 @@ export function PrototypeViewport() {
       onClick={(event) => {
         if (justFinishedSelectionRef.current) {
           justFinishedSelectionRef.current = false
+          return
+        }
+        // PixiJS node hit-test for selection
+        const scenePos = clientToScene(event.clientX, event.clientY)
+        const pixiHitId = hitTestPixiNode(scenePos.x / 100 * SCENE_W, scenePos.y / 100 * SCENE_H)
+        if (pixiHitId) {
+          handleSelectNode(pixiHitId)
+          setSelectedNodeIds(new Set())
           return
         }
         // Deselect when clicking empty space — anything that isn't a node or interactive child

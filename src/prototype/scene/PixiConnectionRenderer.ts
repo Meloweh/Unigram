@@ -43,6 +43,16 @@ interface ConnectionEntry {
   label: Text | null
   hitGfx: Graphics        // Invisible thick hit area
   container: Container
+  // State cache for diffing — skip redraw when nothing changed
+  lastFromX: number; lastFromY: number
+  lastToX: number; lastToY: number
+  lastFlowProgress: number | undefined
+  lastStrokeColor: string | undefined
+  lastStrokeWidth: number | undefined
+  lastStrokeDash: ConnectionDashStyle | undefined
+  lastArrowStyle: ConnectionArrowStyle | undefined
+  lastGapProgress: number
+  lastLabel: string | undefined
 }
 
 const pool = new Map<string, ConnectionEntry>()
@@ -259,7 +269,13 @@ export function syncConnections(
       container.addChild(gfx)
       container.addChild(hitGfx)
       layer.addChild(container)
-      entry = { gfx, flowGfx: null, label: null, hitGfx, container }
+      entry = {
+        gfx, flowGfx: null, label: null, hitGfx, container,
+        lastFromX: NaN, lastFromY: NaN, lastToX: NaN, lastToY: NaN,
+        lastFlowProgress: undefined, lastStrokeColor: undefined,
+        lastStrokeWidth: undefined, lastStrokeDash: undefined,
+        lastArrowStyle: undefined, lastGapProgress: -1, lastLabel: undefined,
+      }
       // Store midpoint refs on the entry so click handler reads latest values
       ;(entry as any)._midX = midXRef
       ;(entry as any)._midY = midYRef
@@ -271,6 +287,30 @@ export function syncConnections(
     const midY = (c.fromY + c.toY) / 2
     ;(entry as any)._midX.v = midX
     ;(entry as any)._midY.v = midY
+
+    // Diff — skip redraw if nothing changed
+    const needsRedraw =
+      entry.lastFromX !== c.fromX || entry.lastFromY !== c.fromY ||
+      entry.lastToX !== c.toX || entry.lastToY !== c.toY ||
+      entry.lastFlowProgress !== c.flowProgress ||
+      entry.lastStrokeColor !== c.strokeColor ||
+      entry.lastStrokeWidth !== c.strokeWidth ||
+      entry.lastStrokeDash !== c.strokeDash ||
+      entry.lastArrowStyle !== c.arrowStyle ||
+      entry.lastGapProgress !== c.gapProgress ||
+      entry.lastLabel !== c.label
+
+    if (!needsRedraw) continue
+
+    entry.lastFromX = c.fromX; entry.lastFromY = c.fromY
+    entry.lastToX = c.toX; entry.lastToY = c.toY
+    entry.lastFlowProgress = c.flowProgress
+    entry.lastStrokeColor = c.strokeColor
+    entry.lastStrokeWidth = c.strokeWidth
+    entry.lastStrokeDash = c.strokeDash
+    entry.lastArrowStyle = c.arrowStyle
+    entry.lastGapProgress = c.gapProgress
+    entry.lastLabel = c.label
 
     if (c.gapProgress >= 0.001) {
       // Unzipping — delegate to PixiUnzipConnection

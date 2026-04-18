@@ -154,7 +154,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
         }
       }
     }
-    ;(e.target as Element).setPointerCapture(e.pointerId)
+    ;(viewportRef.current ?? e.target as Element).setPointerCapture(e.pointerId)
   }, [beginMoveNode, frameModelId, selectedNodeIds, clientToScene, nodeMap])
 
   const handleNodeDragMove = useCallback((e: React.PointerEvent) => {
@@ -250,7 +250,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
       toY: node.y,
       connectionType: activeConnectionType,
     })
-    ;(e.target as Element).setPointerCapture(e.pointerId)
+    ;(viewportRef.current ?? e.target as Element).setPointerCapture(e.pointerId)
   }, [nodeMap]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConnectionDragMove = useCallback((e: React.PointerEvent) => {
