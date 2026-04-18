@@ -1,4 +1,5 @@
 import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, CosmeticType, ConnectionType, FlowEffect, ConnectionDashStyle, ConnectionArrowStyle, ModelCosmetics, ThemeMode, TextFormatRange } from './sampleModels'
+import { getMediaBlob, isBlobUrl, storeMediaBlob } from './mediaStore'
 import JSZip from 'jszip'
 
 // ---- JSON file schema (what's on disk) ----
@@ -325,12 +326,13 @@ function toRelativePath(targetUrl: string, baseUrl: string): string {
 }
 
 /** Guess file extension from a data URL or filename */
-function guessExtension(dataUrl: string, filename?: string): string {
+function guessExtension(srcUrl: string, filename?: string): string {
   if (filename) {
     const dot = filename.lastIndexOf('.')
     if (dot >= 0) return filename.substring(dot)
   }
-  const match = dataUrl.match(/^data:([^;,]+)/)
+  // Try data URL mime
+  const match = srcUrl.match(/^data:([^;,]+)/)
   if (match) {
     const mime = match[1]
     const map: Record<string, string> = {
@@ -340,6 +342,19 @@ function guessExtension(dataUrl: string, filename?: string): string {
       'video/mp4': '.mp4', 'video/webm': '.webm', 'video/ogg': '.ogv',
     }
     return map[mime] ?? '.bin'
+  }
+  // Try blob URL mime from store
+  if (isBlobUrl(srcUrl)) {
+    const blob = getMediaBlob(srcUrl)
+    if (blob?.type) {
+      const map: Record<string, string> = {
+        'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+        'image/webp': '.webp', 'image/svg+xml': '.svg',
+        'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg',
+        'video/mp4': '.mp4', 'video/webm': '.webm', 'video/ogg': '.ogv',
+      }
+      return map[blob.type] ?? '.bin'
+    }
   }
   return '.bin'
 }
@@ -367,6 +382,19 @@ function bytesToDataUrl(bytes: Uint8Array, path: string): string {
   let binaryString = ''
   for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i])
   return `data:${mime};base64,${btoa(binaryString)}`
+}
+
+/** Convert binary data + file path to a blob URL stored in the media store. */
+function bytesToBlobUrl(bytes: Uint8Array, path: string): string {
+  const ext = path.substring(path.lastIndexOf('.')).toLowerCase()
+  const mimeMap: Record<string, string> = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogv': 'video/ogg',
+  }
+  const mime = mimeMap[ext] ?? 'application/octet-stream'
+  return storeMediaBlob(new Blob([bytes], { type: mime }))
 }
 
 /**
@@ -434,8 +462,13 @@ export async function exportBundle(
   }
 
   // Add media files
-  for (const [path, dataUrl] of mediaMap) {
-    zip.file(path, dataUrlToBytes(dataUrl))
+  for (const [path, srcUrl] of mediaMap) {
+    if (isBlobUrl(srcUrl)) {
+      const blob = getMediaBlob(srcUrl)
+      if (blob) zip.file(path, blob)
+    } else {
+      zip.file(path, dataUrlToBytes(srcUrl))
+    }
   }
 
   return zip.generateAsync({ type: 'blob' })
@@ -456,7 +489,7 @@ export async function importBundle(
   if (!projectFile) throw new Error('Invalid bundle: missing project.json')
   const projectData: Record<string, Record<string, unknown>> = JSON.parse(await projectFile.async('string'))
 
-  // Build media lookup: bundle path → data URL
+  // Build media lookup: bundle path → blob URL
   const mediaLookup = new Map<string, string>()
   const mediaFolder = zip.folder('media')
   if (mediaFolder) {
@@ -467,7 +500,7 @@ export async function importBundle(
     await Promise.all(
       mediaFiles.map(async ({ path, file }) => {
         const bytes = await file.async('uint8array')
-        mediaLookup.set(path, bytesToDataUrl(bytes, path))
+        mediaLookup.set(path, bytesToBlobUrl(bytes, path))
       }),
     )
   }

@@ -54,7 +54,7 @@ export function ConnectionLine({
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     const arrowLenPx = 8 * effStrokeWidth
     let adjToX = toX, adjToY = toY
-    if (lenPx > arrowLenPx * 2) {
+    if (marker && lenPx > arrowLenPx * 2) {
       const ratio = arrowLenPx / lenPx
       adjToX = toX - (toX - fromX) * ratio
       adjToY = toY - (toY - fromY) * ratio
@@ -98,10 +98,10 @@ export function ConnectionLine({
   const perpX = -alongY
   const perpY = alongX
 
-  // Shorten the target end by the arrowhead length
+  // Shorten the target end by the arrowhead length (only if an arrowhead is rendered)
   const arrowLenPx = 16
   let adjTxPx = txPx, adjTyPx = tyPx
-  if (lenPx > arrowLenPx * 2) {
+  if (marker && lenPx > arrowLenPx * 2) {
     adjTxPx = txPx - alongX * arrowLenPx
     adjTyPx = tyPx - alongY * arrowLenPx
   }

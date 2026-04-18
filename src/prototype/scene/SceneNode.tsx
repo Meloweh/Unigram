@@ -11,6 +11,7 @@ import { ChildModelPreview } from './ChildModelPreview'
 import { marked } from 'marked'
 import katex from 'katex'
 import DOMPurify from 'dompurify'
+import { storeMediaBlob } from '../model/mediaStore'
 
 /** A single node that can expand its canvas when zooming */
 export function SceneNode({
@@ -169,13 +170,9 @@ export function SceneNode({
         stream.getTracks().forEach((t) => t.stop())
         audioCtx.close()
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-        const reader = new FileReader()
-        reader.onload = () => {
-          if (reader.result && onSetMediaRef.current) {
-            onSetMediaRef.current(reader.result as string, 'recording.webm')
-          }
+        if (onSetMediaRef.current) {
+          onSetMediaRef.current(storeMediaBlob(blob), 'recording.webm')
         }
-        reader.readAsDataURL(blob)
         setIsRecording(false)
       }
       mediaRecorderRef.current = recorder

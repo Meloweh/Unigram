@@ -231,7 +231,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   zoomIn: () => {
     set((state) => {
       const top = state.stack[state.stack.length - 1]
-      if (!top.selectedNodeId) return state
+      if (!top.selectedNodeId) return { unzipPopup: null }
       // Only allow zoom if the selected node has a child model to zoom into
       const model = state.models[top.modelId]
       const node = model?.nodes.find((n) => n.id === top.selectedNodeId)
@@ -343,7 +343,10 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   },
 
   openUnzip: (connectionKey, anchorX, anchorY) => {
-    set({ unzipPopup: { connectionKey, level: 1, anchorX, anchorY } })
+    set((state) => ({
+      unzipPopup: { connectionKey, level: 1, anchorX, anchorY },
+      stack: updateTopFrame(state.stack, () => ({ selectedNodeId: null })),
+    }))
   },
 
   closeUnzip: () => {

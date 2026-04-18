@@ -748,7 +748,7 @@ export function PrototypeViewport() {
               setEditingNodeId(nodeId)
             }
           }}
-          onClickConnection={openUnzip}
+          onClickConnection={(key, ax, ay) => { setSelectedNodeIds(new Set()); openUnzip(key, ax, ay) }}
           onNodeDragStart={handleNodeDragStart}
           onConnectionDragStart={handleConnectionDragStart}
           draggingNodeId={draggingNodeId}
@@ -901,8 +901,8 @@ export function PrototypeViewport() {
           cy = (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs
         }
         const toScreen = (pctX: number, pctY: number) => ({
-          x: (pctX / 100) * SCENE_W * cs + cx + frame.panOffset.x,
-          y: (pctY / 100) * SCENE_H * cs + cy + frame.panOffset.y,
+          x: ((pctX / 100) * SCENE_W - rect.width / 2) * cs + rect.width / 2 + cx + frame.panOffset.x,
+          y: ((pctY / 100) * SCENE_H - rect.height / 2) * cs + rect.height / 2 + cy + frame.panOffset.y,
         })
         const s = toScreen(selectionRect.startX, selectionRect.startY)
         const e = toScreen(selectionRect.endX, selectionRect.endY)

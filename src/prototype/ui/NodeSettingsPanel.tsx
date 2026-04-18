@@ -3,6 +3,7 @@ import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType, FlowEffe
 import { applyFormatToRange } from '../model/sampleModels'
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { ColorInput } from './DiagramSettings'
+import { storeMediaBlob } from '../model/mediaStore'
 
 let _nextId = 1
 function genId(prefix: string) {
@@ -448,14 +449,8 @@ function MediaSettings({ node, onUpdateProps }: {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      onUpdateProps({
-        mediaSrc: reader.result as string,
-        mediaFileName: file.name,
-      })
-    }
-    reader.readAsDataURL(file)
+    const blobUrl = storeMediaBlob(file)
+    onUpdateProps({ mediaSrc: blobUrl, mediaFileName: file.name })
     e.target.value = ''
   }
 
@@ -592,7 +587,7 @@ function YouTubeUrlField({ onUpdateProps }: { onUpdateProps: (props: Partial<Mod
     setYtStatus('loading')
     setYtError('')
     try {
-      const resp = await fetch('http://localhost:3001/api/youtube', {
+      const resp = await fetch('/api/youtube', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
@@ -602,20 +597,10 @@ function YouTubeUrlField({ onUpdateProps }: { onUpdateProps: (props: Partial<Mod
         throw new Error(err.error || `HTTP ${resp.status}`)
       }
       const blob = await resp.blob()
-      const reader = new FileReader()
-      reader.onload = () => {
-        onUpdateProps({
-          mediaSrc: reader.result as string,
-          mediaFileName: 'youtube-video.mp4',
-        })
-        setYtStatus('idle')
-        setYtUrl('')
-      }
-      reader.onerror = () => {
-        setYtStatus('error')
-        setYtError('Failed to read downloaded video')
-      }
-      reader.readAsDataURL(blob)
+      const blobUrl = storeMediaBlob(blob)
+      onUpdateProps({ mediaSrc: blobUrl, mediaFileName: 'youtube-video.mp4' })
+      setYtStatus('idle')
+      setYtUrl('')
     } catch (err) {
       setYtStatus('error')
       setYtError(err instanceof Error ? err.message : 'Download failed')

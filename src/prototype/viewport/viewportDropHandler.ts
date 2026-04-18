@@ -1,5 +1,6 @@
 import type { Model, ModelNode, NodeShape, MediaNodeType, CosmeticType } from '../model/sampleModels'
 import { snapToGrid } from '../model/useHybridZoomStore'
+import { storeMediaBlob } from '../model/mediaStore'
 
 /** Detect the media node type from a MIME type */
 export function mimeToMediaType(mime: string): MediaNodeType | null {
@@ -134,98 +135,35 @@ export function handleDrop(e: React.DragEvent, deps: DropHandlerDeps) {
       ? model.nodes.find((n) => n.id === hostNodeId && n.mediaType)
       : undefined
 
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      if (existingNode) {
-        // Image dropped on an audio node → set as cover image instead of replacing media
-        if (existingNode.mediaType === 'audio' && (mType === 'image' || mType === 'gif')) {
-          updateNodeProps(frameModelId, existingNode.id, {
-            audioCoverSrc: dataUrl,
-          })
-          const img = new Image()
-          img.onload = () => {
-            const maxW = 400, maxH = 400
-            let w = img.naturalWidth, h = img.naturalHeight + 40 // extra height for audio controls
-            if (w > maxW || h > maxH) {
-              const ratio = Math.min(maxW / w, maxH / h)
-              w = Math.round(w * ratio)
-              h = Math.round(h * ratio)
-            }
-            w = Math.max(w, 100)
-            h = Math.max(h, 80)
-            updateNodeProps(frameModelId, existingNode.id, {
-              nodeWidth: w, nodeHeight: h,
-            })
-          }
-          img.src = dataUrl
-        } else {
-          // Drop onto existing media node — replace its media and auto-size for images/gifs/video
-          updateNodeProps(frameModelId, existingNode.id, {
-            mediaSrc: dataUrl,
-            mediaFileName: file.name,
-          })
-          if (mType === 'image' || mType === 'gif') {
-            const img = new Image()
-            img.onload = () => {
-              const maxW = 400, maxH = 400
-              let w = img.naturalWidth, h = img.naturalHeight
-              if (w > maxW || h > maxH) {
-                const ratio = Math.min(maxW / w, maxH / h)
-                w = Math.round(w * ratio)
-                h = Math.round(h * ratio)
-              }
-              w = Math.max(w, 60)
-              h = Math.max(h, 40)
-              updateNodeProps(frameModelId, existingNode.id, {
-                nodeWidth: w, nodeHeight: h,
-              })
-            }
-            img.src = dataUrl
-          } else if (mType === 'video') {
-            const vid = document.createElement('video')
-            vid.onloadedmetadata = () => {
-              const maxW = 400, maxH = 400
-              let w = vid.videoWidth, h = vid.videoHeight
-              if (w > maxW || h > maxH) {
-                const ratio = Math.min(maxW / w, maxH / h)
-                w = Math.round(w * ratio)
-                h = Math.round(h * ratio)
-              }
-              w = Math.max(w, 100)
-              h = Math.max(h, 80)
-              updateNodeProps(frameModelId, existingNode.id, {
-                nodeWidth: w, nodeHeight: h,
-              })
-            }
-            vid.src = dataUrl
-          }
-        }
-      } else {
-        // Drop onto empty scene — create a new media node
-        const pos = clientToScene(e.clientX, e.clientY)
-        const snappedX = snapToGrid(pos.x)
-        const snappedY = snapToGrid(pos.y)
-        const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        const defaultSizes: Record<string, { w: number; h: number }> = {
-          image: { w: 160, h: 120 },
-          gif: { w: 160, h: 120 },
-          audio: { w: 200, h: 80 },
-          video: { w: 200, h: 140 },
-          markdown: { w: 240, h: 60 },
-          math: { w: 200, h: 60 },
-        }
-        const sz = defaultSizes[mType] ?? { w: 160, h: 120 }
-        addNode(frameModelId, {
-          id: newId, label: '', x: snappedX, y: snappedY,
-          shape: 'rounded-rect',
-          mediaType: mType,
-          mediaSrc: dataUrl,
-          mediaFileName: file.name,
-          nodeWidth: sz.w, nodeHeight: sz.h,
+    const blobUrl = storeMediaBlob(file)
+    if (existingNode) {
+      // Image dropped on an audio node → set as cover image instead of replacing media
+      if (existingNode.mediaType === 'audio' && (mType === 'image' || mType === 'gif')) {
+        updateNodeProps(frameModelId, existingNode.id, {
+          audioCoverSrc: blobUrl,
         })
-        selectNode(newId)
-        // Auto-size to image/video natural dimensions
+        const img = new Image()
+        img.onload = () => {
+          const maxW = 400, maxH = 400
+          let w = img.naturalWidth, h = img.naturalHeight + 40 // extra height for audio controls
+          if (w > maxW || h > maxH) {
+            const ratio = Math.min(maxW / w, maxH / h)
+            w = Math.round(w * ratio)
+            h = Math.round(h * ratio)
+          }
+          w = Math.max(w, 100)
+          h = Math.max(h, 80)
+          updateNodeProps(frameModelId, existingNode.id, {
+            nodeWidth: w, nodeHeight: h,
+          })
+        }
+        img.src = blobUrl
+      } else {
+        // Drop onto existing media node — replace its media and auto-size for images/gifs/video
+        updateNodeProps(frameModelId, existingNode.id, {
+          mediaSrc: blobUrl,
+          mediaFileName: file.name,
+        })
         if (mType === 'image' || mType === 'gif') {
           const img = new Image()
           img.onload = () => {
@@ -238,9 +176,11 @@ export function handleDrop(e: React.DragEvent, deps: DropHandlerDeps) {
             }
             w = Math.max(w, 60)
             h = Math.max(h, 40)
-            updateNodeProps(frameModelId, newId, { nodeWidth: w, nodeHeight: h })
+            updateNodeProps(frameModelId, existingNode.id, {
+              nodeWidth: w, nodeHeight: h,
+            })
           }
-          img.src = dataUrl
+          img.src = blobUrl
         } else if (mType === 'video') {
           const vid = document.createElement('video')
           vid.onloadedmetadata = () => {
@@ -253,13 +193,70 @@ export function handleDrop(e: React.DragEvent, deps: DropHandlerDeps) {
             }
             w = Math.max(w, 100)
             h = Math.max(h, 80)
-            updateNodeProps(frameModelId, newId, { nodeWidth: w, nodeHeight: h })
+            updateNodeProps(frameModelId, existingNode.id, {
+              nodeWidth: w, nodeHeight: h,
+            })
           }
-          vid.src = dataUrl
+          vid.src = blobUrl
         }
       }
+    } else {
+      // Drop onto empty scene — create a new media node
+      const pos = clientToScene(e.clientX, e.clientY)
+      const snappedX = snapToGrid(pos.x)
+      const snappedY = snapToGrid(pos.y)
+      const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const defaultSizes: Record<string, { w: number; h: number }> = {
+        image: { w: 160, h: 120 },
+        gif: { w: 160, h: 120 },
+        audio: { w: 200, h: 80 },
+        video: { w: 200, h: 140 },
+        markdown: { w: 240, h: 60 },
+        math: { w: 200, h: 60 },
+      }
+      const sz = defaultSizes[mType] ?? { w: 160, h: 120 }
+      addNode(frameModelId, {
+        id: newId, label: '', x: snappedX, y: snappedY,
+        shape: 'rounded-rect',
+        mediaType: mType,
+        mediaSrc: blobUrl,
+        mediaFileName: file.name,
+        nodeWidth: sz.w, nodeHeight: sz.h,
+      })
+      selectNode(newId)
+      // Auto-size to image/video natural dimensions
+      if (mType === 'image' || mType === 'gif') {
+        const img = new Image()
+        img.onload = () => {
+          const maxW = 400, maxH = 400
+          let w = img.naturalWidth, h = img.naturalHeight
+          if (w > maxW || h > maxH) {
+            const ratio = Math.min(maxW / w, maxH / h)
+            w = Math.round(w * ratio)
+            h = Math.round(h * ratio)
+          }
+          w = Math.max(w, 60)
+          h = Math.max(h, 40)
+          updateNodeProps(frameModelId, newId, { nodeWidth: w, nodeHeight: h })
+        }
+        img.src = blobUrl
+      } else if (mType === 'video') {
+        const vid = document.createElement('video')
+        vid.onloadedmetadata = () => {
+          const maxW = 400, maxH = 400
+          let w = vid.videoWidth, h = vid.videoHeight
+          if (w > maxW || h > maxH) {
+            const ratio = Math.min(maxW / w, maxH / h)
+            w = Math.round(w * ratio)
+            h = Math.round(h * ratio)
+          }
+          w = Math.max(w, 100)
+          h = Math.max(h, 80)
+          updateNodeProps(frameModelId, newId, { nodeWidth: w, nodeHeight: h })
+        }
+        vid.src = blobUrl
+      }
     }
-    reader.readAsDataURL(file)
     return
   }
 }

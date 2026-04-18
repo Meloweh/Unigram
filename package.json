@@ -10,8 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "server": "npx tsx server/index.ts"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "dompurify": "^3.3.3",

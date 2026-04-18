@@ -403,10 +403,43 @@ export function FlowEffectEditor({
       if (e.key === 'Escape') {
         onClose()
       }
+      // Copy selected node
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (!selectedNodeId) return
+        const node = nodes.find(n => n.id === selectedNodeId)
+        if (!node || node.kind === 'entry') return
+        try {
+          const payload = JSON.stringify({ __fxNodeCopy: true, kind: node.kind, config: node.config, label: node.label })
+          navigator.clipboard.writeText(payload)
+        } catch { /* clipboard access denied */ }
+      }
+      // Paste node
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if ((e.target as HTMLElement).tagName === 'INPUT') return
+        navigator.clipboard.readText().then(text => {
+          try {
+            const data = JSON.parse(text)
+            if (!data?.__fxNodeCopy || !data.kind) return
+            const rect = canvasRef.current?.getBoundingClientRect()
+            const cx = rect ? (rect.width / 2 - pan.x) : 200
+            const cy = rect ? (rect.height / 2 - pan.y) : 200
+            const node: EffectGraphNode = {
+              id: uid(),
+              kind: data.kind,
+              label: data.label ?? kindLabels[data.kind as FlowEffectKind] ?? data.kind,
+              x: snapToGridVal(cx - NODE_W / 2 + 20),
+              y: snapToGridVal(cy - NODE_H / 2 + 20),
+              config: data.config ?? defaultConfig(data.kind),
+            }
+            setNodes(prev => [...prev, node])
+            setSelectedNodeId(node.id)
+          } catch { /* not valid paste data */ }
+        }).catch(() => { /* clipboard access denied */ })
+      }
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [deleteSelected, onClose])
+  }, [deleteSelected, onClose, selectedNodeId, nodes, pan])
 
   // ---- Properties panel for selected node ----
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
