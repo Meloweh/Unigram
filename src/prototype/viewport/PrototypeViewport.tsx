@@ -83,10 +83,64 @@ export function PrototypeViewport() {
   const freeScaleRef = useRef(frame.freeScale)
   freeScaleRef.current = frame.freeScale
 
-  // FPS counter
-  const fps = useFps()
-  const fpsRef = useRef(fps)
-  fpsRef.current = fps
+  // ---- DOM-level panning (bypasses React entirely during drag) ----
+  const sceneRef = useRef<HTMLDivElement>(null)
+  const panRafRef = useRef<number | null>(null)
+  // Accumulated delta since last store flush
+  const livePanDelta = useRef({ dx: 0, dy: 0 })
+
+  /** Queue a pan increment — applies CSS transform directly, zero React re-renders */
+  const rafPanBy = useCallback((dx: number, dy: number) => {
+    livePanDelta.current.dx += dx
+    livePanDelta.current.dy += dy
+    if (panRafRef.current == null) {
+      panRafRef.current = requestAnimationFrame(() => {
+        panRafRef.current = null
+        const el = sceneRef.current
+        if (!el) return
+        // Read the base pan from the store ref (set at last React render)
+        const baseTx = panOffsetRef.current.x + livePanDelta.current.dx
+        const baseTy = panOffsetRef.current.y + livePanDelta.current.dy
+        // Recompute centering identical to sceneStyle useMemo
+        const { currentFrame, getModel } = useHybridZoomStore.getState()
+        const f = currentFrame()
+        const m = getModel(f.modelId)
+        const selN = f.selectedNodeId ? m?.nodes.find(n => n.id === f.selectedNodeId) : undefined
+        let cx = 0, cy = 0
+        if (selN) {
+          const np = f.snapshot.nodeProgress
+          const cs = f.snapshot.cameraScale * f.freeScale
+          const vp = vpSizeRef.current
+          cx = (vp.w / 2 - selN.x / 100 * SCENE_W) * np * cs
+          cy = (vp.h / 2 - selN.y / 100 * SCENE_H) * np * cs
+        }
+        const scale = effectiveScaleRef.current
+        const rot = flowRotationRef.current
+        const rotStr = rot !== 0 ? ` rotate(${rot}deg)` : ''
+        const vp = vpSizeRef.current
+        el.style.transform = `translate(${cx + baseTx}px, ${cy + baseTy}px) scale(${scale})${rotStr}`
+        el.style.transformOrigin = `${vp.w / 2}px ${vp.h / 2}px`
+      })
+    }
+  }, [])
+
+  /** Flush accumulated pan delta to the Zustand store (triggers one React render) */
+  const flushPan = useCallback(() => {
+    if (panRafRef.current != null) {
+      cancelAnimationFrame(panRafRef.current)
+      panRafRef.current = null
+    }
+    const { dx, dy } = livePanDelta.current
+    if (dx !== 0 || dy !== 0) {
+      panBy(dx, dy)
+      livePanDelta.current.dx = 0
+      livePanDelta.current.dy = 0
+    }
+  }, [panBy])
+
+  // FPS counter — writes to DOM directly, never triggers re-render
+  const fpsSpanRef = useRef<HTMLSpanElement>(null)
+  const fpsRef = useFps(fpsSpanRef)
 
   // Benchmark mode
   const { benchmarkState, startBenchmark, stopBenchmark } = useBenchmark(frame.modelId, addNodeBatch, fpsRef)
@@ -283,19 +337,24 @@ export function PrototypeViewport() {
 
   // Compute the centering offset currently applied for the selected node
   // so we can bake it into panOffset when switching nodes (prevents visual jump)
-  const handleSelectNode = (nodeId: string) => {
-    if (selectedNode && frame.snapshot.nodeProgress > 0) {
-      const np = frame.snapshot.nodeProgress
-      const cs = effectiveScale
+  const handleSelectNode = useCallback((nodeId: string) => {
+    const { currentFrame, getModel } = useHybridZoomStore.getState()
+    const f = currentFrame()
+    const m = getModel(f.modelId)
+    const selNode = f.selectedNodeId ? m?.nodes.find(n => n.id === f.selectedNodeId) : undefined
+    if (selNode && f.snapshot.nodeProgress > 0) {
+      const np = f.snapshot.nodeProgress
+      const cs = effectiveScaleRef.current
+      const vp = vpSizeRef.current
       const residual = {
-        x: (vpSize.w / 2 - selectedNode.x / 100 * SCENE_W) * np * cs,
-        y: (vpSize.h / 2 - selectedNode.y / 100 * SCENE_H) * np * cs,
+        x: (vp.w / 2 - selNode.x / 100 * SCENE_W) * np * cs,
+        y: (vp.h / 2 - selNode.y / 100 * SCENE_H) * np * cs,
       }
       selectNode(nodeId, residual)
     } else {
       selectNode(nodeId)
     }
-  }
+  }, [selectNode])
 
   // ---- Drag, resize, selection, connection hooks ----
   const {
@@ -418,6 +477,46 @@ export function PrototypeViewport() {
     model, frame.modelId, gridSnap, beginMoveNode, moveNodes,
   )
 
+  // ---- Stable callbacks for ModelSceneContent (avoid new references on every render) ----
+  const handleDoubleClickNode = useCallback((nodeId: string) => {
+    const { currentFrame, getModel, beginEditNode: beginEdit } = useHybridZoomStore.getState()
+    const f = currentFrame()
+    const m = getModel(f.modelId)
+    const n = m?.nodes.find(nd => nd.id === nodeId)
+    if (n && (n.mediaType === 'markdown' || n.mediaType === 'math')) {
+      setEditingContentNodeId(nodeId)
+    } else {
+      beginEdit(f.modelId)
+      setEditingNodeId(nodeId)
+    }
+  }, [])
+
+  const handleClickConnection = useCallback((key: string, ax: number, ay: number) => {
+    setSelectedNodeIds(new Set())
+    openUnzip(key, ax, ay)
+  }, [setSelectedNodeIds, openUnzip])
+
+  const handleNodeSizesChanged = useCallback((sizes: Map<string, { w: number; h: number }>) => {
+    liveNodeSizesRef.current = sizes
+  }, [])
+
+  const handleFinishEditing = useCallback((nodeId: string, label: string) => {
+    const { currentFrame } = useHybridZoomStore.getState()
+    const f = currentFrame()
+    if (label.trim()) {
+      setNodeLabelSilent(f.modelId, nodeId, label.trim())
+    } else {
+      removeNode(f.modelId, nodeId)
+    }
+    setEditingNodeId(null)
+  }, [setNodeLabelSilent, removeNode])
+
+  const handleLiveEditLabel = useCallback((nodeId: string, label: string) => {
+    const { currentFrame } = useHybridZoomStore.getState()
+    const f = currentFrame()
+    setNodeLabelSilent(f.modelId, nodeId, label)
+  }, [setNodeLabelSilent])
+
   return (
     <div
       ref={viewportRef}
@@ -510,7 +609,7 @@ export function PrototypeViewport() {
         if (!isDragging || !lastPointer.current) return
         const dx = event.clientX - lastPointer.current.x
         const dy = event.clientY - lastPointer.current.y
-        panBy(dx, dy)
+        rafPanBy(dx, dy)
         lastPointer.current = { x: event.clientX, y: event.clientY }
       }}
       onPointerUp={(event) => {
@@ -546,6 +645,8 @@ export function PrototypeViewport() {
           return
         }
         endDrag()
+        // Flush accumulated DOM pan to Zustand store (one React render)
+        flushPan()
         lastPointer.current = null
         pause()
       }}
@@ -558,6 +659,7 @@ export function PrototypeViewport() {
         handleNodeDragEnd()
         setConnectionDraft(null)
         endDrag()
+        flushPan()
         lastPointer.current = null
       }}
       onClick={(event) => {
@@ -629,8 +731,8 @@ export function PrototypeViewport() {
 
       <div className="debug-overlay">
         <div className="prototype-stats compact">
-          <span style={{ color: fps >= 50 ? '#4caf50' : fps >= 25 ? '#ff9800' : '#f44336' }}>
-            FPS: {fps}
+          <span ref={fpsSpanRef} style={{ color: '#4caf50' }}>
+            FPS: --
           </span>
           <span>Selection: {frame.selectedNodeId ?? 'none'}</span>
           <span>Depth: {stack.length - 1}</span>
@@ -732,6 +834,7 @@ export function PrototypeViewport() {
         />
       )}
       <div
+        ref={sceneRef}
         className="scene"
         style={{
           ...sceneStyle,
@@ -761,36 +864,17 @@ export function PrototypeViewport() {
           visibleRect={visibleRect}
           effectiveScale={effectiveScale}
           onSelectNode={handleSelectNode}
-          onDoubleClickNode={(nodeId) => {
-            const n = model.nodes.find(nd => nd.id === nodeId)
-            if (n && (n.mediaType === 'markdown' || n.mediaType === 'math')) {
-              setEditingContentNodeId(nodeId)
-            } else {
-              beginEditNode(frame.modelId)
-              setEditingNodeId(nodeId)
-            }
-          }}
-          onClickConnection={(key, ax, ay) => { setSelectedNodeIds(new Set()); openUnzip(key, ax, ay) }}
+          onDoubleClickNode={handleDoubleClickNode}
+          onClickConnection={handleClickConnection}
           onNodeDragStart={handleNodeDragStart}
           onConnectionDragStart={handleConnectionDragStart}
           draggingNodeId={draggingNodeId}
           draggingMultiIds={multiDragOffsetsRef.current.size > 0 ? selectedNodeIds : undefined}
           editingNodeId={editingNodeId}
-          noTransition={!!mpdCurtain}
-          onNodeSizesChanged={(sizes) => { liveNodeSizesRef.current = sizes }}
-          onFinishEditing={(nodeId, label) => {
-            if (label.trim()) {
-              // Label is already in the store from onLiveEditLabel; just trim whitespace
-              setNodeLabelSilent(frame.modelId, nodeId, label.trim())
-            } else {
-              removeNode(frame.modelId, nodeId)
-            }
-            setEditingNodeId(null)
-          }}
-          onLiveEditLabel={(nodeId, label) => {
-            // Live-update the label in the store so node size recalcs properly (no undo push)
-            setNodeLabelSilent(frame.modelId, nodeId, label)
-          }}
+          noTransition={!!mpdCurtain || isDragging}
+          onNodeSizesChanged={handleNodeSizesChanged}
+          onFinishEditing={handleFinishEditing}
+          onLiveEditLabel={handleLiveEditLabel}
           connectionDraft={connectionDraft}
           flowAnimations={flowAnimations}
           emergeAnimations={emergeAnimations}

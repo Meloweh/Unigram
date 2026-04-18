@@ -153,11 +153,78 @@ export function ModelSceneContent({
       : { x: node.x, y: node.y }
   }
 
+  // Memoized position map — avoids creating new { x, y } objects on every render
+  const positionMap = useMemo(() => {
+    const map = new Map<string, { x: number; y: number }>()
+    for (const node of model.nodes) {
+      const off = spreadOffsets[node.id]
+      map.set(node.id, off
+        ? { x: node.x + off.dx, y: node.y + off.dy }
+        : { x: node.x, y: node.y })
+    }
+    return map
+  }, [model.nodes, spreadOffsets])
+
   const anchors = useMemo(
     () => computeEdgeAnchors(model.nodes, model.connections, SCENE_W, SCENE_H, pos, nodeSizesRef.current),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [model, spreadOffsets, sizeGen],
   )
+
+  // Memoize custom SVG marker definitions — only recompute when connections change
+  const customMarkers = useMemo(() => {
+    const markers: React.ReactNode[] = []
+    const seen = new Set<string>()
+    for (const c of model.connections) {
+      const color = c.strokeColor || (c.type === 'flow' ? '#f59e0b' : (c.evidence?.length ? 'rgba(37, 96, 149, 0.65)' : 'rgba(37, 96, 149, 0.45)'))
+      const style = c.arrowStyle ?? 'standard'
+      if (c.strokeColor && (style === 'standard' || !c.arrowStyle)) {
+        const id = `arrowhead-custom-${CSS.escape(c.strokeColor)}`
+        if (!seen.has(id)) {
+          seen.add(id)
+          markers.push(
+            <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={c.strokeColor} />
+            </marker>
+          )
+        }
+      }
+      if (style === 'triangle') {
+        const id = `arrowhead-triangle-${CSS.escape(color)}`
+        if (!seen.has(id)) {
+          seen.add(id)
+          markers.push(
+            <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={color} stroke={color} strokeWidth="0.5" />
+            </marker>
+          )
+        }
+      }
+      if (style === 'diamond') {
+        const id = `arrowhead-diamond-${CSS.escape(color)}`
+        if (!seen.has(id)) {
+          seen.add(id)
+          markers.push(
+            <marker key={id} id={id} markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto">
+              <polygon points="0 4, 5 0, 10 4, 5 8" fill={color} />
+            </marker>
+          )
+        }
+      }
+      if (style === 'circle') {
+        const id = `arrowhead-circle-${CSS.escape(color)}`
+        if (!seen.has(id)) {
+          seen.add(id)
+          markers.push(
+            <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="0" refY="4" orient="auto">
+              <circle cx="4" cy="4" r="3.5" fill={color} />
+            </marker>
+          )
+        }
+      }
+    }
+    return markers
+  }, [model.connections])
 
   return (
     <>
@@ -172,60 +239,7 @@ export function ModelSceneContent({
           <marker id="arrowhead-flow" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
           </marker>
-          {/* Dynamic markers for custom arrow styles and colors */}
-          {(() => {
-            const markers: React.ReactNode[] = []
-            const seen = new Set<string>()
-            for (const c of model.connections) {
-              const color = c.strokeColor || (c.type === 'flow' ? '#f59e0b' : (c.evidence?.length ? 'rgba(37, 96, 149, 0.65)' : 'rgba(37, 96, 149, 0.45)'))
-              const style = c.arrowStyle ?? 'standard'
-              if (c.strokeColor && (style === 'standard' || !c.arrowStyle)) {
-                const id = `arrowhead-custom-${CSS.escape(c.strokeColor)}`
-                if (!seen.has(id)) {
-                  seen.add(id)
-                  markers.push(
-                    <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-                      <polygon points="0 0, 8 3, 0 6" fill={c.strokeColor} />
-                    </marker>
-                  )
-                }
-              }
-              if (style === 'triangle') {
-                const id = `arrowhead-triangle-${CSS.escape(color)}`
-                if (!seen.has(id)) {
-                  seen.add(id)
-                  markers.push(
-                    <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-                      <polygon points="0 0, 8 3, 0 6" fill={color} stroke={color} strokeWidth="0.5" />
-                    </marker>
-                  )
-                }
-              }
-              if (style === 'diamond') {
-                const id = `arrowhead-diamond-${CSS.escape(color)}`
-                if (!seen.has(id)) {
-                  seen.add(id)
-                  markers.push(
-                    <marker key={id} id={id} markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto">
-                      <polygon points="0 4, 5 0, 10 4, 5 8" fill={color} />
-                    </marker>
-                  )
-                }
-              }
-              if (style === 'circle') {
-                const id = `arrowhead-circle-${CSS.escape(color)}`
-                if (!seen.has(id)) {
-                  seen.add(id)
-                  markers.push(
-                    <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="0" refY="4" orient="auto">
-                      <circle cx="4" cy="4" r="3.5" fill={color} />
-                    </marker>
-                  )
-                }
-              }
-            }
-            return markers
-          })()}
+          {customMarkers}
         </defs>
         {model.connections.map((c) => {
           const fromN = nodeMap.get(c.from)
@@ -305,7 +319,7 @@ export function ModelSceneContent({
       {model.nodes.map((node) => {
         const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
         if (node.hideDuringFlow && isFlowRunning) return null
-        const p = pos(node)
+        const p = positionMap.get(node.id) ?? { x: node.x, y: node.y }
         // Viewport cull: skip nodes outside visible rect (always render selected/editing/dragging)
         const isImportant = node.id === selectedNodeId
           || node.id === editingNodeId
