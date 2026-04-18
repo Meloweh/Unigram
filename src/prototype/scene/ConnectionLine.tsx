@@ -1,7 +1,8 @@
+import { memo } from 'react'
 import type { ConnectionType, ConnectionArrowStyle, ConnectionDashStyle } from '../model/sampleModels'
 
 /** Connection line that bows outward into a zipper-bag shape during unzip */
-export function ConnectionLine({
+export const ConnectionLine = memo(function ConnectionLine({
   fromX, fromY, toX, toY, hasEvidence, connectionType, flowProgress, gapProgress, vpSize, popupSize, connectionAngle,
   strokeColor, strokeWidth: customStrokeWidth, strokeDash, arrowStyle,
 }: {
@@ -215,4 +216,4 @@ export function ConnectionLine({
       <path d={d2} className={lineClass} fill="none" style={customStyle} />
     </>
   )
-}
+})

@@ -10,6 +10,11 @@ export const NODE_MIN_H = 40
 /** Auto-expand grid chunk size in percentage units */
 export const GRID_CHUNK = 20
 
+/** Level-of-detail thresholds (based on effectiveScale) */
+export const LOD_FULL = 0.5    // full SceneNode render
+export const LOD_SIMPLE = 0.2  // simplified colored rect + label
+// Below LOD_SIMPLE: colored dot only
+
 /** Cache AudioContext + AnalyserNode per media element so createMediaElementSource is only called once */
 export const audioCtxCache = new WeakMap<HTMLMediaElement, { ctx: AudioContext; analyser: AnalyserNode }>()
 

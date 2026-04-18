@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect, useMemo } from 'react'
+import { useRef, useState, useCallback, useEffect, useMemo, memo } from 'react'
 import { type Model, type ModelNode } from '../model/sampleModels'
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { CAMERA_SCALE_FINAL } from './hybridZoom'
@@ -14,7 +14,7 @@ import DOMPurify from 'dompurify'
 import { storeMediaBlob } from '../model/mediaStore'
 
 /** A single node that can expand its canvas when zooming */
-export function SceneNode({
+export const SceneNode = memo(function SceneNode({
   node,
   posX,
   posY,
@@ -51,23 +51,23 @@ export function SceneNode({
   progress: number
   childModel: Model | undefined
   vpSize: { w: number; h: number }
-  onSelect: () => void
-  onDoubleClick: () => void
-  onDragStart: (e: React.PointerEvent) => void
-  onConnectionDragStart: (e: React.PointerEvent) => void
+  onSelect: (id: string) => void
+  onDoubleClick: (id: string) => void
+  onDragStart: (id: string, e: React.PointerEvent) => void
+  onConnectionDragStart: (id: string, e: React.PointerEvent) => void
   isDragging: boolean
   isEditing: boolean
   isFlowActive: boolean
   isFlowRunning: boolean
-  onFinishEditing: (label: string) => void
-  onLiveEditLabel: (label: string) => void
-  onResize: (size: { w: number; h: number }) => void
+  onFinishEditing: (id: string, label: string) => void
+  onLiveEditLabel: (id: string, label: string) => void
+  onResize: (id: string, size: { w: number; h: number }) => void
   defaultCellColor: string
   defaultMembraneColor: string
-  onSetMedia?: (mediaSrc: string, mediaFileName: string) => void
-  onToggleCollapse?: () => void
-  onResizeDragStart?: (dir: string, e: React.PointerEvent) => void
-  onTipDrag?: (tipAngle: number, tipLength: number) => void
+  onSetMedia?: (id: string, mediaSrc: string, mediaFileName: string) => void
+  onToggleCollapse?: (id: string) => void
+  onResizeDragStart?: (id: string, dir: string, e: React.PointerEvent) => void
+  onTipDrag?: (id: string, tipAngle: number, tipLength: number) => void
 }) {
   const labelRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -171,7 +171,7 @@ export function SceneNode({
         audioCtx.close()
         const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
         if (onSetMediaRef.current) {
-          onSetMediaRef.current(storeMediaBlob(blob), 'recording.webm')
+          onSetMediaRef.current(node.id, storeMediaBlob(blob), 'recording.webm')
         }
         setIsRecording(false)
       }
@@ -220,7 +220,7 @@ export function SceneNode({
 
   // Report measured size to parent for anchor computation
   useEffect(() => {
-    onResize(effectiveBase)
+    onResize(node.id, effectiveBase)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveBase.w, effectiveBase.h])
 
@@ -346,12 +346,12 @@ export function SceneNode({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       finishedRef.current = true
-      onFinishEditing(getEditText())
+      onFinishEditing(node.id, getEditText())
     }
     if (e.key === 'Escape') {
       e.preventDefault()
       finishedRef.current = true
-      onFinishEditing('')
+      onFinishEditing(node.id, '')
     }
     // Shift+Enter inserts a line break (default textarea behavior)
   }
@@ -374,6 +374,29 @@ export function SceneNode({
       el.currentTime = node.playStart ?? 0
     }
   }, [node.playEnd, node.playStart])
+
+  // Memoize expensive Markdown/KaTeX rendering
+  const contentPreviewHtml = useMemo(() => {
+    if (!node.contentSource || node.mediaType !== 'math') return null
+    try {
+      return katex.renderToString(node.contentSource.split('\n')[0], { throwOnError: false })
+    } catch { return null }
+  }, [node.contentSource, node.mediaType])
+
+  const contentBodyHtml = useMemo(() => {
+    if (!node.contentSource) return null
+    if (node.mediaType === 'markdown') {
+      return DOMPurify.sanitize(marked.parse(node.contentSource) as string)
+    }
+    if (node.mediaType === 'math') {
+      try {
+        return katex.renderToString(node.contentSource, { throwOnError: false, displayMode: true })
+      } catch {
+        return `<span class="content-node-fallback">${node.contentSource}</span>`
+      }
+    }
+    return null
+  }, [node.contentSource, node.mediaType])
 
   const articleContent = (
     <>
@@ -431,26 +454,26 @@ export function SceneNode({
           <div
             className="content-node-chevron"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onToggleCollapse?.() }}
+            onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(node.id) }}
           >
             {node.contentCollapsed !== false ? '▸' : '▾'}
           </div>
           {node.contentCollapsed !== false ? (
             <div className="content-node-preview">
               {node.contentSource
-                ? (node.mediaType === 'math'
-                  ? (() => { try { return <span dangerouslySetInnerHTML={{ __html: katex.renderToString(node.contentSource.split('\n')[0], { throwOnError: false }) }} /> } catch { return <span className="content-node-fallback">{node.contentSource.split('\n')[0]}</span> } })()
-                  : <span>{node.contentSource.split('\n')[0].slice(0, 60)}{node.contentSource.split('\n')[0].length > 60 ? '…' : ''}</span>)
+                ? (node.mediaType === 'math' && contentPreviewHtml
+                  ? <span dangerouslySetInnerHTML={{ __html: contentPreviewHtml }} />
+                  : node.mediaType === 'math'
+                    ? <span className="content-node-fallback">{node.contentSource.split('\n')[0]}</span>
+                    : <span>{node.contentSource.split('\n')[0].slice(0, 60)}{node.contentSource.split('\n')[0].length > 60 ? '…' : ''}</span>)
                 : <span className="content-node-empty">{node.mediaType === 'markdown' ? 'Empty markdown' : 'Empty formula'}</span>}
             </div>
           ) : (
             <div
               className={`content-node-body content-node-${node.mediaType}`}
               dangerouslySetInnerHTML={{
-                __html: node.contentSource
-                  ? (node.mediaType === 'markdown'
-                    ? DOMPurify.sanitize(marked.parse(node.contentSource) as string)
-                    : (() => { try { return katex.renderToString(node.contentSource!, { throwOnError: false, displayMode: true }) } catch { return `<span class="content-node-fallback">${node.contentSource}</span>` } })())
+                __html: node.contentSource && contentBodyHtml
+                  ? contentBodyHtml
                   : `<span class="content-node-empty">${node.mediaType === 'markdown' ? 'Empty markdown' : 'Empty formula'}</span>`,
               }}
             />
@@ -509,7 +532,7 @@ export function SceneNode({
             useHybridZoomStore.getState().setLabelSelection(null)
             if (!finishedRef.current) {
               finishedRef.current = true
-              onFinishEditing(getEditText())
+              onFinishEditing(node.id, getEditText())
             }
           }}
           onClick={(e) => e.stopPropagation()}
@@ -563,11 +586,11 @@ export function SceneNode({
   )
 
   const articleEventHandlers = {
-    onClick: (event: React.MouseEvent) => { event.stopPropagation(); onSelect() },
-    onDoubleClick: (event: React.MouseEvent) => { event.stopPropagation(); if (!isEditing) onDoubleClick() },
+    onClick: (event: React.MouseEvent) => { event.stopPropagation(); onSelect(node.id) },
+    onDoubleClick: (event: React.MouseEvent) => { event.stopPropagation(); if (!isEditing) onDoubleClick(node.id) },
     onPointerDown: (e: React.PointerEvent) => {
-      if (e.button === 0 && !isEditing) onDragStart(e)
-      else if (e.button === 2) onConnectionDragStart(e)
+      if (e.button === 0 && !isEditing) onDragStart(node.id, e)
+      else if (e.button === 2) onConnectionDragStart(node.id, e)
     },
   }
 
@@ -598,7 +621,7 @@ export function SceneNode({
       <div
         key={`resize-${dir}`}
         style={handleStyle(cursor, style)}
-        onPointerDown={(e) => { if (e.button === 0) onResizeDragStart(dir, e) }}
+        onPointerDown={(e) => { if (e.button === 0) onResizeDragStart(node.id, dir, e) }}
       />
     ))
   })() : null
@@ -666,7 +689,7 @@ export function SceneNode({
         edgeDist = Math.min(tx, ty)
       }
       const newTipLength = Math.max(8, Math.min(80, dist - edgeDist))
-      onTipDrag(newAngle, newTipLength)
+      onTipDrag(node.id, newAngle, newTipLength)
     }
     const onUp = () => {
       target.releasePointerCapture(e.pointerId)
@@ -926,4 +949,4 @@ export function SceneNode({
       {resizeHandles}
     </article>
   )
-}
+})

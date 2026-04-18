@@ -2,6 +2,17 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import type { Model } from '../model/sampleModels'
 import { computeUntangledPositions } from './autoUntangle'
 import { SCENE_W, SCENE_H } from '../scene/sceneConstants'
+import { runInWorker } from '../workers/workerManager'
+import type { UntangleInput, UntangleOutput } from '../workers/autoUntangle.worker'
+
+/** Try creating an untangle worker; returns null in test environments */
+function createUntangleWorker(): Worker | null {
+  try {
+    return new Worker(new URL('../workers/autoUntangle.worker.ts', import.meta.url), { type: 'module' })
+  } catch {
+    return null
+  }
+}
 
 export function useAutoUntangle(
   model: Model,
@@ -12,53 +23,83 @@ export function useAutoUntangle(
 ) {
   const [isUntangling, setIsUntangling] = useState(false)
   const untangleRaf = useRef<number>(0)
+  const abortRef = useRef<AbortController | null>(null)
 
   const handleUntangle = useCallback(() => {
     if (isUntangling) return
-    const targets = computeUntangledPositions(model.nodes, model.connections, SCENE_W, SCENE_H, gridSnap)
-    if (!targets) return // already untangled
 
-    beginMoveNode(frameModelId) // snapshot for undo
     setIsUntangling(true)
 
-    // Capture stable data for the animation closure
-    const nodeIds = model.nodes.map(n => n.id)
-    const starts: Record<string, { x: number; y: number }> = {}
-    for (const n of model.nodes) starts[n.id] = { x: n.x, y: n.y }
+    // Capture model data before async computation
+    const nodes = model.nodes
+    const connections = model.connections
     const modelId = frameModelId
 
-    const duration = 800 // ms
-    const t0 = performance.now()
+    function animateResult(targets: Record<string, { x: number; y: number }>) {
+      beginMoveNode(modelId) // snapshot for undo
+      const nodeIds = nodes.map(n => n.id)
+      const starts: Record<string, { x: number; y: number }> = {}
+      for (const n of nodes) starts[n.id] = { x: n.x, y: n.y }
 
-    const animate = (now: number) => {
-      const elapsed = now - t0
-      const raw = Math.min(elapsed / duration, 1)
-      // Ease-out cubic
-      const p = 1 - Math.pow(1 - raw, 3)
+      const duration = 800 // ms
+      const t0 = performance.now()
 
-      const moves: { nodeId: string; x: number; y: number }[] = []
-      for (const id of nodeIds) {
-        const s = starts[id], e = targets[id]
-        if (!s || !e) continue
-        moves.push({
-          nodeId: id,
-          x: s.x + (e.x - s.x) * p,
-          y: s.y + (e.y - s.y) * p,
-        })
+      const animate = (now: number) => {
+        const elapsed = now - t0
+        const raw = Math.min(elapsed / duration, 1)
+        const p = 1 - Math.pow(1 - raw, 3) // ease-out cubic
+
+        const moves: { nodeId: string; x: number; y: number }[] = []
+        for (const id of nodeIds) {
+          const s = starts[id], e = targets[id]
+          if (!s || !e) continue
+          moves.push({ nodeId: id, x: s.x + (e.x - s.x) * p, y: s.y + (e.y - s.y) * p })
+        }
+        moveNodes(modelId, moves)
+
+        if (raw < 1) {
+          untangleRaf.current = requestAnimationFrame(animate)
+        } else {
+          setIsUntangling(false)
+        }
       }
-      moveNodes(modelId, moves)
+      untangleRaf.current = requestAnimationFrame(animate)
+    }
 
-      if (raw < 1) {
-        untangleRaf.current = requestAnimationFrame(animate)
+    // Try Worker-based async computation
+    const worker = createUntangleWorker()
+    if (worker) {
+      abortRef.current = new AbortController()
+      const input: UntangleInput = { nodes, connections, vpW: SCENE_W, vpH: SCENE_H, gridSnapSize: gridSnap }
+      runInWorker<UntangleInput, UntangleOutput>(worker, input, abortRef.current.signal)
+        .then((targets) => {
+          worker.terminate()
+          if (targets) {
+            animateResult(targets)
+          } else {
+            setIsUntangling(false) // already untangled
+          }
+        })
+        .catch(() => {
+          worker.terminate()
+          setIsUntangling(false)
+        })
+    } else {
+      // Synchronous fallback (test environment)
+      const targets = computeUntangledPositions(nodes, connections, SCENE_W, SCENE_H, gridSnap)
+      if (targets) {
+        animateResult(targets)
       } else {
         setIsUntangling(false)
       }
     }
-    untangleRaf.current = requestAnimationFrame(animate)
   }, [isUntangling, model, frameModelId, beginMoveNode, moveNodes, gridSnap])
 
-  // Cleanup raf on unmount
-  useEffect(() => () => cancelAnimationFrame(untangleRaf.current), [])
+  // Cleanup raf and abort worker on unmount
+  useEffect(() => () => {
+    cancelAnimationFrame(untangleRaf.current)
+    abortRef.current?.abort()
+  }, [])
 
   return { isUntangling, setIsUntangling, untangleRaf, handleUntangle }
 }

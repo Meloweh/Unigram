@@ -3,9 +3,11 @@ import { type Model, type ModelNode, type ConnectionType } from '../model/sample
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { resolvePalette } from '../theme/themes'
 import { computeEdgeAnchors } from './edgeAnchoring'
-import { SCENE_W, SCENE_H } from './sceneConstants'
+import { SCENE_W, SCENE_H, LOD_FULL, LOD_SIMPLE } from './sceneConstants'
 import { SceneNode } from './SceneNode'
 import { ConnectionLine } from './ConnectionLine'
+import { SimplifiedNode } from './SimplifiedNode'
+import { buildNodeMap } from './spatialIndex'
 
 /** Renders all nodes and connections for a model */
 export function ModelSceneContent({
@@ -15,6 +17,8 @@ export function ModelSceneContent({
   childModel,
   progress,
   vpSize,
+  visibleRect,
+  effectiveScale,
   onSelectNode,
   onDoubleClickNode,
   onClickConnection,
@@ -44,6 +48,8 @@ export function ModelSceneContent({
   childModel: Model | undefined
   progress: number
   vpSize: { w: number; h: number }
+  visibleRect?: { minX: number; maxX: number; minY: number; maxY: number }
+  effectiveScale?: number
   onSelectNode: (id: string) => void
   onDoubleClickNode: (id: string) => void
   onClickConnection: (connectionKey: string, anchorX: number, anchorY: number) => void
@@ -92,6 +98,9 @@ export function ModelSceneContent({
     }
   }, [frozenSizes])
 
+  // O(1) node lookup by ID
+  const nodeMap = useMemo(() => buildNodeMap(model.nodes), [model.nodes])
+
   // Compute per-node spread offsets for unzip popup
   const spreadOffsets = useMemo(() => {
     const offsets: Record<string, { dx: number; dy: number }> = {}
@@ -101,8 +110,8 @@ export function ModelSceneContent({
       (c) => `${c.from}->${c.to}` === unzipGap.connectionKey,
     )
     if (!conn) return offsets
-    const fromN = model.nodes.find((n) => n.id === conn.from)
-    const toN = model.nodes.find((n) => n.id === conn.to)
+    const fromN = nodeMap.get(conn.from)
+    const toN = nodeMap.get(conn.to)
     if (!fromN || !toN) return offsets
 
     const dxPx = (toN.x - fromN.x) * SCENE_W / 100
@@ -219,8 +228,8 @@ export function ModelSceneContent({
           })()}
         </defs>
         {model.connections.map((c) => {
-          const fromN = model.nodes.find((n) => n.id === c.from)
-          const toN = model.nodes.find((n) => n.id === c.to)
+          const fromN = nodeMap.get(c.from)
+          const toN = nodeMap.get(c.to)
           if (!fromN || !toN) return null
           const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
           if (c.hideDuringFlow && isFlowRunning) return null
@@ -228,6 +237,12 @@ export function ModelSceneContent({
           const hasEvidence = !!c.evidence?.length
           const a = anchors[key]
           if (!a) return null
+          // Viewport cull: skip if both anchor endpoints are outside the visible rect
+          if (visibleRect) {
+            const fxIn = a.fx >= visibleRect.minX && a.fx <= visibleRect.maxX && a.fy >= visibleRect.minY && a.fy <= visibleRect.maxY
+            const txIn = a.tx >= visibleRect.minX && a.tx <= visibleRect.maxX && a.ty >= visibleRect.minY && a.ty <= visibleRect.maxY
+            if (!fxIn && !txIn) return null
+          }
           const midX = (a.fx + a.tx) / 2
           const midY = (a.fy + a.ty) / 2
           const isUnzipping = unzipGap?.connectionKey === key
@@ -291,6 +306,51 @@ export function ModelSceneContent({
         const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
         if (node.hideDuringFlow && isFlowRunning) return null
         const p = pos(node)
+        // Viewport cull: skip nodes outside visible rect (always render selected/editing/dragging)
+        const isImportant = node.id === selectedNodeId
+          || node.id === editingNodeId
+          || node.id === draggingNodeId
+          || (selectedNodeIds?.has(node.id) ?? false)
+          || (draggingMultiIds?.has(node.id) ?? false)
+        if (visibleRect && !isImportant) {
+          if (p.x < visibleRect.minX || p.x > visibleRect.maxX || p.y < visibleRect.minY || p.y > visibleRect.maxY) return null
+        }
+        const scale = effectiveScale ?? 1
+        // LOD: at very low zoom, render dot; at medium zoom, render simplified node
+        if (!isImportant && scale < LOD_SIMPLE) {
+          const cellColor = node.cellColor ?? palette.nodeCell
+          return (
+            <div
+              key={node.id}
+              data-node-id={node.id}
+              style={{
+                position: 'absolute',
+                left: `${p.x}%`,
+                top: `${p.y}%`,
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: cellColor,
+                transform: 'translate(-50%, -50%)',
+                pointerEvents: 'auto',
+              }}
+            />
+          )
+        }
+        if (!isImportant && scale < LOD_FULL) {
+          return (
+            <SimplifiedNode
+              key={node.id}
+              node={node}
+              posX={p.x}
+              posY={p.y}
+              isSelected={false}
+              isDragging={!!noTransition}
+              defaultCellColor={palette.nodeCell}
+              defaultMembraneColor={palette.nodeMembrane}
+            />
+          )
+        }
         return (
           <SceneNode
             key={node.id}
@@ -303,23 +363,23 @@ export function ModelSceneContent({
             progress={node.id === selectedNodeId ? progress : 0}
             childModel={node.id === selectedNodeId ? childModel : undefined}
             vpSize={vpSize}
-            onSelect={() => onSelectNode(node.id)}
-            onDoubleClick={() => onDoubleClickNode(node.id)}
-            onDragStart={(e) => onNodeDragStart(node.id, e)}
-            onConnectionDragStart={(e) => onConnectionDragStart(node.id, e)}
+            onSelect={onSelectNode}
+            onDoubleClick={onDoubleClickNode}
+            onDragStart={onNodeDragStart}
+            onConnectionDragStart={onConnectionDragStart}
             isDragging={node.id === draggingNodeId || (draggingMultiIds?.has(node.id) ?? false) || !!noTransition}
             isEditing={node.id === editingNodeId}
             isFlowActive={flowActiveNodes.has(node.id)}
             isFlowRunning={isFlowRunning}
-            onFinishEditing={(label) => onFinishEditing(node.id, label)}
-            onLiveEditLabel={(label) => onLiveEditLabel(node.id, label)}
-            onResize={(size) => handleNodeResize(node.id, size)}
+            onFinishEditing={onFinishEditing}
+            onLiveEditLabel={onLiveEditLabel}
+            onResize={handleNodeResize}
             defaultCellColor={palette.nodeCell}
             defaultMembraneColor={palette.nodeMembrane}
-            onSetMedia={onSetMedia ? (src, name) => onSetMedia(node.id, src, name) : undefined}
-            onToggleCollapse={onToggleCollapse ? () => onToggleCollapse(node.id) : undefined}
-            onResizeDragStart={onResizeDragStart ? (dir, e) => onResizeDragStart(node.id, dir, e) : undefined}
-            onTipDrag={onTipDrag ? (angle, len) => onTipDrag(node.id, angle, len) : undefined}
+            onSetMedia={onSetMedia}
+            onToggleCollapse={onToggleCollapse}
+            onResizeDragStart={onResizeDragStart}
+            onTipDrag={onTipDrag}
           />
         )
       })}

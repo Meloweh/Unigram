@@ -53,7 +53,7 @@ const emptyEntry: StudyEvidence = { title: '', citation: '', url: '' }
 export function UnzipPopup({
   connectionKey, level, evidence, anchorX, anchorY, animProgress, connectionAngle, onSizeChange, onUpdateEvidence,
 }: UnzipPopupProps) {
-  const { closeUnzip, unzipDeeper, unzipShallower } = useHybridZoomStore()
+  const { closeUnzip, unzipDeeper, unzipShallower } = useHybridZoomStore.getState()
   const popupRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 300, h: 200 })
   const [adding, setAdding] = useState(false)

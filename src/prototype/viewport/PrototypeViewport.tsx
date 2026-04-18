@@ -4,6 +4,7 @@ import { SCENE_W, SCENE_H, SCENE_VP, computeGridExtent } from '../scene/sceneCon
 import { ModelSceneContent } from '../scene/ModelSceneContent'
 import { UnzipPopup } from '../ui/UnzipPopup'
 import { snapToGrid, useHybridZoomStore, type UnzipPopupState } from '../model/useHybridZoomStore'
+import { useShallow } from 'zustand/react/shallow'
 import { MpdDial } from '../mpd/MpdDial'
 import { LeftSidebar } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
@@ -27,6 +28,8 @@ import { useMpdLogic } from '../mpd/useMpdLogic'
 import { useMpdCurtain } from '../mpd/useMpdCurtain'
 import { FlowEffectEditorModal } from '../flow/FlowEffectEditorModal'
 import { MpdCurtainScene } from '../mpd/MpdCurtainScene'
+import { useFps } from '../ui/useFps'
+import { useBenchmark } from '../ui/useBenchmark'
 
 import 'katex/dist/katex.min.css'
 
@@ -36,62 +39,40 @@ export function PrototypeViewport() {
   const [vpSize, setVpSize] = useState({ w: 1920, h: 1080 })
   const vpSizeRef = useRef(vpSize)
   vpSizeRef.current = vpSize
+  // Reactive state — re-renders only when these specific fields change (shallow comparison)
   const {
-    stack,
-    currentFrame,
-    isDragging,
-    isPaused,
-    unzipPopup,
-    selectNode,
-    clearSelection,
-    zoomIn,
-    zoomOut,
-    pushModel,
-    openUnzip,
-    closeUnzip,
-    pause,
-    beginDrag,
-    endDrag,
-    panBy,
-    adjustFreeScale,
-    setFreeScale,
-    setPanOffset,
-    getModel: storeGetModel,
-    moveNode,
-    moveNodes,
-    beginMoveNode,
-    beginEditNode,
-    addNode,
-    updateNodeLabel,
-    updateNodeShape,
-    updateNodeProps,
-    updateNodePropsSilent,
-    setNodeLabelSilent,
-    removeNode,
-    addConnection,
-    updateConnectionType,
-    updateConnectionProps,
-    undo,
-    redo,
-    undoStacks,
-    redoStacks,
-    switchFrameMpd,
-    switchNodeMpd,
-    clearLastChildModelId,
-    setLastChildModelId,
-    registerModel,
-    updateModelLabel,
-    resetToRoot,
-    models: storeModels,
-    gridSnap,
-    setGridSnap,
-    updateConnectionEvidence,
-    removeConnection,
-    appThemeMode,
-    modelCosmetics,
-    setAppThemeMode,
-    setModelCosmetics,
-  } = useHybridZoomStore()
+    stack, isDragging, isPaused, unzipPopup,
+    models: storeModels, gridSnap, appThemeMode, modelCosmetics,
+    undoStacks, redoStacks,
+  } = useHybridZoomStore(useShallow(s => ({
+    stack: s.stack,
+    isDragging: s.isDragging,
+    isPaused: s.isPaused,
+    unzipPopup: s.unzipPopup,
+    models: s.models,
+    gridSnap: s.gridSnap,
+    appThemeMode: s.appThemeMode,
+    modelCosmetics: s.modelCosmetics,
+    undoStacks: s.undoStacks,
+    redoStacks: s.redoStacks,
+  })))
+
+  // Derived getters & action functions — stable references, never trigger re-renders
+  const {
+    currentFrame, getModel: storeGetModel,
+    selectNode, clearSelection, zoomIn, zoomOut, pushModel,
+    openUnzip, closeUnzip, pause, beginDrag, endDrag,
+    panBy, adjustFreeScale, setFreeScale, setPanOffset,
+    moveNode, moveNodes, beginMoveNode, beginEditNode,
+    addNode, updateNodeLabel, updateNodeShape, updateNodeProps,
+    updateNodePropsSilent, setNodeLabelSilent, removeNode,
+    addConnection, addNodeBatch, updateConnectionType, updateConnectionProps,
+    undo, redo, switchFrameMpd, switchNodeMpd,
+    clearLastChildModelId, setLastChildModelId,
+    registerModel, updateModelLabel, resetToRoot,
+    setGridSnap, updateConnectionEvidence, removeConnection,
+    setAppThemeMode, setModelCosmetics,
+  } = useHybridZoomStore.getState()
 
   const frame = currentFrame()
   const model = storeGetModel(frame.modelId)!
@@ -101,6 +82,14 @@ export function PrototypeViewport() {
   panOffsetRef.current = frame.panOffset
   const freeScaleRef = useRef(frame.freeScale)
   freeScaleRef.current = frame.freeScale
+
+  // FPS counter
+  const fps = useFps()
+  const fpsRef = useRef(fps)
+  fpsRef.current = fps
+
+  // Benchmark mode
+  const { benchmarkState, startBenchmark, stopBenchmark } = useBenchmark(frame.modelId, addNodeBatch, fpsRef)
 
   // Apply theme palette to DOM whenever appThemeMode changes
   useEffect(() => {
@@ -269,6 +258,21 @@ export function PrototypeViewport() {
       gridPxH,
     }
   }, [selectedNode, frame.snapshot.nodeProgress, effectiveScale, frame.panOffset.x, frame.panOffset.y, vpSize.w, vpSize.h, gridSnap, flowRotation])
+
+  // Compute visible scene rectangle (in 0-100% scene coordinates) for viewport culling
+  const visibleRect = useMemo(() => {
+    const BUFFER = 15 // percentage-point margin on each side
+    const minSx = (-vpSize.w / 2 - sceneTx) / effectiveScale + vpSize.w / 2
+    const maxSx = (vpSize.w / 2 - sceneTx) / effectiveScale + vpSize.w / 2
+    const minSy = (-vpSize.h / 2 - sceneTy) / effectiveScale + vpSize.h / 2
+    const maxSy = (vpSize.h / 2 - sceneTy) / effectiveScale + vpSize.h / 2
+    return {
+      minX: minSx / SCENE_W * 100 - BUFFER,
+      maxX: maxSx / SCENE_W * 100 + BUFFER,
+      minY: minSy / SCENE_H * 100 - BUFFER,
+      maxY: maxSy / SCENE_H * 100 + BUFFER,
+    }
+  }, [sceneTx, sceneTy, effectiveScale, vpSize.w, vpSize.h])
 
   // At handoff, push into child model (prefer lastChildModelId to preserve MPD switch)
   useEffect(() => {
@@ -625,6 +629,9 @@ export function PrototypeViewport() {
 
       <div className="debug-overlay">
         <div className="prototype-stats compact">
+          <span style={{ color: fps >= 50 ? '#4caf50' : fps >= 25 ? '#ff9800' : '#f44336' }}>
+            FPS: {fps}
+          </span>
           <span>Selection: {frame.selectedNodeId ?? 'none'}</span>
           <span>Depth: {stack.length - 1}</span>
           <span>Model: {model.label}</span>
@@ -643,6 +650,19 @@ export function PrototypeViewport() {
             <span>Camera: {effectiveScale.toFixed(2)}</span>
             <span>Inflation: {frame.snapshot.nodeInflation.toFixed(2)}</span>
             <span>Paused: {isPaused ? 'yes' : 'no'}</span>
+            <span>Nodes: {model.nodes.length} | Connections: {model.connections.length}</span>
+            <button
+              type="button"
+              onClick={benchmarkState.isRunning ? stopBenchmark : startBenchmark}
+              style={{ marginLeft: 8 }}
+            >
+              {benchmarkState.isRunning ? 'Stop Benchmark' : 'Start Benchmark'}
+            </button>
+            {benchmarkState.isRunning && (
+              <span>
+                Bench: {benchmarkState.nodeCount} nodes, {benchmarkState.connectionCount} conns
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -738,6 +758,8 @@ export function PrototypeViewport() {
           childModel={childModel}
           progress={p}
           vpSize={SCENE_VP}
+          visibleRect={visibleRect}
+          effectiveScale={effectiveScale}
           onSelectNode={handleSelectNode}
           onDoubleClickNode={(nodeId) => {
             const n = model.nodes.find(nd => nd.id === nodeId)

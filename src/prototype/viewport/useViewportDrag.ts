@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelNode, ModelConnection, ConnectionType, Model } from '../model/sampleModels'
 import { SCENE_W, SCENE_H, NODE_MIN_W, NODE_MIN_H } from '../scene/sceneConstants'
+import { buildNodeMap } from '../scene/spatialIndex'
 
 export interface ConnectionDraft {
   fromId: string
@@ -43,6 +44,9 @@ export function useViewportDrag(deps: ViewportDragDeps) {
     updateNodePropsSilent, addConnection, setFreeScale, setPanOffset,
   } = deps
 
+  // O(1) node lookup by ID
+  const nodeMap = useMemo(() => buildNodeMap(model.nodes), [model.nodes])
+
   // ---- Node dragging ----
   const draggingNodeRef = useRef<string | null>(null)
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
@@ -79,7 +83,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
   // Reset free zoom when a node is selected (animated transition + pan toward node)
   useEffect(() => {
     if (!frameSelectedNodeId || frameFreeScale === 1) return
-    const node = model?.nodes.find((n) => n.id === frameSelectedNodeId)
+    const node = model?.nodes ? nodeMap.get(frameSelectedNodeId) : undefined
     if (!node) return
     const startScale = frameFreeScale
     const startPanX = framePanOffset.x
@@ -134,7 +138,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
     e.stopPropagation()
     e.preventDefault()
     // Locked nodes cannot be dragged
-    const draggedNode = model.nodes.find((n) => n.id === nodeId)
+    const draggedNode = nodeMap.get(nodeId)
     if (draggedNode?.locked) return
     draggingNodeRef.current = nodeId
     setDraggingNodeId(nodeId)
@@ -144,14 +148,14 @@ export function useViewportDrag(deps: ViewportDragDeps) {
     if (selectedNodeIds.has(nodeId)) {
       const pos = clientToScene(e.clientX, e.clientY)
       for (const id of selectedNodeIds) {
-        const n = model.nodes.find((nd) => nd.id === id)
+        const n = nodeMap.get(id)
         if (n && id !== nodeId && !n.locked) {
           multiDragOffsetsRef.current.set(id, { dx: n.x - pos.x, dy: n.y - pos.y })
         }
       }
     }
     ;(e.target as Element).setPointerCapture(e.pointerId)
-  }, [beginMoveNode, frameModelId, selectedNodeIds, clientToScene, model.nodes])
+  }, [beginMoveNode, frameModelId, selectedNodeIds, clientToScene, nodeMap])
 
   const handleNodeDragMove = useCallback((e: React.PointerEvent) => {
     if (!draggingNodeRef.current) return
@@ -178,7 +182,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
   const handleResizeDragStart = useCallback((nodeId: string, dir: string, e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
-    const node = model.nodes.find((n) => n.id === nodeId)
+    const node = nodeMap.get(nodeId)
     if (!node || node.locked) return
     const article = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
     if (!article) return
@@ -196,7 +200,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
       origY: node.y,
     }
     ;(e.target as Element).setPointerCapture(e.pointerId)
-  }, [model.nodes, beginEditNode, frameModelId])
+  }, [nodeMap, beginEditNode, frameModelId])
 
   const handleResizeDragMove = useCallback((e: React.PointerEvent) => {
     const r = resizingRef.current
@@ -236,7 +240,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
   const handleConnectionDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
-    const node = model.nodes.find((n) => n.id === nodeId)
+    const node = nodeMap.get(nodeId)
     if (!node) return
     setConnectionDraft({
       fromId: nodeId,
@@ -247,7 +251,7 @@ export function useViewportDrag(deps: ViewportDragDeps) {
       connectionType: activeConnectionType,
     })
     ;(e.target as Element).setPointerCapture(e.pointerId)
-  }, [model.nodes]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [nodeMap]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConnectionDragMove = useCallback((e: React.PointerEvent) => {
     if (!connectionDraft) return
