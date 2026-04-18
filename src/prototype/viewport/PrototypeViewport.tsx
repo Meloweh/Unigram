@@ -30,6 +30,7 @@ import { FlowEffectEditorModal } from '../flow/FlowEffectEditorModal'
 import { MpdCurtainScene } from '../mpd/MpdCurtainScene'
 import { useFps } from '../ui/useFps'
 import { useBenchmark } from '../ui/useBenchmark'
+import { PixiScene } from '../scene/PixiScene'
 
 import 'katex/dist/katex.min.css'
 
@@ -772,6 +773,15 @@ export function PrototypeViewport() {
             : `inset(0 calc(${(1 - mpdCurtain.progress) * 100}% - 1px) 0 0)`
           : 'inset(0)',
       }}>
+      {/* PixiJS scene — behind DOM scene, inside clip wrapper so MPD curtain clips it */}
+      <PixiScene
+        sceneTx={sceneTx}
+        sceneTy={sceneTy}
+        effectiveScale={effectiveScale}
+        rotation={flowRotation}
+        vpSize={vpSize}
+      />
+
       {/* During curtain: new background inside clip wrapper */}
       {mpdCurtain && (
         <div

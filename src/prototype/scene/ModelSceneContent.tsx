@@ -1,13 +1,15 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type Model, type ModelNode, type ConnectionType } from '../model/sampleModels'
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { resolvePalette } from '../theme/themes'
 import { computeEdgeAnchors } from './edgeAnchoring'
 import { SCENE_W, SCENE_H, LOD_FULL, LOD_SIMPLE } from './sceneConstants'
 import { SceneNode } from './SceneNode'
-import { ConnectionLine } from './ConnectionLine'
 import { SimplifiedNode } from './SimplifiedNode'
 import { buildNodeMap } from './spatialIndex'
+import { pixiLayers } from './pixiLayers'
+import { syncConnections, syncDraftLine, destroyAllConnections } from './PixiConnectionRenderer'
+import type { ConnectionRenderData } from './PixiConnectionRenderer'
 
 /** Renders all nodes and connections for a model */
 export function ModelSceneContent({
@@ -171,151 +173,84 @@ export function ModelSceneContent({
     [model, spreadOffsets, sizeGen],
   )
 
-  // Memoize custom SVG marker definitions — only recompute when connections change
-  const customMarkers = useMemo(() => {
-    const markers: React.ReactNode[] = []
-    const seen = new Set<string>()
+  // ─── PixiJS connection sync ─────────────────────────────────────────
+  const onClickConnectionRef = useRef(onClickConnection)
+  onClickConnectionRef.current = onClickConnection
+
+  const pixiConnectionData = useMemo(() => {
+    const result: ConnectionRenderData[] = []
+    const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
     for (const c of model.connections) {
-      const color = c.strokeColor || (c.type === 'flow' ? '#f59e0b' : (c.evidence?.length ? 'rgba(37, 96, 149, 0.65)' : 'rgba(37, 96, 149, 0.45)'))
-      const style = c.arrowStyle ?? 'standard'
-      if (c.strokeColor && (style === 'standard' || !c.arrowStyle)) {
-        const id = `arrowhead-custom-${CSS.escape(c.strokeColor)}`
-        if (!seen.has(id)) {
-          seen.add(id)
-          markers.push(
-            <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill={c.strokeColor} />
-            </marker>
-          )
-        }
+      const fromN = nodeMap.get(c.from)
+      const toN = nodeMap.get(c.to)
+      if (!fromN || !toN) continue
+      if (c.hideDuringFlow && isFlowRunning) continue
+      const key = `${c.from}->${c.to}`
+      const hasEvidence = !!c.evidence?.length
+      const a = anchors[key]
+      if (!a) continue
+      // Viewport cull
+      if (visibleRect) {
+        const fxIn = a.fx >= visibleRect.minX && a.fx <= visibleRect.maxX && a.fy >= visibleRect.minY && a.fy <= visibleRect.maxY
+        const txIn = a.tx >= visibleRect.minX && a.tx <= visibleRect.maxX && a.ty >= visibleRect.minY && a.ty <= visibleRect.maxY
+        if (!fxIn && !txIn) continue
       }
-      if (style === 'triangle') {
-        const id = `arrowhead-triangle-${CSS.escape(color)}`
-        if (!seen.has(id)) {
-          seen.add(id)
-          markers.push(
-            <marker key={id} id={id} markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill={color} stroke={color} strokeWidth="0.5" />
-            </marker>
-          )
-        }
-      }
-      if (style === 'diamond') {
-        const id = `arrowhead-diamond-${CSS.escape(color)}`
-        if (!seen.has(id)) {
-          seen.add(id)
-          markers.push(
-            <marker key={id} id={id} markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto">
-              <polygon points="0 4, 5 0, 10 4, 5 8" fill={color} />
-            </marker>
-          )
-        }
-      }
-      if (style === 'circle') {
-        const id = `arrowhead-circle-${CSS.escape(color)}`
-        if (!seen.has(id)) {
-          seen.add(id)
-          markers.push(
-            <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="0" refY="4" orient="auto">
-              <circle cx="4" cy="4" r="3.5" fill={color} />
-            </marker>
-          )
-        }
-      }
+      const isUnzipping = unzipGap?.connectionKey === key
+      const gapT = isUnzipping ? unzipGap.progress : 0
+      const emergeT = emergeAnimations.get(key)
+      const effToX = emergeT != null ? a.fx + (a.tx - a.fx) * emergeT : a.tx
+      const effToY = emergeT != null ? a.fy + (a.ty - a.fy) * emergeT : a.ty
+      const isFlow = c.type === 'flow'
+      const baseStrokeWidth = c.strokeWidth ?? (isFlow ? 3 : 2)
+      const emergeStrokeWidth = emergeT != null ? baseStrokeWidth * emergeT : undefined
+
+      result.push({
+        key,
+        fromX: a.fx,
+        fromY: a.fy,
+        toX: effToX,
+        toY: effToY,
+        hasEvidence,
+        connectionType: c.type,
+        flowProgress: flowAnimations.get(key),
+        strokeColor: c.strokeColor,
+        strokeWidth: emergeStrokeWidth ?? c.strokeWidth,
+        strokeDash: c.strokeDash,
+        arrowStyle: c.arrowStyle,
+        label: c.label,
+        labelFontSize: c.labelFontSize,
+        gapProgress: gapT,
+        popupSize: isUnzipping ? unzipGap?.popupSize ?? null : null,
+        connectionAngle: isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0,
+      })
     }
-    return markers
-  }, [model.connections])
+    return result
+  }, [model.connections, nodeMap, anchors, visibleRect, flowAnimations, emergeAnimations, flowActiveNodes, unzipGap])
+
+  useEffect(() => {
+    const layer = pixiLayers.connections
+    if (!layer) return
+    syncConnections(layer, pixiConnectionData, (key, ax, ay) => {
+      onClickConnectionRef.current(key, ax, ay)
+    })
+  }, [pixiConnectionData])
+
+  useEffect(() => {
+    const layer = pixiLayers.connections
+    if (!layer) return
+    syncDraftLine(
+      layer,
+      connectionDraft
+        ? { fromX: connectionDraft.fromX, fromY: connectionDraft.fromY, toX: connectionDraft.toX, toY: connectionDraft.toY, connectionType: connectionDraft.connectionType }
+        : null,
+    )
+  }, [connectionDraft])
+
+  // Cleanup PixiJS connections on unmount
+  useEffect(() => destroyAllConnections, [])
 
   return (
     <>
-      <svg className="child-scene-connections">
-        <defs>
-          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.45)" />
-          </marker>
-          <marker id="arrowhead-evidence" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="rgba(37, 96, 149, 0.65)" />
-          </marker>
-          <marker id="arrowhead-flow" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
-          </marker>
-          {customMarkers}
-        </defs>
-        {model.connections.map((c) => {
-          const fromN = nodeMap.get(c.from)
-          const toN = nodeMap.get(c.to)
-          if (!fromN || !toN) return null
-          const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
-          if (c.hideDuringFlow && isFlowRunning) return null
-          const key = `${c.from}->${c.to}`
-          const hasEvidence = !!c.evidence?.length
-          const a = anchors[key]
-          if (!a) return null
-          // Viewport cull: skip if both anchor endpoints are outside the visible rect
-          if (visibleRect) {
-            const fxIn = a.fx >= visibleRect.minX && a.fx <= visibleRect.maxX && a.fy >= visibleRect.minY && a.fy <= visibleRect.maxY
-            const txIn = a.tx >= visibleRect.minX && a.tx <= visibleRect.maxX && a.ty >= visibleRect.minY && a.ty <= visibleRect.maxY
-            if (!fxIn && !txIn) return null
-          }
-          const midX = (a.fx + a.tx) / 2
-          const midY = (a.fy + a.ty) / 2
-          const isUnzipping = unzipGap?.connectionKey === key
-          const gapT = isUnzipping ? unzipGap.progress : 0
-          const emergeT = emergeAnimations.get(key)
-          const effToX = emergeT != null ? a.fx + (a.tx - a.fx) * emergeT : a.tx
-          const effToY = emergeT != null ? a.fy + (a.ty - a.fy) * emergeT : a.ty
-          const isFlow = c.type === 'flow'
-          const baseStrokeWidth = c.strokeWidth ?? (isFlow ? 3 : 2)
-          const emergeStrokeWidth = emergeT != null ? baseStrokeWidth * emergeT : undefined
-          return (
-            <g key={key}>
-              <line
-                x1={`${a.fx}%`} y1={`${a.fy}%`}
-                x2={`${effToX}%`} y2={`${effToY}%`}
-                className="connection-hit-area"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onClickConnection(key, midX, midY)
-                }}
-              />
-              <ConnectionLine
-                fromX={a.fx} fromY={a.fy}
-                toX={effToX} toY={effToY}
-                hasEvidence={hasEvidence}
-                connectionType={c.type}
-                flowProgress={flowAnimations.get(key)}
-                gapProgress={gapT}
-                vpSize={vpSize}
-                popupSize={isUnzipping ? unzipGap?.popupSize ?? null : null}
-                connectionAngle={isUnzipping ? unzipGap?.connectionAngle ?? 0 : 0}
-                strokeColor={c.strokeColor}
-                strokeWidth={emergeStrokeWidth ?? c.strokeWidth}
-                strokeDash={c.strokeDash}
-                arrowStyle={c.arrowStyle}
-              />
-              {c.label && !isUnzipping && (
-                <text
-                  x={`${midX}%`}
-                  y={`${midY}%`}
-                  className="connection-label"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  style={{ fontSize: `${c.labelFontSize ?? 0.85}rem` }}
-                >
-                  {c.label}
-                </text>
-              )}
-            </g>
-          )
-        })}
-        {connectionDraft && (
-          <line
-            x1={`${connectionDraft.fromX}%`} y1={`${connectionDraft.fromY}%`}
-            x2={`${connectionDraft.toX}%`} y2={`${connectionDraft.toY}%`}
-            className={connectionDraft.connectionType === 'flow' ? 'connection-draft flow' : 'connection-draft'}
-          />
-        )}
-      </svg>
       {model.nodes.map((node) => {
         const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
         if (node.hideDuringFlow && isFlowRunning) return null
