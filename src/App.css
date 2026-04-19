@@ -1620,9 +1620,9 @@
 
 .fxeditor-modal {
   width: 90vw;
-  height: 80vh;
-  max-width: 1200px;
-  max-height: 800px;
+  height: 90vh;
+  max-width: 2400px;
+  max-height: 1600px;
   background: #1e293b;
   border-radius: 12px;
   display: flex;
@@ -1756,8 +1756,8 @@
 
 .preview-facade-badge {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: 2px;
+  right: 2px;
   background: #7c3aed;
   color: #fff;
   font-size: 9px;

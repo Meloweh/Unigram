@@ -170,6 +170,29 @@ function updateTopFrame(
   return newStack
 }
 
+/** Update a spawn item's offset in the host node's flowEffects config */
+function syncSpawnOffset(
+  nodes: import('./sampleModels').ModelNode[],
+  hostNodeId: string, spawnEffectNodeId: string, itemIndex: number,
+  newOffsetX: number, newOffsetY: number,
+): import('./sampleModels').ModelNode[] {
+  return nodes.map(n => {
+    if (n.id !== hostNodeId) return n
+    const effects = n.flowEffects?.map(fx => {
+      const updatedGraphNodes = fx.graph.nodes.map(gn => {
+        if (gn.id !== spawnEffectNodeId || gn.kind !== 'spawn') return gn
+        const items = (gn.config.spawnItems as Array<Record<string, unknown>> | undefined) ?? []
+        const updatedItems = items.map((item, i) =>
+          i === itemIndex ? { ...item, offsetX: newOffsetX, offsetY: newOffsetY } : item
+        )
+        return { ...gn, config: { ...gn.config, spawnItems: updatedItems } }
+      })
+      return { ...fx, graph: { ...fx.graph, nodes: updatedGraphNodes } }
+    })
+    return { ...n, flowEffects: effects }
+  })
+}
+
 export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
   /** Push current model snapshot onto undo stack (clears redo) */
   function pushUndo(state: HybridZoomState, modelId: string): Pick<HybridZoomState, 'undoStacks' | 'redoStacks'> {
@@ -386,18 +409,24 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       const sy = snapToGrid(y, state.gridSnap)
       const dx = movedNode ? sx - movedNode.x : 0
       const dy = movedNode ? sy - movedNode.y : 0
+      let updatedNodes = model.nodes.map((n) => {
+        if (n.id === nodeId) return { ...n, x: sx, y: sy }
+        // Move preview facades whose host is being moved
+        if (n.previewOf?.hostNodeId === nodeId) return { ...n, x: n.x + dx, y: n.y + dy }
+        return n
+      })
+      // If the moved node is a preview facade, update spawn config offset
+      if (movedNode?.previewOf) {
+        const { hostNodeId, spawnEffectNodeId, itemIndex } = movedNode.previewOf
+        const hostNode = updatedNodes.find(n => n.id === hostNodeId)
+        if (hostNode) {
+          updatedNodes = syncSpawnOffset(updatedNodes, hostNodeId, spawnEffectNodeId, itemIndex, sx - hostNode.x, sy - hostNode.y)
+        }
+      }
       return {
         models: {
           ...state.models,
-          [modelId]: {
-            ...model,
-            nodes: model.nodes.map((n) => {
-              if (n.id === nodeId) return { ...n, x: sx, y: sy }
-              // Move preview facades whose host is being moved
-              if (n.previewOf?.hostNodeId === nodeId) return { ...n, x: n.x + dx, y: n.y + dy }
-              return n
-            }),
-          },
+          [modelId]: { ...model, nodes: updatedNodes },
         },
       }
     })
@@ -416,22 +445,33 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
           deltas.set(m.nodeId, { dx: snapToGrid(m.x, state.gridSnap) - orig.x, dy: snapToGrid(m.y, state.gridSnap) - orig.y })
         }
       }
+      let updatedNodes = model.nodes.map((n) => {
+        const m = lookup.get(n.id)
+        if (m) return { ...n, x: snapToGrid(m.x, state.gridSnap), y: snapToGrid(m.y, state.gridSnap) }
+        // Move preview facades whose host is in the move set
+        if (n.previewOf && deltas.has(n.previewOf.hostNodeId)) {
+          const d = deltas.get(n.previewOf.hostNodeId)!
+          return { ...n, x: n.x + d.dx, y: n.y + d.dy }
+        }
+        return n
+      })
+      // If any moved node is a preview facade, update spawn config offset
+      for (const m of moves) {
+        const movedNode = model.nodes.find(n => n.id === m.nodeId)
+        if (movedNode?.previewOf) {
+          const { hostNodeId, spawnEffectNodeId, itemIndex } = movedNode.previewOf
+          const hostNode = updatedNodes.find(n => n.id === hostNodeId)
+          if (hostNode) {
+            const sx = snapToGrid(m.x, state.gridSnap)
+            const sy = snapToGrid(m.y, state.gridSnap)
+            updatedNodes = syncSpawnOffset(updatedNodes, hostNodeId, spawnEffectNodeId, itemIndex, sx - hostNode.x, sy - hostNode.y)
+          }
+        }
+      }
       return {
         models: {
           ...state.models,
-          [modelId]: {
-            ...model,
-            nodes: model.nodes.map((n) => {
-              const m = lookup.get(n.id)
-              if (m) return { ...n, x: snapToGrid(m.x, state.gridSnap), y: snapToGrid(m.y, state.gridSnap) }
-              // Move preview facades whose host is in the move set
-              if (n.previewOf && deltas.has(n.previewOf.hostNodeId)) {
-                const d = deltas.get(n.previewOf.hostNodeId)!
-                return { ...n, x: n.x + d.dx, y: n.y + d.dy }
-              }
-              return n
-            }),
-          },
+          [modelId]: { ...model, nodes: updatedNodes },
         },
       }
     })
@@ -579,13 +619,42 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => {
       const model = state.models[modelId]
       if (!model) return state
+      const removedNode = model.nodes.find(n => n.id === nodeId)
+      let updatedNodes = model.nodes.filter((n) => n.id !== nodeId)
+
+      // If the removed node is a preview facade, remove it from the host's spawn config
+      if (removedNode?.previewOf) {
+        const { hostNodeId, spawnEffectNodeId, itemIndex } = removedNode.previewOf
+        updatedNodes = updatedNodes.map(n => {
+          if (n.id !== hostNodeId) return n
+          const effects = n.flowEffects?.map(fx => {
+            // Find the spawn graph node whose spawnItems generated this preview
+            const updatedGraphNodes = fx.graph.nodes.map(gn => {
+              if (gn.id !== spawnEffectNodeId || gn.kind !== 'spawn') return gn
+              const items = (gn.config.spawnItems as Array<Record<string, unknown>> | undefined) ?? []
+              return { ...gn, config: { ...gn.config, spawnItems: items.filter((_, i) => i !== itemIndex) } }
+            })
+            return { ...fx, graph: { ...fx.graph, nodes: updatedGraphNodes } }
+          })
+          return { ...n, flowEffects: effects }
+        })
+        // Re-index remaining preview facades for the same host+graphNode
+        updatedNodes = updatedNodes.map(n => {
+          if (!n.previewOf || n.previewOf.hostNodeId !== hostNodeId || n.previewOf.spawnEffectNodeId !== spawnEffectNodeId) return n
+          if (n.previewOf.itemIndex > itemIndex) {
+            return { ...n, id: `preview-${hostNodeId}-${spawnEffectNodeId}-${n.previewOf.itemIndex - 1}`, previewOf: { ...n.previewOf, itemIndex: n.previewOf.itemIndex - 1 } }
+          }
+          return n
+        })
+      }
+
       return {
         ...pushUndo(state, modelId),
         models: {
           ...state.models,
           [modelId]: {
             ...model,
-            nodes: model.nodes.filter((n) => n.id !== nodeId),
+            nodes: updatedNodes,
             connections: model.connections.filter(
               (c) => c.from !== nodeId && c.to !== nodeId,
             ),

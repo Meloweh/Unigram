@@ -387,19 +387,6 @@ export function FlowNodeConfigPanel({
                       <option value="zip-in">Zip-in</option>
                     </select>
                   </label>
-                  <label className="fxeditor-field">
-                    <span>Connection</span>
-                    <select value={item.connectionType}
-                      onChange={(e) => {
-                        const next = [...spawnItems]
-                        next[idx] = { ...item, connectionType: e.target.value as SpawnItem['connectionType'] }
-                        updateSpawnItems(next)
-                      }}>
-                      <option value="none">No connection</option>
-                      <option value="default">Default connection</option>
-                      <option value="flow">Flow connection</option>
-                    </select>
-                  </label>
                 </div>
               ))}
               <button type="button" className="fxeditor-spawn-add"

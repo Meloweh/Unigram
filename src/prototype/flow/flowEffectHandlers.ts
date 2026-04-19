@@ -218,9 +218,46 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
         // Activate the preview facade: clear previewOf, restore opacity
         targetId = previewId
         ctx.cleanup.activatedPreviews.push({ nodeId: previewId, previewOf: existingPreview.previewOf! })
+
+        // Find connections that depend on this preview and seed emerge animation at 0
+        const depConnKeys = ctx.model.connections
+          .filter(c => c.dependsOnSpawn === previewId)
+          .map(c => `${c.from}->${c.to}`)
+        if (depConnKeys.length > 0) {
+          ctx.setEmergeAnimations(prev => {
+            const next = new Map(prev)
+            for (const k of depConnKeys) next.set(k, 0)
+            return next
+          })
+        }
+
         ctx.updateNodeProps(ctx.frameModelId, previewId, { previewOf: undefined })
-        // Reveal connections that depend on this preview
-        // (handled by ModelSceneContent hiding logic — cleared because flow will re-render)
+
+        // Animate dependent connections from 0 → 1
+        if (depConnKeys.length > 0) {
+          const duration = item.animation === 'zip-in' ? 300 : 400
+          const start = performance.now()
+          const animateConns = () => {
+            const elapsed = performance.now() - start
+            const t = Math.min(elapsed / duration, 1)
+            const eased = 1 - (1 - t) ** 2 // ease-out quad
+            ctx.setEmergeAnimations(prev => {
+              const next = new Map(prev)
+              for (const k of depConnKeys) next.set(k, eased)
+              return next
+            })
+            if (t < 1) requestAnimationFrame(animateConns)
+            else {
+              // Clean up emerge entries
+              ctx.setEmergeAnimations(prev => {
+                const next = new Map(prev)
+                for (const k of depConnKeys) next.delete(k)
+                return next
+              })
+            }
+          }
+          requestAnimationFrame(animateConns)
+        }
       } else {
         targetId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         const spawnX = ctx.node.x + item.offsetX
@@ -234,27 +271,32 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
         }
       }
       ctx.cleanup.spawnedNodeIds.push(targetId)
-      // Spawn animation on the DOM element
-      requestAnimationFrame(() => {
+      // Spawn animation on the DOM element (retry a few frames to wait for React render)
+      const animKind = item.animation
+      let retries = 0
+      const tryAnimate = () => {
         const el = document.querySelector(`[data-node-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
-        if (el) {
-          if (item.animation === 'zip-in') {
-            el.style.opacity = '0'
-            el.style.transform = 'scale(0.3)'
-            el.style.transition = 'opacity 300ms ease, transform 300ms ease'
-            requestAnimationFrame(() => {
-              el.style.opacity = '1'
-              el.style.transform = 'scale(1)'
-            })
-          } else {
-            el.style.transform = 'scale(0)'
-            el.style.transition = 'transform 400ms ease'
-            requestAnimationFrame(() => {
-              el.style.transform = 'scale(1)'
-            })
-          }
+        if (!el) {
+          if (retries++ < 10) { requestAnimationFrame(tryAnimate); return }
+          return
         }
-      })
+        if (animKind === 'zip-in') {
+          el.style.opacity = '0'
+          el.style.transform = 'translate(-50%, -50%) scale(0.3)'
+          el.style.transition = 'opacity 300ms ease, transform 300ms ease'
+          requestAnimationFrame(() => {
+            el.style.opacity = '1'
+            el.style.transform = 'translate(-50%, -50%) scale(1)'
+          })
+        } else {
+          el.style.transform = 'translate(-50%, -50%) scale(0)'
+          el.style.transition = 'transform 400ms ease'
+          requestAnimationFrame(() => {
+            el.style.transform = 'translate(-50%, -50%) scale(1)'
+          })
+        }
+      }
+      requestAnimationFrame(tryAnimate)
     }
   }, delay)
   return 400

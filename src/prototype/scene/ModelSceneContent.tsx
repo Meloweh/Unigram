@@ -336,7 +336,11 @@ export function ModelSceneContent({
           if (!fromN || !toN) return null
           const isFlowRunning = flowActiveNodes.size > 0 || flowAnimations.size > 0
           if (c.hideDuringFlow && isFlowRunning) return null
-          if (c.dependsOnSpawn && isFlowRunning) return null
+          if (c.dependsOnSpawn && isFlowRunning) {
+            // Show connection once its spawn target has been activated (previewOf cleared)
+            const spawnTarget = nodeMap.get(c.dependsOnSpawn)
+            if (!spawnTarget || spawnTarget.previewOf) return null
+          }
           const key = `${c.from}->${c.to}`
           const a = anchors[key]
           if (!a) return null
@@ -382,10 +386,14 @@ export function ModelSceneContent({
         if (node.hideDuringFlow && isFlowRunning) return null
         // Hide preview facade nodes during flow (they get revealed when spawn fires)
         if (node.previewOf && isFlowRunning) return null
-        // Hide nodes whose ALL incoming connections have dependsOnSpawn (not yet spawned)
+        // Hide nodes whose ALL incoming connections depend on spawns that haven't fired yet
         if (isFlowRunning && !node.previewOf) {
           const incomingConns = model.connections.filter(c => c.to === node.id)
-          if (incomingConns.length > 0 && incomingConns.every(c => c.dependsOnSpawn)) return null
+          if (incomingConns.length > 0 && incomingConns.every(c => {
+            if (!c.dependsOnSpawn) return false
+            const spawnTarget = nodeMap.get(c.dependsOnSpawn)
+            return !spawnTarget || spawnTarget.previewOf // still waiting for spawn
+          })) return null
         }
         const p = positionMap.get(node.id) ?? { x: node.x, y: node.y }
         // Viewport cull: skip nodes outside visible rect (always render selected/editing/dragging)

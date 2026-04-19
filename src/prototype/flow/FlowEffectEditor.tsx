@@ -209,6 +209,7 @@ function EffectCanvasPane({
   onCrossDraftEnd,
   incomingCrossDraft,
   canvasRef: externalCanvasRef,
+  allowedKinds,
 }: {
   paneId: string
   nodes: EffectGraphNode[]
@@ -228,6 +229,7 @@ function EffectCanvasPane({
   onCrossDraftEnd?: () => void
   incomingCrossDraft?: { clientX: number; clientY: number } | null
   canvasRef?: React.RefObject<HTMLDivElement | null>
+  allowedKinds?: Set<FlowEffectKind>
 }) {
   const dragRef = useRef<{ nodeId: string; startX: number; startY: number; origX: number; origY: number } | null>(null)
   const [edgeDraft, setEdgeDraft] = useState<{ fromId: string; fromPort?: EffectPortId; mx: number; my: number } | null>(null)
@@ -392,6 +394,8 @@ function EffectCanvasPane({
     e.preventDefault()
     const kind = e.dataTransfer.getData('application/fxnode-kind') as FlowEffectKind
     if (!kind) return
+    // Reject if this kind isn't allowed on this pane
+    if (allowedKinds && !allowedKinds.has(kind)) return
     const rect = canvasRefActual.current?.getBoundingClientRect()
     if (!rect) return
     const gx = e.clientX - rect.left - pan.x
@@ -407,7 +411,7 @@ function EffectCanvasPane({
     onFocus?.()
     setNodes(prev => [...prev, node])
     onSelectNode(node.id)
-  }, [pan, setNodes, onSelectNode, onFocus])
+  }, [pan, setNodes, onSelectNode, onFocus, allowedKinds])
 
   const deleteEdge = useCallback((from: string, to: string, fromPort?: EffectPortId, toPort?: EffectPortId) => {
     setEdges(prev => prev.filter(e => !(e.from === from && e.to === to && (e.fromPort ?? undefined) === fromPort && (e.toPort ?? undefined) === toPort)))
@@ -575,19 +579,29 @@ export function FlowEffectEditor({
   onRequestPeer?: () => void
   onSyncPreviewFacades?: (hostNodeId: string, graphNodeId: string, items: SpawnItem[]) => void
 }) {
-  // Build the addable kinds based on host context
-  const isContentNode = hostContext.mediaType === 'markdown' || hostContext.mediaType === 'math'
-  const addableKinds: FlowEffectKind[] = [
-    'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'dismiss', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'text-generator', 'repeater',
-    ...(isContentNode ? ['expand' as const, 'collapse' as const] : []),
-    ...(hostContext.hasChildModel ? ['handoff-rmm' as const] : []),
-    ...(hostContext.isInsideChildModel ? ['return-rmm' as const] : []),
-    ...(hostContext.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
-    ...(hostContext.cosmeticType === 'thinking-cloud' ? ['cloud-levitate' as const] : []),
-    ...(hostContext.cosmeticType === 'chat-bubble' ? ['bubble-levitate' as const] : []),
-    ...(hostContext.mediaType === 'video' ? ['segment-play' as const] : []),
-    ...(hostContext.mediaType === 'audio' ? ['audio-clip' as const] : []),
-  ]
+  // Build the addable kinds based on host context (and peer context in split view)
+  const kindsForCtx = (ctx: EffectEditorHostContext): FlowEffectKind[] => {
+    const isCont = ctx.mediaType === 'markdown' || ctx.mediaType === 'math'
+    return [
+      'wait', 'move', 'color', 'spawn', 'spawn-circular', 'emerge', 'dismiss', 'jitter', 'float', 'scale', 'camera', 'break', 'record', 'text-format', 'text-generator', 'repeater',
+      ...(isCont ? ['expand' as const, 'collapse' as const] : []),
+      ...(ctx.hasChildModel ? ['handoff-rmm' as const] : []),
+      ...(ctx.isInsideChildModel ? ['return-rmm' as const] : []),
+      ...(ctx.mpdIds.length > 1 ? ['handoff-mpd' as const] : []),
+      ...(ctx.cosmeticType === 'thinking-cloud' ? ['cloud-levitate' as const] : []),
+      ...(ctx.cosmeticType === 'chat-bubble' ? ['bubble-levitate' as const] : []),
+      ...(ctx.mediaType === 'video' ? ['segment-play' as const] : []),
+      ...(ctx.mediaType === 'audio' ? ['audio-clip' as const] : []),
+    ]
+  }
+  const primaryKinds = kindsForCtx(hostContext)
+  const peerKinds = peerHostContext ? kindsForCtx(peerHostContext) : []
+  // Union of both contexts' kinds (deduplicated, preserves order)
+  const addableKinds: FlowEffectKind[] = [...primaryKinds]
+  for (const k of peerKinds) { if (!addableKinds.includes(k)) addableKinds.push(k) }
+  // Sets for quick lookup of per-pane compatibility
+  const primaryKindSet = new Set(primaryKinds)
+  const peerKindSet = new Set(peerKinds)
 
   // ---- Primary graph state ----
   const [nodes, setNodes] = useState<EffectGraphNode[]>(() => {
@@ -718,9 +732,24 @@ export function FlowEffectEditor({
       y: snapToGridVal(200 - NODE_H / 2),
       config: defaultConfig(kind),
     }
-    setCurNodes(prev => [...prev, node])
-    setCurSelectedId(node.id)
-  }, [setCurNodes, setCurSelectedId])
+    // In split view, redirect to the compatible pane if current pane doesn't support this kind
+    const curAllowed = activePane === 'peer' ? peerKindSet : primaryKindSet
+    const otherAllowed = activePane === 'peer' ? primaryKindSet : peerKindSet
+    if (hasPeer && !curAllowed.has(kind) && otherAllowed.has(kind)) {
+      const otherSetNodes = activePane === 'peer' ? setNodes : setPeerNodes
+      const otherSetSelId = activePane === 'peer' ? setSelectedNodeId : setPeerSelectedNodeId
+      otherSetNodes(prev => [...prev, node])
+      otherSetSelId(node.id)
+      if (activePane === 'peer') {
+        setPeerSelectedNodeId(null); setActivePane('primary')
+      } else {
+        setSelectedNodeId(null); setActivePane('peer')
+      }
+    } else {
+      setCurNodes(prev => [...prev, node])
+      setCurSelectedId(node.id)
+    }
+  }, [setCurNodes, setCurSelectedId, activePane, hasPeer, primaryKindSet, peerKindSet, setNodes, setPeerNodes, setSelectedNodeId, setPeerSelectedNodeId, setActivePane])
 
   // ---- Keyboard ----
   useEffect(() => {
@@ -836,6 +865,7 @@ export function FlowEffectEditor({
             onCrossDraftMove={hasPeer ? (cx, cy) => setCrossDraft(prev => prev ? { ...prev, clientX: cx, clientY: cy } : null) : undefined}
             onCrossDraftEnd={hasPeer ? () => { const d = crossDraftRef.current; if (d) { resolveCrossDrop(d); setCrossDraft(null) } } : undefined}
             incomingCrossDraft={crossDraft && crossDraft.sourcePane === 'peer' ? crossDraft : null}
+            allowedKinds={hasPeer ? primaryKindSet : undefined}
           />
 
           {/* Peer canvas (split-screen) */}
@@ -865,6 +895,7 @@ export function FlowEffectEditor({
                 onCrossDraftMove={(cx, cy) => setCrossDraft(prev => prev ? { ...prev, clientX: cx, clientY: cy } : null)}
                 onCrossDraftEnd={() => { const d = crossDraftRef.current; if (d) { resolveCrossDrop(d); setCrossDraft(null) } }}
                 incomingCrossDraft={crossDraft && crossDraft.sourcePane === 'primary' ? crossDraft : null}
+                allowedKinds={peerKindSet}
               />
             </>
           )}
