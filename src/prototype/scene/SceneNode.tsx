@@ -11,7 +11,6 @@ import { ChildModelPreview } from './ChildModelPreview'
 import { marked } from 'marked'
 import katex from 'katex'
 import DOMPurify from 'dompurify'
-import { storeMediaBlob } from '../model/mediaStore'
 
 /** A single node that can expand its canvas when zooming */
 export const SceneNode = memo(function SceneNode({
@@ -73,121 +72,6 @@ export const SceneNode = memo(function SceneNode({
   const editRef = useRef<HTMLTextAreaElement>(null)
   const finishedRef = useRef(false)
   const [baseSize, setBaseSize] = useState({ w: NODE_MIN_W, h: NODE_MIN_H })
-
-  // Audio recording state
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const [isRecording, setIsRecording] = useState(false)
-  const onSetMediaRef = useRef(onSetMedia)
-  onSetMediaRef.current = onSetMedia
-
-  const startRecording = useCallback(async () => {
-    try {
-      // Request raw mic input — disable browser-level processing so our chain handles it
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      })
-
-      // Build a Web Audio processing chain for quality enhancement
-      const audioCtx = new AudioContext()
-      const source = audioCtx.createMediaStreamSource(stream)
-
-      // --- Plosive / pop protection (2-cascaded highpass at 100 Hz → 24 dB/oct) ---
-      const hp1 = audioCtx.createBiquadFilter()
-      hp1.type = 'highpass'; hp1.frequency.value = 100; hp1.Q.value = 0.7
-      const hp2 = audioCtx.createBiquadFilter()
-      hp2.type = 'highpass'; hp2.frequency.value = 100; hp2.Q.value = 0.7
-
-      // Low-pass filter: cut high-frequency noise above 15 kHz
-      const lowpass = audioCtx.createBiquadFilter()
-      lowpass.type = 'lowpass'
-      lowpass.frequency.value = 15000
-      lowpass.Q.value = 0.7
-
-      // --- De-esser: targeted narrow notches at sibilant frequencies ---
-      // These stay in a single signal path (no crossover → no phase cancellation)
-      const deess1 = audioCtx.createBiquadFilter()
-      deess1.type = 'peaking'; deess1.frequency.value = 5500; deess1.Q.value = 3.0; deess1.gain.value = -7
-      const deess2 = audioCtx.createBiquadFilter()
-      deess2.type = 'peaking'; deess2.frequency.value = 7000; deess2.Q.value = 3.0; deess2.gain.value = -7
-      const deess3 = audioCtx.createBiquadFilter()
-      deess3.type = 'peaking'; deess3.frequency.value = 8500; deess3.Q.value = 2.5; deess3.gain.value = -5
-      // Gentle shelf rolloff above 9 kHz for remaining sibilant tail
-      const deessShelf = audioCtx.createBiquadFilter()
-      deessShelf.type = 'highshelf'; deessShelf.frequency.value = 9000; deessShelf.gain.value = -4
-
-      // Mouth sound reduction: attenuate clicks/smacks/lip noise in the 1–4 kHz range
-      const declick = audioCtx.createBiquadFilter()
-      declick.type = 'peaking'
-      declick.frequency.value = 2500
-      declick.Q.value = 1.0
-      declick.gain.value = -3
-
-      // Main compressor: tame spikes and even out dynamics
-      const compressor = audioCtx.createDynamicsCompressor()
-      compressor.threshold.value = -24
-      compressor.knee.value = 12
-      compressor.ratio.value = 4
-      compressor.attack.value = 0.003
-      compressor.release.value = 0.15
-
-      // Brick-wall limiter: catch any remaining transient spikes (blows, pops)
-      const limiter = audioCtx.createDynamicsCompressor()
-      limiter.threshold.value = -3
-      limiter.knee.value = 0
-      limiter.ratio.value = 20
-      limiter.attack.value = 0.001
-      limiter.release.value = 0.05
-
-      // Makeup gain to restore volume after compression
-      const makeupGain = audioCtx.createGain()
-      makeupGain.gain.value = 1.4
-
-      // Wire chain (single path, no splits):
-      // source → hp1 → hp2 → lowpass → deess1 → deess2 → deess3 → deessShelf → declick → compressor → limiter → gain → dest
-      source.connect(hp1)
-      hp1.connect(hp2)
-      hp2.connect(lowpass)
-      lowpass.connect(deess1)
-      deess1.connect(deess2)
-      deess2.connect(deess3)
-      deess3.connect(deessShelf)
-      deessShelf.connect(declick)
-      declick.connect(compressor)
-      compressor.connect(limiter)
-      limiter.connect(makeupGain)
-
-      const dest = audioCtx.createMediaStreamDestination()
-      makeupGain.connect(dest)
-
-      const recorder = new MediaRecorder(dest.stream)
-      const chunks: BlobPart[] = []
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop())
-        audioCtx.close()
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-        if (onSetMediaRef.current) {
-          onSetMediaRef.current(node.id, storeMediaBlob(blob), 'recording.webm')
-        }
-        setIsRecording(false)
-      }
-      mediaRecorderRef.current = recorder
-      recorder.start()
-      setIsRecording(true)
-    } catch {
-      // Microphone access denied or unavailable
-    }
-  }, [])
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-  }, [])
 
   // Measure label size (both for display and editing)
   const measureLabel = useCallback(() => {
@@ -464,29 +348,20 @@ export const SceneNode = memo(function SceneNode({
         </div>
       )}
       {/* Empty media placeholder (or audio with cover but no audio yet) */}
-      {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && !node.mediaSrc && chromeFade > 0.01 && (
+      {node.mediaType && node.mediaType !== 'markdown' && node.mediaType !== 'math' && node.mediaType !== 'audio' && !node.mediaSrc && chromeFade > 0.01 && (
         <div className="media-node-placeholder" style={{ opacity: chromeFade }}>
-          {node.mediaType === 'audio' && node.audioCoverSrc ? (
-            <img src={node.audioCoverSrc} alt="Cover" className="media-audio-cover" draggable={false}
-              style={{ maxHeight: '60%', objectFit: 'cover', borderRadius: 6 }} />
-          ) : (
-            <span className="media-node-placeholder-icon">
-              {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : node.mediaType === 'audio' ? (isRecording ? '⏺' : '🔊') : '🎬'}
-            </span>
-          )}
-          <span className="media-node-placeholder-text">
-            {isRecording ? 'Recording…' : node.mediaType === 'audio' && node.audioCoverSrc ? 'Drop audio or record' : `Drop ${node.mediaType} here`}
+          <span className="media-node-placeholder-icon">
+            {node.mediaType === 'image' ? '🖼' : node.mediaType === 'gif' ? '🎞' : '🎬'}
           </span>
-          {node.mediaType === 'audio' && onSetMedia && (
-            <button
-              className="media-record-btn"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); isRecording ? stopRecording() : startRecording() }}
-            >
-              {isRecording ? '⏹ Stop' : '⏺ Record'}
-            </button>
-          )}
+          <span className="media-node-placeholder-text">
+            {`Drop ${node.mediaType} here`}
+          </span>
         </div>
+      )}
+      {/* Audio cover image (fills the node when no mediaSrc) */}
+      {node.mediaType === 'audio' && !node.mediaSrc && node.audioCoverSrc && chromeFade > 0.01 && (
+        <img src={node.audioCoverSrc} alt="Cover" className="media-audio-cover" draggable={false}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit', opacity: chromeFade }} />
       )}
       {isEditing ? (
         <textarea

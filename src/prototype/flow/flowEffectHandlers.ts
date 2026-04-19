@@ -680,9 +680,9 @@ export function handleSegmentPlay(ctx: FlowEffectCtx, gNode: EffectGraphNode, de
 }
 
 export function handleAudioClip(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
-  const clipKey = (gNode.config.clipKey as string) ?? ''
-  if (!clipKey) return 0
-  const blob = getMediaBlob(clipKey)
+  const clipBlobUrl = (gNode.config.clipBlobUrl as string) ?? ''
+  if (!clipBlobUrl) return 0
+  const blob = getMediaBlob(clipBlobUrl)
   if (!blob) return 0
   const capturedNodeId = ctx.nodeId
   const audio = new Audio()

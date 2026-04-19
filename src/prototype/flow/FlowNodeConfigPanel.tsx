@@ -88,10 +88,37 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
   }, [])
 
   const hasBlobUrl = !!(selectedNode.config.clipBlobUrl as string)
+  const [dragOver, setDragOver] = useState(false)
+
+  const onDropAudio = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = Array.from(e.dataTransfer.files).find(f => f.type.startsWith('audio/'))
+    if (!file) return
+    const blob = file as Blob
+    const blobUrl = storeMediaBlob(blob)
+    updateNodeConfig('clipKey', effectiveClipKey)
+    updateNodeConfig('clipBlobUrl', blobUrl)
+    const tempAudio = new Audio(blobUrl)
+    tempAudio.addEventListener('loadedmetadata', () => setClipDuration(tempAudio.duration))
+  }, [effectiveClipKey, updateNodeConfig])
 
   return (
     <>
-      <div className="fxeditor-field-hint">Record an audio sample for this clip node.</div>
+      <div
+        style={{
+          border: `2px dashed ${dragOver ? '#60a5fa' : 'rgba(255,255,255,0.15)'}`,
+          borderRadius: 8, padding: 12, marginBottom: 8, textAlign: 'center',
+          background: dragOver ? 'rgba(96,165,250,0.08)' : 'transparent',
+          transition: 'border-color 0.15s, background 0.15s',
+          fontSize: 12, color: 'rgba(255,255,255,0.5)',
+        }}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDropAudio}
+      >
+        {hasBlobUrl ? 'Drop audio file to replace' : 'Drop audio file here'}
+      </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
         {!isRecording ? (
           <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={startRecording}>
