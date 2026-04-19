@@ -341,6 +341,8 @@ export function ModelSceneContent({
             const spawnTarget = nodeMap.get(c.dependsOnSpawn)
             if (!spawnTarget || spawnTarget.previewOf) return null
           }
+          // Hide connections TO preview nodes that haven't been activated yet
+          if (isFlowRunning && toN.previewOf) return null
           const key = `${c.from}->${c.to}`
           const a = anchors[key]
           if (!a) return null

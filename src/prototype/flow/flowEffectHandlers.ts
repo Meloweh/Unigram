@@ -219,22 +219,22 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
         targetId = previewId
         ctx.cleanup.activatedPreviews.push({ nodeId: previewId, previewOf: existingPreview.previewOf! })
 
-        // Find connections that depend on this preview and seed emerge animation at 0
-        const depConnKeys = ctx.model.connections
-          .filter(c => c.dependsOnSpawn === previewId)
+        // Find connections TO the preview node and seed emerge animation at 0
+        const connKeys = ctx.model.connections
+          .filter(c => c.to === previewId || c.dependsOnSpawn === previewId)
           .map(c => `${c.from}->${c.to}`)
-        if (depConnKeys.length > 0) {
+        if (connKeys.length > 0) {
           ctx.setEmergeAnimations(prev => {
             const next = new Map(prev)
-            for (const k of depConnKeys) next.set(k, 0)
+            for (const k of connKeys) next.set(k, 0)
             return next
           })
         }
 
         ctx.updateNodeProps(ctx.frameModelId, previewId, { previewOf: undefined })
 
-        // Animate dependent connections from 0 → 1
-        if (depConnKeys.length > 0) {
+        // Animate connections from 0 → 1 in sync with the node animation
+        if (connKeys.length > 0) {
           const duration = item.animation === 'zip-in' ? 300 : 400
           const start = performance.now()
           const animateConns = () => {
@@ -243,7 +243,7 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
             const eased = 1 - (1 - t) ** 2 // ease-out quad
             ctx.setEmergeAnimations(prev => {
               const next = new Map(prev)
-              for (const k of depConnKeys) next.set(k, eased)
+              for (const k of connKeys) next.set(k, eased)
               return next
             })
             if (t < 1) requestAnimationFrame(animateConns)
@@ -251,7 +251,7 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
               // Clean up emerge entries
               ctx.setEmergeAnimations(prev => {
                 const next = new Map(prev)
-                for (const k of depConnKeys) next.delete(k)
+                for (const k of connKeys) next.delete(k)
                 return next
               })
             }
@@ -264,15 +264,36 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
         const spawnY = ctx.node.y + item.offsetY
         ctx.addNode(ctx.frameModelId, { id: targetId, label: item.label, x: spawnX, y: spawnY })
         if (item.connectionType !== 'none') {
+          const connKey = `${ctx.nodeId}->${targetId}`
+          // Seed emerge at 0 before adding the connection
+          ctx.setEmergeAnimations(prev => {
+            const next = new Map(prev)
+            next.set(connKey, 0)
+            return next
+          })
           ctx.addConnection(ctx.frameModelId, {
             from: ctx.nodeId, to: targetId,
             type: item.connectionType === 'flow' ? 'flow' : 'default',
           })
+          // Animate connection from 0 → 1
+          const dur = item.animation === 'zip-in' ? 300 : 400
+          const t0 = performance.now()
+          const animConn = () => {
+            const el2 = performance.now() - t0
+            const p = Math.min(el2 / dur, 1)
+            const eased = 1 - (1 - p) ** 2
+            ctx.setEmergeAnimations(prev => { const n = new Map(prev); n.set(connKey, eased); return n })
+            if (p < 1) requestAnimationFrame(animConn)
+            else ctx.setEmergeAnimations(prev => { const n = new Map(prev); n.delete(connKey); return n })
+          }
+          requestAnimationFrame(animConn)
         }
       }
       ctx.cleanup.spawnedNodeIds.push(targetId)
       // Spawn animation on the DOM element (retry a few frames to wait for React render)
+      // Uses Web Animations API so React re-renders don't overwrite inline styles
       const animKind = item.animation
+      const sourceNodeId = ctx.nodeId
       let retries = 0
       const tryAnimate = () => {
         const el = document.querySelector(`[data-node-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
@@ -281,19 +302,29 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
           return
         }
         if (animKind === 'zip-in') {
-          el.style.opacity = '0'
-          el.style.transform = 'translate(-50%, -50%) scale(0.3)'
-          el.style.transition = 'opacity 300ms ease, transform 300ms ease'
-          requestAnimationFrame(() => {
-            el.style.opacity = '1'
-            el.style.transform = 'translate(-50%, -50%) scale(1)'
-          })
+          el.animate([
+            { opacity: 0, transform: 'translate(-50%, -50%) scale(0.3)' },
+            { opacity: 1, transform: 'translate(-50%, -50%) scale(1)' },
+          ], { duration: 300, easing: 'ease', fill: 'backwards' })
         } else {
-          el.style.transform = 'translate(-50%, -50%) scale(0)'
-          el.style.transition = 'transform 400ms ease'
-          requestAnimationFrame(() => {
-            el.style.transform = 'translate(-50%, -50%) scale(1)'
-          })
+          // "Emerge from source": animate from source node position to target position
+          const srcEl = document.querySelector(`[data-node-id="${CSS.escape(sourceNodeId)}"]`) as HTMLElement | null
+          if (srcEl) {
+            const srcRect = srcEl.getBoundingClientRect()
+            const tgtRect = el.getBoundingClientRect()
+            const dx = srcRect.left + srcRect.width / 2 - (tgtRect.left + tgtRect.width / 2)
+            const dy = srcRect.top + srcRect.height / 2 - (tgtRect.top + tgtRect.height / 2)
+            el.animate([
+              { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0)`, opacity: 0 },
+              { transform: 'translate(-50%, -50%) scale(1)', opacity: 1 },
+            ], { duration: 400, easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)', fill: 'backwards' })
+          } else {
+            // Fallback: simple scale-up if source element not found
+            el.animate([
+              { transform: 'translate(-50%, -50%) scale(0)', opacity: 0 },
+              { transform: 'translate(-50%, -50%) scale(1)', opacity: 1 },
+            ], { duration: 400, easing: 'ease', fill: 'backwards' })
+          }
         }
       }
       requestAnimationFrame(tryAnimate)
