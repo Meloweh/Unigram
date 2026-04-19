@@ -1,5 +1,5 @@
 import type { Model, ModelNode, ModelConnection, StudyEvidence, NodeShape, MediaNodeType, CosmeticType, ConnectionType, FlowEffect, ConnectionDashStyle, ConnectionArrowStyle, ModelCosmetics, ThemeMode, TextFormatRange } from './sampleModels'
-import { getMediaBlob, isBlobUrl, storeMediaBlob } from './mediaStore'
+import { fetchMediaBlob, getMediaMime, isBlobUrl, storeMediaBlob } from './mediaStore'
 import JSZip from 'jszip'
 
 // ---- JSON file schema (what's on disk) ----
@@ -345,15 +345,15 @@ function guessExtension(srcUrl: string, filename?: string): string {
   }
   // Try blob URL mime from store
   if (isBlobUrl(srcUrl)) {
-    const blob = getMediaBlob(srcUrl)
-    if (blob?.type) {
+    const mime = getMediaMime(srcUrl)
+    if (mime) {
       const map: Record<string, string> = {
         'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
         'image/webp': '.webp', 'image/svg+xml': '.svg',
         'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg',
         'video/mp4': '.mp4', 'video/webm': '.webm', 'video/ogg': '.ogv',
       }
-      return map[blob.type] ?? '.bin'
+      return map[mime] ?? '.bin'
     }
   }
   return '.bin'
@@ -464,7 +464,7 @@ export async function exportBundle(
   // Add media files
   for (const [path, srcUrl] of mediaMap) {
     if (isBlobUrl(srcUrl)) {
-      const blob = getMediaBlob(srcUrl)
+      const blob = await fetchMediaBlob(srcUrl)
       if (blob) zip.file(path, blob)
     } else {
       zip.file(path, dataUrlToBytes(srcUrl))

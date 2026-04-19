@@ -179,7 +179,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     return {
       undoStacks: {
         ...state.undoStacks,
-        [modelId]: [...prev.slice(-(MAX_UNDO - 1)), JSON.parse(JSON.stringify(model))],
+        [modelId]: [...prev.slice(-(MAX_UNDO - 1)), structuredClone(model)],
       },
       redoStacks: { ...state.redoStacks, [modelId]: [] },
     }
@@ -673,7 +673,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         undoStacks: { ...state.undoStacks, [modelId]: stack.slice(0, -1) },
         redoStacks: {
           ...state.redoStacks,
-          [modelId]: [...(state.redoStacks[modelId] ?? []), JSON.parse(JSON.stringify(current))],
+          [modelId]: [...(state.redoStacks[modelId] ?? []), structuredClone(current)],
         },
       }
     })
@@ -690,7 +690,7 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
         redoStacks: { ...state.redoStacks, [modelId]: stack.slice(0, -1) },
         undoStacks: {
           ...state.undoStacks,
-          [modelId]: [...(state.undoStacks[modelId] ?? []), JSON.parse(JSON.stringify(current))],
+          [modelId]: [...(state.undoStacks[modelId] ?? []), structuredClone(current)],
         },
       }
     })

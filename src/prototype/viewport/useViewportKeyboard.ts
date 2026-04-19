@@ -77,9 +77,9 @@ export function useViewportKeyboard(deps: ViewportKeyboardDeps) {
         const clip = clipboardRef.current
         if (!clip || clip.nodes.length === 0) return
         e.preventDefault()
-        // Throttle paste to prevent crash from keyboard repeat (~30Hz)
+        // Throttle paste to prevent OOM from rapid keyboard repeat
         const now = Date.now()
-        if (now - lastPasteRef.current < 100) return
+        if (now - lastPasteRef.current < 500) return
         lastPasteRef.current = now
         const idMap = new Map<string, string>()
         const pastedIds = new Set<string>()
@@ -93,7 +93,7 @@ export function useViewportKeyboard(deps: ViewportKeyboardDeps) {
         for (const node of clip.nodes) {
           const newId = idMap.get(node.id)!
           // Deep-clone to avoid shared mutable references (e.g. flowEffects)
-          const cloned: ModelNode = JSON.parse(JSON.stringify(node))
+          const cloned: ModelNode = structuredClone(node)
           pastedNodes.push({
             ...cloned,
             id: newId,
