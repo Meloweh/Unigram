@@ -655,25 +655,26 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
   onUpdateProps: (props: Partial<ModelNode>) => void
   onEditEffect: (effectId: string) => void
 }) {
-  const effects = node.flowEffects ?? []
   const hasLockedMedia = !!node.mediaType
   const hasLockedCosmetic = !!node.cosmeticType
 
-  const addEffect = () => {
-    const effect: FlowEffect = {
-      id: `fx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      label: `Effect ${effects.length + 1}`,
+  // Ensure every node has at least one (unlocked) effect graph
+  const effects = (() => {
+    const existing = node.flowEffects ?? []
+    if (existing.length > 0 || hasLockedMedia || hasLockedCosmetic) return existing
+    const defaultFx: FlowEffect = {
+      id: `fx-${node.id}-default`,
+      label: 'Effect 1',
       graph: {
         nodes: [{ id: '__entry__', kind: 'entry' as const, label: 'Signal In', x: 60, y: 120, config: {} }],
         edges: [],
       },
     }
-    onUpdateProps({ flowEffects: [...effects, effect] })
-  }
-
-  const removeEffect = (id: string) => {
-    onUpdateProps({ flowEffects: effects.filter(e => e.id !== id) })
-  }
+    const withDefault = [...existing, defaultFx]
+    // Persist so the id is stable across renders
+    Promise.resolve().then(() => onUpdateProps({ flowEffects: withDefault }))
+    return withDefault
+  })()
 
   // Build display list: if media node, prepend a locked play-media entry
   const displayEffects: (FlowEffect & { _locked?: boolean })[] = []
@@ -728,11 +729,7 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
     <div className="sidebar-section">
       <div className="sidebar-section-header static">Flow Animations</div>
       <div className="sidebar-section-body">
-        {displayEffects.length === 0 && (
-          <div className="settings-row">
-            <span className="settings-value" style={{ opacity: 0.5, fontSize: '0.8rem' }}>No effects</span>
-          </div>
-        )}
+
         {displayEffects.map((effect) => (
           <div className="settings-row flow-effect-row" key={effect.id}>
             <div className="flow-effect-info">
@@ -771,21 +768,10 @@ function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {
                 title="Edit effect graph"
                 onClick={() => onEditEffect(effect.id)}
               >✎</button>
-              {!effect.locked && !(effect as { _locked?: boolean })._locked && (
-                <button
-                  type="button"
-                  className="settings-remove-btn"
-                  title="Remove effect"
-                  onClick={() => removeEffect(effect.id)}
-                >×</button>
-              )}
             </span>
           </div>
         ))}
-        <div className="settings-row">
-          <span className="settings-label" />
-          <button type="button" className="settings-add-btn" onClick={addEffect}>+ Add Effect</button>
-        </div>
+
         <div className="settings-row">
           <label className="settings-label" htmlFor="node-camera-tracked">Camera Tracked</label>
           <input

@@ -3,6 +3,7 @@ import type { FlowEffectCtx, TextFormatOrigStyles } from './flowTypes'
 import { playGenSound } from './textGeneratorSounds'
 import type { TextGenSoundPreset } from './textGeneratorSounds'
 import { connectOBS } from './obsWebSocket'
+import { SCENE_W, SCENE_H } from '../scene/sceneConstants'
 
 // Visual effect handlers: spawn-circular, emerge, scale, text-format, record, and no-op kinds.
 // Each handler returns the layerMaxDuration contribution for that effect.
@@ -20,10 +21,11 @@ export function handleSpawnCircular(ctx: FlowEffectCtx, gNode: EffectGraphNode, 
     scItems.forEach((item, idx) => {
       setTimeout(() => {
         const angle = (2 * Math.PI * idx) / count - Math.PI / 2 // start from top
-        const spawnX = ctx.node.x + Math.cos(angle) * distance
-        const spawnY = ctx.node.y + Math.sin(angle) * distance
+        const spawnX = ctx.node.x + Math.cos(angle) * distance / SCENE_W * 100
+        const spawnY = ctx.node.y + Math.sin(angle) * distance / SCENE_H * 100
         const newId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         ctx.addNode(ctx.frameModelId, { id: newId, label: item.label, x: spawnX, y: spawnY })
+        ctx.cleanup.spawnedNodeIds.push(newId)
         if (item.connectionType !== 'none') {
           ctx.addConnection(ctx.frameModelId, {
             from: ctx.nodeId, to: newId,

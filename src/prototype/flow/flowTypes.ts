@@ -51,6 +51,7 @@ export interface FlowCleanupState {
   textGenTimers: number[]
   textGenHiddenSpans: { el: HTMLElement; origVisibility: string }[]
   textGenAudioNodes: { osc?: OscillatorNode; gain?: GainNode; source?: AudioBufferSourceNode; ctx: AudioContext }[]
+  spawnedNodeIds: string[]
 }
 
 /** Context passed to effect handler functions */
@@ -112,5 +113,6 @@ export function createCleanupState(): FlowCleanupState {
     textGenTimers: [],
     textGenHiddenSpans: [],
     textGenAudioNodes: [],
+    spawnedNodeIds: [],
   }
 }

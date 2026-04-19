@@ -212,6 +212,7 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
       const spawnX = ctx.node.x + item.offsetX
       const spawnY = ctx.node.y + item.offsetY
       ctx.addNode(ctx.frameModelId, { id: newId, label: item.label, x: spawnX, y: spawnY })
+      ctx.cleanup.spawnedNodeIds.push(newId)
       if (item.connectionType !== 'none') {
         ctx.addConnection(ctx.frameModelId, {
           from: ctx.nodeId, to: newId,

@@ -3,6 +3,7 @@ import type { Model, ModelNode, ModelConnection } from '../model/sampleModels'
 import type { FlowTask, FlowDAG, FlowEffectCtx } from './flowTypes'
 import { dispatchEffect } from './flowEffectHandlers'
 import { cleanupTextGenerator } from './textGeneratorCleanup'
+import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import { audioCtxCache, SCENE_W, SCENE_H } from '../scene/sceneConstants'
 
 export interface FlowEngineDeps {
@@ -92,6 +93,8 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
+  const flowSpawnedNodeIdsRef = useRef<string[]>([])
+  const flowEmergeUnhiddenRef = useRef<string[]>([])
   const alwaysPlayAnimsRef = useRef<Map<string, { rafId: number; el: HTMLElement; cleanup: () => void }>>(new Map())
 
   const [flowRotation, setFlowRotation] = useState(0)
@@ -122,6 +125,51 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       el.style.transition = ''
     }
     dismissHiddenElementsRef.current = []
+  }
+
+  const removeSpawnedNodes = () => {
+    const ids = flowSpawnedNodeIdsRef.current
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    const modelId = depsRef.current.frameModelId
+    useHybridZoomStore.setState((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      return {
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.filter((n) => !idSet.has(n.id)),
+            connections: model.connections.filter((c) => !idSet.has(c.from) && !idSet.has(c.to)),
+          },
+        },
+      }
+    })
+    flowSpawnedNodeIdsRef.current = []
+  }
+
+  const restoreEmergeUnhidden = () => {
+    const ids = flowEmergeUnhiddenRef.current
+    if (ids.length === 0) return
+    const modelId = depsRef.current.frameModelId
+    useHybridZoomStore.setState((state) => {
+      const model = state.models[modelId]
+      if (!model) return state
+      const idSet = new Set(ids)
+      return {
+        models: {
+          ...state.models,
+          [modelId]: {
+            ...model,
+            nodes: model.nodes.map((n) =>
+              idSet.has(n.id) ? { ...n, hideDuringFlow: true } : n,
+            ),
+          },
+        },
+      }
+    })
+    flowEmergeUnhiddenRef.current = []
   }
 
   // ---- stopFlowAnimation ----
@@ -168,6 +216,8 @@ export function useFlowEngine(deps: FlowEngineDeps) {
     restoreBrokenNodes()
     restoreEmergeNodes()
     restoreDismissNodes()
+    removeSpawnedNodes()
+    restoreEmergeUnhidden()
     for (const t of scaleRevertTimersRef.current) clearTimeout(t)
     scaleRevertTimersRef.current = []
     // Restore colors changed by permanent color effects
@@ -298,6 +348,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         textGenTimers: textGenTimersRef.current,
         textGenHiddenSpans: textGenHiddenSpansRef.current,
         textGenAudioNodes: textGenAudioNodesRef.current,
+        spawnedNodeIds: flowSpawnedNodeIdsRef.current,
       },
       triggerMediaPlay,
       audioCtxCache,
@@ -533,6 +584,8 @@ export function useFlowEngine(deps: FlowEngineDeps) {
     // Hide nodes that have an 'emerge' effect — they should be invisible until their emerge executes
     // Also collapse incoming connections to zero length via emergeAnimations
     const initialEmergeAnims = new Map<string, number>()
+    const emergeNodeIds: string[] = []
+    const unhideIds: string[] = []
     for (const nodeId of reachableNodes) {
       const n = depsRef.current.model.nodes.find(nn => nn.id === nodeId)
       if (!n?.flowEffects) continue
@@ -540,14 +593,9 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         eff.graph.nodes.some(gn => gn.kind === 'emerge')
       )
       if (hasEmerge) {
-        // Cosmetic nodes: hide the wrapper (contains SVG + article); regular: hide the article
-        const wrapperEl = document.querySelector(`[data-node-wrapper="${CSS.escape(nodeId)}"]`) as HTMLElement | null
-        const articleEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
-        const el = wrapperEl ?? articleEl
-        if (el) {
-          el.style.opacity = '0'
-          emergeHiddenElementsRef.current.push(el)
-        }
+        emergeNodeIds.push(nodeId)
+        // If node has hideDuringFlow, temporarily clear it so the DOM element exists
+        if (n.hideDuringFlow) unhideIds.push(nodeId)
         // Collapse all incoming flow connections to this node (skip hidden connections)
         for (const c of depsRef.current.model.connections) {
           if (c.to === nodeId && c.type === 'flow' && !c.hideDuringFlow) {
@@ -556,6 +604,39 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         }
       }
     }
+    // Temporarily unhide emerge nodes so they render (will be hidden via opacity below)
+    if (unhideIds.length > 0) {
+      const modelId = depsRef.current.frameModelId
+      const idSet = new Set(unhideIds)
+      useHybridZoomStore.setState((state) => {
+        const model = state.models[modelId]
+        if (!model) return state
+        return {
+          models: {
+            ...state.models,
+            [modelId]: {
+              ...model,
+              nodes: model.nodes.map((n) =>
+                idSet.has(n.id) ? { ...n, hideDuringFlow: false } : n,
+              ),
+            },
+          },
+        }
+      })
+      flowEmergeUnhiddenRef.current = unhideIds
+    }
+    // Set opacity: 0 on emerge node elements after React renders them
+    requestAnimationFrame(() => {
+      for (const nodeId of emergeNodeIds) {
+        const wrapperEl = document.querySelector(`[data-node-wrapper="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+        const articleEl = document.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`) as HTMLElement | null
+        const el = wrapperEl ?? articleEl
+        if (el) {
+          el.style.opacity = '0'
+          emergeHiddenElementsRef.current.push(el)
+        }
+      }
+    })
     if (initialEmergeAnims.size > 0) setEmergeAnimations(initialEmergeAnims)
 
     // Check if any reachable node has cameraTracked — if so, enable flow camera
@@ -902,6 +983,8 @@ export function useFlowEngine(deps: FlowEngineDeps) {
           restoreBrokenNodes()
           restoreEmergeNodes()
           restoreDismissNodes()
+          removeSpawnedNodes()
+          restoreEmergeUnhidden()
           // Restore colors changed by permanent color effects
           for (const { el, bg } of flowColorBackupsRef.current) {
             el.style.transition = 'background 400ms ease'
