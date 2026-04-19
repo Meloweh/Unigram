@@ -158,9 +158,11 @@ interface ParticleOverlayProps {
   vpSize: { w: number; h: number }
   /** Dynamic grid extent in percentage units */
   gridExtent: { minX: number; minY: number; maxX: number; maxY: number }
+  /** Uncommitted pan delta from DOM-direct panning (not yet flushed to Zustand) */
+  uncommittedPanRef?: React.RefObject<{ dx: number; dy: number }>
 }
 
-export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize, gridExtent }: ParticleOverlayProps) {
+export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize, gridExtent, uncommittedPanRef }: ParticleOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Store scene transform in refs so the ticker can access latest values
   const sceneTxRef = useRef(sceneTx)
@@ -246,8 +248,8 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
       app.ticker.add(() => {
         const vpW = app.screen.width
         const vpH = app.screen.height
-        const tx = sceneTxRef.current
-        const ty = sceneTyRef.current
+        const tx = sceneTxRef.current + (uncommittedPanRef?.current?.dx ?? 0)
+        const ty = sceneTyRef.current + (uncommittedPanRef?.current?.dy ?? 0)
         const s = sceneScaleRef.current
 
         // Apply scene transform to the PixiJS stage so particles are in world space

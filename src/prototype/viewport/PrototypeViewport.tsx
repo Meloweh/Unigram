@@ -735,6 +735,7 @@ export function PrototypeViewport() {
             sceneScale={effectiveScale}
             vpSize={SCENE_VP}
             gridExtent={gridExtent}
+            uncommittedPanRef={uncommittedPanRef}
           />
         )}
       </div>
