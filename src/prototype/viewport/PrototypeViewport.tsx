@@ -373,9 +373,21 @@ export function PrototypeViewport() {
     setPanOffset,
   })
 
+  // Pick-mode for linking a peer node into the split-screen effect editor
+  const [pickingPeerFor, setPickingPeerFor] = useState<{ nodeId: string; effectId: string } | null>(null)
+
   // Compute the centering offset currently applied for the selected node
   // so we can bake it into panOffset when switching nodes (prevents visual jump)
   const handleSelectNode = useCallback((nodeId: string) => {
+    // ---- Pick-mode for split-screen effect editor ----
+    if (pickingPeerFor) {
+      // Don't allow linking to self
+      if (nodeId !== pickingPeerFor.nodeId) {
+        setEditingEffect({ ...pickingPeerFor, peerNodeId: nodeId })
+      }
+      setPickingPeerFor(null)
+      return
+    }
     // Clear multi-selection when clicking a single node
     setSelectedNodeIds(new Set())
     const { currentFrame, getModel } = useHybridZoomStore.getState()
@@ -394,7 +406,7 @@ export function PrototypeViewport() {
     } else {
       selectNode(nodeId)
     }
-  }, [selectNode, setSelectedNodeIds])
+  }, [selectNode, setSelectedNodeIds, pickingPeerFor, setEditingEffect])
 
   // MPD curtain transition
   const { mpdCurtain, particleContainerRef, liveNodeSizesRef, handleMpdSelect } = useMpdCurtain({
@@ -1074,7 +1086,59 @@ export function PrototypeViewport() {
           storeModels={storeModels}
           updateNodeProps={updateNodeProps}
           onClose={() => setEditingEffect(null)}
+          onRequestPeer={(sourceNodeId, sourceEffectId) => {
+            setEditingEffect(null)
+            setPickingPeerFor({ nodeId: sourceNodeId, effectId: sourceEffectId })
+          }}
+          onSyncPreviewFacades={(hostNodeId, graphNodeId, items) => {
+            const modelNodes = model.nodes
+            // Remove existing previews for this host+graphNode that are no longer in items
+            const existingPreviews = modelNodes.filter(n =>
+              n.previewOf?.hostNodeId === hostNodeId && n.previewOf?.spawnEffectNodeId === graphNodeId
+            )
+            const hostNode = modelNodes.find(n => n.id === hostNodeId)
+            const hostX = hostNode?.x ?? 50
+            const hostY = hostNode?.y ?? 50
+
+            // Determine which preview indices we need
+            const neededIndices = new Set(items.map((_, i) => i))
+            for (const prev of existingPreviews) {
+              if (!neededIndices.has(prev.previewOf!.itemIndex)) {
+                removeNode(frame.modelId, prev.id)
+              }
+            }
+
+            // Create or update previews for each item
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i]
+              const previewId = `preview-${hostNodeId}-${graphNodeId}-${i}`
+              const existing = modelNodes.find(n => n.id === previewId)
+              if (existing) {
+                // Update position and label
+                updateNodeProps(frame.modelId, previewId, {
+                  label: item.label,
+                  x: hostX + item.offsetX,
+                  y: hostY + item.offsetY,
+                })
+              } else {
+                addNode(frame.modelId, {
+                  id: previewId,
+                  label: item.label,
+                  x: hostX + item.offsetX,
+                  y: hostY + item.offsetY,
+                  previewOf: { hostNodeId, spawnEffectNodeId: graphNodeId, itemIndex: i },
+                })
+              }
+            }
+          }}
         />
+      )}
+      {/* Pick-mode banner for split-screen linking */}
+      {pickingPeerFor && (
+        <div className="pick-peer-banner">
+          Click a node to link its effect graph
+          <button type="button" onClick={() => setPickingPeerFor(null)}>Cancel</button>
+        </div>
       )}
       {/* Content editor popup for markdown/math nodes */}
       {editingContentNodeId && (() => {

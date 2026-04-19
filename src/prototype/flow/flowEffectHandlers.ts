@@ -1,6 +1,7 @@
 import { useHybridZoomStore } from '../model/useHybridZoomStore'
 import type { EffectGraphNode } from '../model/sampleModels'
 import type { FlowEffectCtx } from './flowTypes'
+import { getMediaBlob } from '../model/mediaStore'
 import {
   handleSpawnCircular, handleEmerge, handleDismiss, handleScale, handleTextFormat,
   handleRecord, handleRepeater, handleCloudLevitate, handleBubbleLevitate,
@@ -207,21 +208,35 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
   }>) ?? []
   ctx.scheduleEffect(() => {
     if (!ctx.node) return
-    for (const item of spawnItems) {
-      const newId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const spawnX = ctx.node.x + item.offsetX
-      const spawnY = ctx.node.y + item.offsetY
-      ctx.addNode(ctx.frameModelId, { id: newId, label: item.label, x: spawnX, y: spawnY })
-      ctx.cleanup.spawnedNodeIds.push(newId)
-      if (item.connectionType !== 'none') {
-        ctx.addConnection(ctx.frameModelId, {
-          from: ctx.nodeId, to: newId,
-          type: item.connectionType === 'flow' ? 'flow' : 'default',
-        })
+    for (let i = 0; i < spawnItems.length; i++) {
+      const item = spawnItems[i]
+      const previewId = `preview-${ctx.nodeId}-${gNode.id}-${i}`
+      const existingPreview = ctx.model.nodes.find(n => n.id === previewId)
+
+      let targetId: string
+      if (existingPreview) {
+        // Activate the preview facade: clear previewOf, restore opacity
+        targetId = previewId
+        ctx.cleanup.activatedPreviews.push({ nodeId: previewId, previewOf: existingPreview.previewOf! })
+        ctx.updateNodeProps(ctx.frameModelId, previewId, { previewOf: undefined })
+        // Reveal connections that depend on this preview
+        // (handled by ModelSceneContent hiding logic — cleared because flow will re-render)
+      } else {
+        targetId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const spawnX = ctx.node.x + item.offsetX
+        const spawnY = ctx.node.y + item.offsetY
+        ctx.addNode(ctx.frameModelId, { id: targetId, label: item.label, x: spawnX, y: spawnY })
+        if (item.connectionType !== 'none') {
+          ctx.addConnection(ctx.frameModelId, {
+            from: ctx.nodeId, to: targetId,
+            type: item.connectionType === 'flow' ? 'flow' : 'default',
+          })
+        }
       }
+      ctx.cleanup.spawnedNodeIds.push(targetId)
       // Spawn animation on the DOM element
       requestAnimationFrame(() => {
-        const el = document.querySelector(`[data-node-id="${CSS.escape(newId)}"]`) as HTMLElement | null
+        const el = document.querySelector(`[data-node-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
         if (el) {
           if (item.animation === 'zip-in') {
             el.style.opacity = '0'
@@ -232,7 +247,6 @@ export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
               el.style.transform = 'scale(1)'
             })
           } else {
-            // emerge: scale from 0 at source, then move to position
             el.style.transform = 'scale(0)'
             el.style.transition = 'transform 400ms ease'
             requestAnimationFrame(() => {
@@ -560,6 +574,60 @@ export function handleFloat(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
   return keepPlaying ? 0 : durationMs
 }
 
+export function handleSegmentPlay(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
+  const startTime = (gNode.config.startTime as number) ?? 0
+  const endTime = (gNode.config.endTime as number) ?? 0
+  if (endTime <= startTime) return 0
+  const durationMs = (endTime - startTime) * 1000
+  const capturedNodeId = ctx.nodeId
+  ctx.scheduleEffect(() => {
+    const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
+    if (!article) return
+    const media = article.querySelector('video') as HTMLVideoElement | null
+    if (!media) return
+    media.currentTime = startTime
+    media.play().catch(() => {})
+    const onTimeUpdate = () => {
+      if (media.currentTime >= endTime) {
+        media.pause()
+        media.removeEventListener('timeupdate', onTimeUpdate)
+        ctx.cleanup.mediaDone.add(capturedNodeId)
+      }
+    }
+    media.addEventListener('timeupdate', onTimeUpdate)
+    // Cleanup if media ends early
+    const onEnded = () => {
+      media.removeEventListener('timeupdate', onTimeUpdate)
+      media.removeEventListener('ended', onEnded)
+      ctx.cleanup.mediaDone.add(capturedNodeId)
+    }
+    media.addEventListener('ended', onEnded)
+  }, delay)
+  return durationMs
+}
+
+export function handleAudioClip(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
+  const clipKey = (gNode.config.clipKey as string) ?? ''
+  if (!clipKey) return 0
+  const blob = getMediaBlob(clipKey)
+  if (!blob) return 0
+  const capturedNodeId = ctx.nodeId
+  const audio = new Audio()
+  const objUrl = URL.createObjectURL(blob)
+  audio.src = objUrl
+  ctx.scheduleEffect(() => {
+    const onEnded = () => {
+      audio.removeEventListener('ended', onEnded)
+      URL.revokeObjectURL(objUrl)
+      ctx.cleanup.mediaDone.add(capturedNodeId)
+    }
+    audio.addEventListener('ended', onEnded)
+    audio.play().catch(() => {})
+  }, delay)
+  // Return 0 — duration unknown ahead of time; completion signalled via mediaDone
+  return 0
+}
+
 export function dispatchEffect(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
   switch (gNode.kind) {
     case 'play-media': return handlePlayMedia(ctx, gNode, delay)
@@ -587,6 +655,8 @@ export function dispatchEffect(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay
     case 'cloud-levitate': return handleCloudLevitate(ctx, gNode, delay)
     case 'bubble-levitate': return handleBubbleLevitate(ctx, gNode, delay)
     case 'text-generator': return handleTextGenerator(ctx, gNode, delay)
+    case 'segment-play': return handleSegmentPlay(ctx, gNode, delay)
+    case 'audio-clip': return handleAudioClip(ctx, gNode, delay)
     default: return 0
   }
 }

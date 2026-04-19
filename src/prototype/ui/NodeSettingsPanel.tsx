@@ -437,7 +437,6 @@ function MediaSettings({ node, onUpdateProps }: {
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const coverInputRef = useRef<HTMLInputElement>(null)
-  const isPlayable = node.mediaType === 'gif' || node.mediaType === 'audio' || node.mediaType === 'video'
 
   const acceptMap: Record<MediaNodeType, string> = {
     image: 'image/png,image/jpeg,image/webp,image/svg+xml',
@@ -531,43 +530,6 @@ function MediaSettings({ node, onUpdateProps }: {
           </div>
         )}
 
-        {isPlayable && (
-          <>
-            <div className="settings-row">
-              <label className="settings-label" htmlFor="play-start">Start (s)</label>
-              <input
-                id="play-start"
-                type="number"
-                className="settings-number-input"
-                min={0}
-                step={0.1}
-                value={node.playStart ?? ''}
-                placeholder="0"
-                onChange={(e) => {
-                  const v = e.target.value
-                  onUpdateProps({ playStart: v ? Number(v) : undefined })
-                }}
-              />
-            </div>
-            <div className="settings-row">
-              <label className="settings-label" htmlFor="play-end">End (s)</label>
-              <input
-                id="play-end"
-                type="number"
-                className="settings-number-input"
-                min={0}
-                step={0.1}
-                value={node.playEnd ?? ''}
-                placeholder="end"
-                onChange={(e) => {
-                  const v = e.target.value
-                  onUpdateProps({ playEnd: v ? Number(v) : undefined })
-                }}
-              />
-            </div>
-          </>
-        )}
-
         {node.mediaType === 'video' && (
           <YouTubeUrlField onUpdateProps={onUpdateProps} />
         )}
@@ -648,6 +610,8 @@ const effectKindLabels: Record<string, string> = {
   'break': 'Break Apart',
   'cloud-levitate': 'Cloudy Levitate',
   'bubble-levitate': 'Soap Bubble Levitate',
+  'segment-play': 'Segment Play',
+  'audio-clip': 'Audio Clip',
 }
 
 function FlowAnimationsSection({ node, onUpdateProps, onEditEffect }: {

@@ -186,17 +186,24 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
 
     const app = new Application()
     let destroyed = false
+    let cleanupResize: (() => void) | null = null
 
     const initPromise = app.init({
-      resizeTo: window,
+      width: window.innerWidth,
+      height: window.innerHeight,
       backgroundAlpha: 0,
       antialias: true,
       resolution: window.devicePixelRatio || 1,
       autoDensity: true,
       preserveDrawingBuffer: true,
     }).then(() => {
-      if (destroyed) { app.destroy(true); return }
+      if (destroyed) { try { app.destroy(true) } catch { /* not fully initialized */ } return }
       container.appendChild(app.canvas as HTMLCanvasElement)
+
+      // Resize canvas when window resizes
+      const onResize = () => { app.renderer.resize(window.innerWidth, window.innerHeight) }
+      window.addEventListener('resize', onResize)
+      cleanupResize = () => window.removeEventListener('resize', onResize)
 
       // Spawn particles for _this_ preset (captured in closure — no race)
       const preset = getParticlePreset(presetId)
@@ -372,9 +379,10 @@ export function ParticleOverlay({ presetId, sceneTx, sceneTy, sceneScale, vpSize
 
     return () => {
       destroyed = true
+      cleanupResize?.()
       initPromise.then(() => {
         for (const p of particles) p.gfx.destroy()
-        app.destroy(true)
+        try { app.destroy(true) } catch { /* already destroyed */ }
       })
     }
   }, [presetId])

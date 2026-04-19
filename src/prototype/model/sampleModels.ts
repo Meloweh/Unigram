@@ -10,7 +10,7 @@ export type TipDirection = 'bottom-left' | 'bottom-right' | 'top-left' | 'top-ri
 
 export type ConnectionType = 'default' | 'flow'
 
-export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'dismiss' | 'scale' | 'text-format' | 'text-generator' | 'repeater' | 'cloud-levitate' | 'bubble-levitate'
+export type FlowEffectKind = 'entry' | 'wait' | 'move' | 'color' | 'spawn' | 'spawn-circular' | 'play-media' | 'handoff-rmm' | 'return-rmm' | 'handoff-mpd' | 'camera' | 'break' | 'expand' | 'collapse' | 'record' | 'jitter' | 'float' | 'emerge' | 'dismiss' | 'scale' | 'text-format' | 'text-generator' | 'repeater' | 'cloud-levitate' | 'bubble-levitate' | 'segment-play' | 'audio-clip'
 
 export interface TextFormatRange {
   start: number
@@ -67,6 +67,8 @@ export interface EffectGraphEdge {
   to: string
   fromPort?: EffectPortId
   toPort?: EffectPortId
+  /** When set, this edge crosses into the effect graph of another diagram node */
+  crossNodeId?: string
 }
 
 export interface FlowEffect {
@@ -112,10 +114,7 @@ export interface ModelNode {
   nodeWidth?: number
   /** Custom node height in px (overrides auto-sizing) */
   nodeHeight?: number
-  /** Playback start time in seconds (for gif/audio/video) */
-  playStart?: number
-  /** Playback end time in seconds (for gif/audio/video) */
-  playEnd?: number
+
   /** Cover image data URL for audio nodes */
   audioCoverSrc?: string
   /** Flow animation effects configured on this node */
@@ -142,6 +141,8 @@ export interface ModelNode {
   tipAngle?: number
   /** How far the tip extends from the body in pixels (default: 20) */
   tipLength?: number
+  /** When set, this node is a spawn preview facade rendered as a dashed placeholder */
+  previewOf?: { hostNodeId: string; spawnEffectNodeId: string; itemIndex: number }
 }
 
 export interface StudyEvidence {
@@ -169,6 +170,8 @@ export interface ModelConnection {
   label?: string
   /** Font size (rem) for the connection label */
   labelFontSize?: number
+  /** Preview node ID this connection depends on (hidden until spawn fires) */
+  dependsOnSpawn?: string
 }
 
 export interface Model {

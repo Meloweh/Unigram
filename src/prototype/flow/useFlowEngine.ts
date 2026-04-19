@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import type { Model, ModelNode, ModelConnection } from '../model/sampleModels'
+import type { Model, ModelNode, ModelConnection, EffectGraphEdge } from '../model/sampleModels'
 import type { FlowTask, FlowDAG, FlowEffectCtx } from './flowTypes'
 import { dispatchEffect } from './flowEffectHandlers'
 import { cleanupTextGenerator } from './textGeneratorCleanup'
@@ -53,7 +53,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const obsWsRef = useRef<import('./obsWebSocket').OBSConnection | null>(null)
 
   // ---- Flow effect editor state ----
-  const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string } | null>(null)
+  const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string; peerNodeId?: string; peerEffectId?: string } | null>(null)
 
   const flowDAGRef = useRef<FlowDAG | null>(null)
 
@@ -94,6 +94,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
   const flowSpawnedNodeIdsRef = useRef<string[]>([])
+  const flowActivatedPreviewsRef = useRef<{ nodeId: string; previewOf: { hostNodeId: string; spawnEffectNodeId: string; itemIndex: number } }[]>([])
   const flowEmergeUnhiddenRef = useRef<string[]>([])
   const alwaysPlayAnimsRef = useRef<Map<string, { rafId: number; el: HTMLElement; cleanup: () => void }>>(new Map())
 
@@ -129,23 +130,44 @@ export function useFlowEngine(deps: FlowEngineDeps) {
 
   const removeSpawnedNodes = () => {
     const ids = flowSpawnedNodeIdsRef.current
+    const activatedPreviews = flowActivatedPreviewsRef.current
+    const modelId = depsRef.current.frameModelId
+
+    // Restore preview facades: re-add previewOf
+    if (activatedPreviews.length > 0) {
+      const previewMap = new Map(activatedPreviews.map(p => [p.nodeId, p.previewOf]))
+      useHybridZoomStore.setState((state) => {
+        const model = state.models[modelId]
+        if (!model) return state
+        return {
+          models: { ...state.models, [modelId]: {
+            ...model,
+            nodes: model.nodes.map(n => previewMap.has(n.id) ? { ...n, previewOf: previewMap.get(n.id) } : n),
+          }},
+        }
+      })
+      flowActivatedPreviewsRef.current = []
+    }
+
     if (ids.length === 0) return
     const idSet = new Set(ids)
-    const modelId = depsRef.current.frameModelId
-    useHybridZoomStore.setState((state) => {
-      const model = state.models[modelId]
-      if (!model) return state
-      return {
-        models: {
-          ...state.models,
-          [modelId]: {
+    // Don't remove preview facades (they've been restored above)
+    const previewIds = new Set(activatedPreviews.map(p => p.nodeId))
+    for (const pid of previewIds) idSet.delete(pid)
+
+    if (idSet.size > 0) {
+      useHybridZoomStore.setState((state) => {
+        const model = state.models[modelId]
+        if (!model) return state
+        return {
+          models: { ...state.models, [modelId]: {
             ...model,
             nodes: model.nodes.filter((n) => !idSet.has(n.id)),
             connections: model.connections.filter((c) => !idSet.has(c.from) && !idSet.has(c.to)),
-          },
-        },
-      }
-    })
+          }},
+        }
+      })
+    }
     flowSpawnedNodeIdsRef.current = []
   }
 
@@ -349,6 +371,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         textGenHiddenSpans: textGenHiddenSpansRef.current,
         textGenAudioNodes: textGenAudioNodesRef.current,
         spawnedNodeIds: flowSpawnedNodeIdsRef.current,
+        activatedPreviews: flowActivatedPreviewsRef.current,
       },
       triggerMediaPlay,
       audioCtxCache,
@@ -382,11 +405,17 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       const graphEdges = effect.graph.edges
       if (graphNodes.length === 0) continue
 
-      // Build adjacency from graph edges
+      // Build adjacency from graph edges (skip cross-graph edges)
       const adj = new Map<string, string[]>()
+      const crossEdgeMap = new Map<string, EffectGraphEdge[]>() // from nodeId -> cross edges
       for (const e of graphEdges) {
-        if (!adj.has(e.from)) adj.set(e.from, [])
-        adj.get(e.from)!.push(e.to)
+        if (e.crossNodeId) {
+          if (!crossEdgeMap.has(e.from)) crossEdgeMap.set(e.from, [])
+          crossEdgeMap.get(e.from)!.push(e)
+        } else {
+          if (!adj.has(e.from)) adj.set(e.from, [])
+          adj.get(e.from)!.push(e.to)
+        }
       }
 
       // BFS from entry node(s), executing effects layer by layer
@@ -447,6 +476,23 @@ export function useFlowEngine(deps: FlowEngineDeps) {
             if (!gNode) continue
 
             layerMaxDuration = Math.max(layerMaxDuration, dispatchEffect(ctx, gNode, totalDelay))
+          }
+
+          // Dispatch cross-graph edges: fire effects in the target node's effect graph
+          const crossEdges = crossEdgeMap.get(gNodeId)
+          if (crossEdges) {
+            for (const ce of crossEdges) {
+              const targetModelNode = depsRef.current.model.nodes.find(n => n.id === ce.crossNodeId)
+              if (!targetModelNode) continue
+              const targetEffects = targetModelNode.flowEffects ?? []
+              for (const tEffect of targetEffects) {
+                const tGraphNode = tEffect.graph.nodes.find(n => n.id === ce.to)
+                if (!tGraphNode) continue
+                // Build a context for the target node and dispatch
+                const crossCtx: FlowEffectCtx = { ...ctx, nodeId: ce.crossNodeId!, node: targetModelNode }
+                layerMaxDuration = Math.max(layerMaxDuration, dispatchEffect(crossCtx, tGraphNode, totalDelay))
+              }
+            }
           }
         }
 

@@ -1,6 +1,125 @@
+import { useState, useCallback, useRef } from 'react'
 import type { EffectGraphNode, FlowEffectKind } from '../model/sampleModels'
 import type { EffectEditorHostContext, MoveWaypoint, SpawnItem, SpawnCircularItem } from './FlowEffectEditor'
 import { TextGeneratorConfigPanel } from './TextGeneratorConfigPanel'
+import { storeMediaBlob, getMediaBlob } from '../model/mediaStore'
+
+/** Inline audio clip config with record/play capability */
+function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
+  selectedNode: EffectGraphNode
+  updateNodeConfig: (key: string, value: unknown) => void
+  hostNodeId: string
+}) {
+  const clipKey = (selectedNode.config.clipKey as string) || ''
+  const [isRecording, setIsRecording] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [clipDuration, setClipDuration] = useState<number | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const playAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const effectiveClipKey = clipKey || `${hostNodeId}:${selectedNode.id}`
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const audioCtx = new AudioContext()
+      audioCtxRef.current = audioCtx
+      const source = audioCtx.createMediaStreamSource(stream)
+      // Processing chain: highpass → lowpass → compressor → limiter → dest
+      const hp1 = audioCtx.createBiquadFilter(); hp1.type = 'highpass'; hp1.frequency.value = 100
+      const hp2 = audioCtx.createBiquadFilter(); hp2.type = 'highpass'; hp2.frequency.value = 100
+      const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 15000
+      const comp = audioCtx.createDynamicsCompressor()
+      comp.threshold.value = -24; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.15
+      const limiter = audioCtx.createDynamicsCompressor()
+      limiter.threshold.value = -3; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.05
+      const gain = audioCtx.createGain(); gain.gain.value = 1.4
+      const dest = audioCtx.createMediaStreamDestination()
+      source.connect(hp1).connect(hp2).connect(lp).connect(comp).connect(limiter).connect(gain).connect(dest)
+
+      const recorder = new MediaRecorder(dest.stream)
+      const chunks: BlobPart[] = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop())
+        audioCtx.close()
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        const blobUrl = storeMediaBlob(blob)
+        updateNodeConfig('clipKey', effectiveClipKey)
+        updateNodeConfig('clipBlobUrl', blobUrl)
+        // Compute duration
+        const tempAudio = new Audio(blobUrl)
+        tempAudio.addEventListener('loadedmetadata', () => {
+          setClipDuration(tempAudio.duration)
+        })
+        setIsRecording(false)
+      }
+      recorderRef.current = recorder
+      recorder.start()
+      setIsRecording(true)
+    } catch {
+      // mic permission denied
+    }
+  }, [effectiveClipKey, updateNodeConfig])
+
+  const stopRecording = useCallback(() => {
+    if (recorderRef.current?.state !== 'inactive') {
+      recorderRef.current?.stop()
+    }
+  }, [])
+
+  const playClip = useCallback(() => {
+    const blobUrl = selectedNode.config.clipBlobUrl as string | undefined
+    if (!blobUrl) return
+    if (playAudioRef.current) { playAudioRef.current.pause(); playAudioRef.current = null }
+    const audio = new Audio(blobUrl)
+    playAudioRef.current = audio
+    audio.onended = () => setIsPlaying(false)
+    audio.play().catch(() => {})
+    setIsPlaying(true)
+  }, [selectedNode.config.clipBlobUrl])
+
+  const stopClip = useCallback(() => {
+    if (playAudioRef.current) { playAudioRef.current.pause(); playAudioRef.current = null }
+    setIsPlaying(false)
+  }, [])
+
+  const hasBlobUrl = !!(selectedNode.config.clipBlobUrl as string)
+
+  return (
+    <>
+      <div className="fxeditor-field-hint">Record an audio sample for this clip node.</div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+        {!isRecording ? (
+          <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={startRecording}>
+            ⏺ Record
+          </button>
+        ) : (
+          <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1, color: '#ef4444' }} onClick={stopRecording}>
+            ⏹ Stop
+          </button>
+        )}
+        {hasBlobUrl && !isRecording && (
+          !isPlaying ? (
+            <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={playClip}>
+              ▶ Play
+            </button>
+          ) : (
+            <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={stopClip}>
+              ⏹ Stop
+            </button>
+          )
+        )}
+      </div>
+      {clipDuration != null && (
+        <div className="fxeditor-field-hint">Duration: {clipDuration.toFixed(1)}s</div>
+      )}
+    </>
+  )
+}
 
 export function FlowNodeConfigPanel({
   selectedNode,
@@ -12,8 +131,10 @@ export function FlowNodeConfigPanel({
   addableKinds,
   addNode,
   hostContext,
+  hostNodeId,
   kindLabels,
   kindColors,
+  onSyncPreviewFacades,
 }: {
   selectedNode: EffectGraphNode | undefined
   updateNodeConfig: (key: string, value: unknown) => void
@@ -24,8 +145,10 @@ export function FlowNodeConfigPanel({
   addableKinds: FlowEffectKind[]
   addNode: (kind: FlowEffectKind) => void
   hostContext: EffectEditorHostContext
+  hostNodeId: string
   kindLabels: Record<FlowEffectKind, string>
   kindColors: Record<FlowEffectKind, string>
+  onSyncPreviewFacades?: (graphNodeId: string, items: SpawnItem[]) => void
 }) {
   if (selectedNode) {
     return (
@@ -209,7 +332,10 @@ export function FlowNodeConfigPanel({
         )}
         {selectedNode.kind === 'spawn' && (() => {
           const spawnItems: SpawnItem[] = (selectedNode.config.spawnItems as SpawnItem[] | undefined) ?? []
-          const updateSpawnItems = (items: SpawnItem[]) => updateNodeConfig('spawnItems', items)
+          const updateSpawnItems = (items: SpawnItem[]) => {
+            updateNodeConfig('spawnItems', items)
+            onSyncPreviewFacades?.(selectedNode.id, items)
+          }
           return (
             <div className="fxeditor-spawn-section">
               <div className="fxeditor-field-hint">
@@ -1052,6 +1178,29 @@ export function FlowNodeConfigPanel({
               <span>Scale pulse</span>
             </label>
           </>
+        )}
+        {selectedNode.kind === 'segment-play' && (
+          <>
+            <label className="fxeditor-field">
+              <span>Start (s)</span>
+              <input type="number" min={0} step={0.1}
+                value={(selectedNode.config.startTime as number) ?? 0}
+                onChange={(e) => updateNodeConfig('startTime', Number(e.target.value))} />
+            </label>
+            <label className="fxeditor-field">
+              <span>End (s)</span>
+              <input type="number" min={0} step={0.1}
+                value={(selectedNode.config.endTime as number) ?? 0}
+                onChange={(e) => updateNodeConfig('endTime', Number(e.target.value))} />
+            </label>
+          </>
+        )}
+        {selectedNode.kind === 'audio-clip' && (
+          <AudioClipConfig
+            selectedNode={selectedNode}
+            updateNodeConfig={updateNodeConfig}
+            hostNodeId={hostNodeId}
+          />
         )}
         {!isNodeLocked(selectedNode) && (
           <button type="button" className="fxeditor-delete-btn" onClick={deleteSelected}>

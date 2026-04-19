@@ -1687,6 +1687,88 @@
   background: rgba(255, 255, 255, 0.06);
 }
 
+.fxeditor-link-btn {
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  color: #c084fc;
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.fxeditor-link-btn:hover {
+  background: rgba(168, 85, 247, 0.25);
+}
+
+.fxeditor-divider {
+  width: 3px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: col-resize;
+}
+
+.fxeditor-canvas-label {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pick-peer-banner {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(168, 85, 247, 0.9);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.pick-peer-banner button {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.pick-peer-banner button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.preview-facade-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  z-index: 2;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
 .fxeditor-body {
   display: flex;
   flex: 1;
@@ -1793,6 +1875,17 @@
   border-radius: 50%;
   border: 2px solid #0f172a;
   z-index: 1;
+}
+
+/* Invisible hit area expansion for easier click targeting */
+.fxeditor-port::after {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  border-radius: 50%;
 }
 
 .fxeditor-port.in {

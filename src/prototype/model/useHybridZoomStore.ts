@@ -381,14 +381,22 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
     set((state) => {
       const model = state.models[modelId]
       if (!model) return state
+      const movedNode = model.nodes.find(n => n.id === nodeId)
+      const sx = snapToGrid(x, state.gridSnap)
+      const sy = snapToGrid(y, state.gridSnap)
+      const dx = movedNode ? sx - movedNode.x : 0
+      const dy = movedNode ? sy - movedNode.y : 0
       return {
         models: {
           ...state.models,
           [modelId]: {
             ...model,
-            nodes: model.nodes.map((n) =>
-              n.id === nodeId ? { ...n, x: snapToGrid(x, state.gridSnap), y: snapToGrid(y, state.gridSnap) } : n,
-            ),
+            nodes: model.nodes.map((n) => {
+              if (n.id === nodeId) return { ...n, x: sx, y: sy }
+              // Move preview facades whose host is being moved
+              if (n.previewOf?.hostNodeId === nodeId) return { ...n, x: n.x + dx, y: n.y + dy }
+              return n
+            }),
           },
         },
       }
@@ -400,6 +408,14 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
       const model = state.models[modelId]
       if (!model) return state
       const lookup = new Map(moves.map(m => [m.nodeId, m]))
+      // Compute deltas for preview sync
+      const deltas = new Map<string, { dx: number; dy: number }>()
+      for (const m of moves) {
+        const orig = model.nodes.find(n => n.id === m.nodeId)
+        if (orig) {
+          deltas.set(m.nodeId, { dx: snapToGrid(m.x, state.gridSnap) - orig.x, dy: snapToGrid(m.y, state.gridSnap) - orig.y })
+        }
+      }
       return {
         models: {
           ...state.models,
@@ -407,7 +423,13 @@ export const useHybridZoomStore = create<HybridZoomState>((set, get) => {
             ...model,
             nodes: model.nodes.map((n) => {
               const m = lookup.get(n.id)
-              return m ? { ...n, x: snapToGrid(m.x, state.gridSnap), y: snapToGrid(m.y, state.gridSnap) } : n
+              if (m) return { ...n, x: snapToGrid(m.x, state.gridSnap), y: snapToGrid(m.y, state.gridSnap) }
+              // Move preview facades whose host is in the move set
+              if (n.previewOf && deltas.has(n.previewOf.hostNodeId)) {
+                const d = deltas.get(n.previewOf.hostNodeId)!
+                return { ...n, x: n.x + d.dx, y: n.y + d.dy }
+              }
+              return n
             }),
           },
         },

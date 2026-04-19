@@ -358,22 +358,7 @@ export const SceneNode = memo(function SceneNode({
 
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
 
-  // Apply playStart whenever it changes or the media element mounts
-  useEffect(() => {
-    const el = mediaRef.current
-    if (!el) return
-    if (node.playStart != null) {
-      el.currentTime = node.playStart
-    }
-  }, [node.playStart, node.mediaSrc])
 
-  const handleMediaTimeUpdate = useCallback((e: React.SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) => {
-    const el = e.currentTarget
-    if (node.playEnd != null && el.currentTime >= node.playEnd) {
-      el.pause()
-      el.currentTime = node.playStart ?? 0
-    }
-  }, [node.playEnd, node.playStart])
 
   // Memoize expensive Markdown/KaTeX rendering
   const contentPreviewHtml = useMemo(() => {
@@ -419,7 +404,6 @@ export const SceneNode = memo(function SceneNode({
                 src={node.mediaSrc}
                 controls={!isFlowRunning}
                 preload="metadata"
-                onTimeUpdate={handleMediaTimeUpdate}
                 onPointerDown={(e) => e.stopPropagation()}
                 className={isFlowRunning ? 'flow-hidden-media' : undefined}
               />
@@ -432,7 +416,6 @@ export const SceneNode = memo(function SceneNode({
               controls={!isFlowRunning}
               preload="none"
               draggable={false}
-              onTimeUpdate={handleMediaTimeUpdate}
               onPointerDown={(e) => {
                 // Only block left-click in the native controls bar (~40px from bottom)
                 // so node dragging and connection drawing still work on the video surface
@@ -938,13 +921,16 @@ export const SceneNode = memo(function SceneNode({
     )
   }
 
+  const isPreviewFacade = !!node.previewOf
+
   return (
     <article
-      className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}${isFlowActive ? ' flow-active' : ''}`}
+      className={`host-node${isSelected ? ' focused' : ''}${isMultiSelected ? ' multi-selected' : ''}${isFlowActive ? ' flow-active' : ''}${isPreviewFacade ? ' preview-facade' : ''}`}
       data-node-id={node.id}
-      style={{ ...positionStyle, ...vizStyle }}
+      style={{ ...positionStyle, ...vizStyle, ...(isPreviewFacade ? { opacity: 0.4, borderStyle: 'dashed' } : {}) }}
       {...articleEventHandlers}
     >
+      {isPreviewFacade && <div className="preview-facade-badge">Preview</div>}
       {articleContent}
       {resizeHandles}
     </article>

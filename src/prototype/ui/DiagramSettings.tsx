@@ -5,6 +5,26 @@ import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
 import { PARTICLE_PRESETS } from '../theme/particles'
 import { ALL_THEME_OPTIONS } from '../theme/themes'
 
+/** Convert any CSS color string to #rrggbb (required by <input type="color">).
+ *  Alpha is discarded since the native picker doesn't support it. */
+function toHex6(color: string): string {
+  if (/^#[0-9a-fA-F]{6}$/.test(color)) return color
+  // Try parsing rgba/rgb directly first (avoids canvas dependency)
+  const m = color.match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/)
+  if (m) {
+    const hex = (n: number) => n.toString(16).padStart(2, '0')
+    return `#${hex(+m[1])}${hex(+m[2])}${hex(+m[3])}`
+  }
+  // Fallback: use canvas 2d context for named colors, hsl, etc.
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = color
+    const resolved = ctx.fillStyle
+    if (/^#[0-9a-fA-F]{6}$/.test(resolved)) return resolved
+  }
+  return '#000000'
+}
+
 /** Color picker that uses a hidden native input but positions the swatch to the left of the sidebar */
 export function ColorInput({ value, onChange, id }: { value: string; onChange: (v: string) => void; id: string }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -21,7 +41,7 @@ export function ColorInput({ value, onChange, id }: { value: string; onChange: (
         id={id}
         type="color"
         className="settings-color-native"
-        value={value}
+        value={toHex6(value)}
         onChange={(e) => onChange(e.target.value)}
       />
       <button

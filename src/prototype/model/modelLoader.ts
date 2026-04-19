@@ -21,8 +21,10 @@ interface ModelFileNode {
   mediaFileName?: string
   nodeWidth?: number
   nodeHeight?: number
+  /** @deprecated Legacy fields — migrated to segment-play effect on load */
   playStart?: number
   playEnd?: number
+
   audioCoverFile?: string  // path to audio cover image inside the bundle
   flowEffects?: FlowEffect[]
   hideDuringFlow?: boolean
@@ -34,6 +36,7 @@ interface ModelFileNode {
   cosmeticType?: CosmeticType
   tipAngle?: number
   tipLength?: number
+  previewOf?: { hostNodeId: string; spawnEffectNodeId: string; itemIndex: number }
 }
 
 interface ModelFileConnection {
@@ -48,6 +51,7 @@ interface ModelFileConnection {
   arrowStyle?: ConnectionArrowStyle
   label?: string
   labelFontSize?: number
+  dependsOnSpawn?: string
 }
 
 interface ModelFile {
@@ -223,8 +227,7 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       // Media properties
       if (n.mediaType) fileNode.mediaType = n.mediaType
       if (n.mediaFileName) fileNode.mediaFileName = n.mediaFileName
-      if (n.playStart != null) fileNode.playStart = n.playStart
-      if (n.playEnd != null) fileNode.playEnd = n.playEnd
+
       // Extract media data URLs into the media map for the bundle (deduplicated)
       if (n.mediaSrc && mediaMap) {
         const existing = mediaDedup?.get(n.mediaSrc)
@@ -250,7 +253,30 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
           fileNode.audioCoverFile = path
         }
       }
-      if (n.flowEffects?.length) fileNode.flowEffects = n.flowEffects
+      if (n.flowEffects?.length) {
+        // Deep-clone to avoid mutating source model when rewriting clip URLs
+        const clonedEffects = JSON.parse(JSON.stringify(n.flowEffects))
+        // Extract audio-clip blob URLs from effect graph nodes into the media bundle
+        if (mediaMap) {
+          for (const fx of clonedEffects) {
+            for (const gNode of fx.graph.nodes) {
+              if (gNode.kind === 'audio-clip' && gNode.config.clipKey && typeof gNode.config.clipKey === 'string' && isBlobUrl(gNode.config.clipKey)) {
+                const clipUrl = gNode.config.clipKey as string
+                const existing = mediaDedup?.get(clipUrl)
+                if (existing) {
+                  gNode.config.clipKey = existing
+                } else {
+                  const path = `media/clip-${n.id}-${gNode.id}.webm`
+                  mediaMap.set(path, clipUrl)
+                  mediaDedup?.set(clipUrl, path)
+                  gNode.config.clipKey = path
+                }
+              }
+            }
+          }
+        }
+        fileNode.flowEffects = clonedEffects
+      }
       if (n.hideDuringFlow) fileNode.hideDuringFlow = true
       if (n.cameraTracked) fileNode.cameraTracked = true
       if (n.contentSource) fileNode.contentSource = n.contentSource
@@ -260,6 +286,7 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (n.cosmeticType) fileNode.cosmeticType = n.cosmeticType
       if (n.tipAngle != null) fileNode.tipAngle = n.tipAngle
       if (n.tipLength != null) fileNode.tipLength = n.tipLength
+      if (n.previewOf) fileNode.previewOf = n.previewOf
       return fileNode
     }),
     connections: model.connections.map((c) => {
@@ -273,6 +300,7 @@ export function modelToFile(model: Model, mediaMap?: Map<string, string>, mediaD
       if (c.arrowStyle) fc.arrowStyle = c.arrowStyle
       if (c.label) fc.label = c.label
       if (c.labelFontSize != null) fc.labelFontSize = c.labelFontSize
+      if (c.dependsOnSpawn) fc.dependsOnSpawn = c.dependsOnSpawn
       return fc
     }),
   }
@@ -556,8 +584,33 @@ export async function importBundle(
         // Media properties
         if (n.mediaType) node.mediaType = n.mediaType
         if (n.mediaFileName) node.mediaFileName = n.mediaFileName
-        if (n.playStart != null) node.playStart = n.playStart
-        if (n.playEnd != null) node.playEnd = n.playEnd
+        // Migration: convert legacy playStart/playEnd to segment-play effect graph node
+        if (n.playStart != null || n.playEnd != null) {
+          const startTime = n.playStart ?? 0
+          const endTime = n.playEnd ?? 0
+          if (endTime > startTime) {
+            const entryId = 'entry-1'
+            const segId = 'seg-migrate-1'
+            const existingEffects = n.flowEffects ?? []
+            const hasSegment = existingEffects.some((e) =>
+              e.graph.nodes.some((gn) => gn.kind === 'segment-play')
+            )
+            if (!hasSegment) {
+              const segEffect: FlowEffect = {
+                id: `effect-seg-${node.id}`,
+                label: 'Segment Play',
+                graph: {
+                  nodes: [
+                    { id: entryId, kind: 'entry', label: 'Entry', x: 40, y: 100, config: {} },
+                    { id: segId, kind: 'segment-play', label: 'Segment Play', x: 240, y: 100, config: { startTime, endTime } },
+                  ],
+                  edges: [{ from: entryId, to: segId }],
+                },
+              }
+              node.flowEffects = [...existingEffects, segEffect]
+            }
+          }
+        }
         if (n.mediaFile && mediaLookup.has(n.mediaFile)) {
           node.mediaSrc = mediaLookup.get(n.mediaFile)
         }
@@ -565,7 +618,20 @@ export async function importBundle(
           node.audioCoverSrc = mediaLookup.get(n.audioCoverFile)
         }
         // Flow effects
-        if (n.flowEffects?.length) node.flowEffects = n.flowEffects
+        if (n.flowEffects?.length) {
+          node.flowEffects = n.flowEffects
+          // Restore audio-clip blob URLs from media bundle
+          for (const fx of node.flowEffects) {
+            for (const gNode of fx.graph.nodes) {
+              if (gNode.kind === 'audio-clip' && gNode.config.clipKey && typeof gNode.config.clipKey === 'string') {
+                const clipPath = gNode.config.clipKey as string
+                if (mediaLookup.has(clipPath)) {
+                  gNode.config.clipKey = mediaLookup.get(clipPath)
+                }
+              }
+            }
+          }
+        }
         if (n.hideDuringFlow) node.hideDuringFlow = true
         if (n.cameraTracked) node.cameraTracked = true
         if (n.contentSource) node.contentSource = n.contentSource
@@ -575,6 +641,7 @@ export async function importBundle(
         if (n.cosmeticType) node.cosmeticType = n.cosmeticType
         if (n.tipAngle != null) node.tipAngle = n.tipAngle
         if (n.tipLength != null) node.tipLength = n.tipLength
+        if (n.previewOf) node.previewOf = n.previewOf
         return node
       }),
       connections: mf.connections.map((c) => {
@@ -588,6 +655,7 @@ export async function importBundle(
         if (c.arrowStyle) conn.arrowStyle = c.arrowStyle
         if (c.label) conn.label = c.label
         if (c.labelFontSize != null) conn.labelFontSize = c.labelFontSize
+        if (c.dependsOnSpawn) conn.dependsOnSpawn = c.dependsOnSpawn
         return conn
       }),
     })
