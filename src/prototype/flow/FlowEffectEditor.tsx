@@ -567,6 +567,7 @@ export function FlowEffectEditor({
   peerHostContext,
   onSavePeer,
   onRequestPeer,
+  onUnlinkPeer,
   onSyncPreviewFacades,
 }: {
   effect: FlowEffect
@@ -577,6 +578,7 @@ export function FlowEffectEditor({
   peerHostContext?: EffectEditorHostContext
   onSavePeer?: (updated: FlowEffect) => void
   onRequestPeer?: () => void
+  onUnlinkPeer?: (cleanedEffect: FlowEffect, cleanedPeerEffect?: FlowEffect) => void
   onSyncPreviewFacades?: (hostNodeId: string, graphNodeId: string, items: SpawnItem[]) => void
 }) {
   // Build the addable kinds based on host context (and peer context in split view)
@@ -627,6 +629,10 @@ export function FlowEffectEditor({
     const [, e] = ensureEntryNode(peerEffect.graph.nodes, peerEffect.graph.edges)
     return e
   })
+  const hasCrossEdges = hasPeer && (
+    edges.some(e => !!e.crossNodeId) || peerEdges.some(e => !!e.crossNodeId)
+  )
+
   const [peerSelectedNodeId, setPeerSelectedNodeId] = useState<string | null>(null)
   const [peerPan, setPeerPan] = useState({ x: 0, y: 0 })
   const [activePane, setActivePane] = useState<'primary' | 'peer'>('primary')
@@ -717,10 +723,17 @@ export function FlowEffectEditor({
     if (!curSelectedId) return
     const node = curNodes.find(n => n.id === curSelectedId)
     if (!node || isNodeLocked(node)) return
+    // If deleting a spawn node, remove its preview facades
+    if (node.kind === 'spawn' && onSyncPreviewFacades) {
+      onSyncPreviewFacades(curHostContext.hostNodeId, curSelectedId, [])
+    }
     setCurNodes(prev => prev.filter(n => n.id !== curSelectedId))
     setCurEdges(prev => prev.filter(e => e.from !== curSelectedId && e.to !== curSelectedId))
+    // Also remove cross-edges in the OTHER pane that target this node
+    const setOtherEdges = activePane === 'peer' ? setEdges : setPeerEdges
+    setOtherEdges(prev => prev.filter(e => !(e.crossNodeId && e.to === curSelectedId)))
     setCurSelectedId(null)
-  }, [curSelectedId, curNodes, isNodeLocked, setCurNodes, setCurEdges, setCurSelectedId])
+  }, [curSelectedId, curNodes, isNodeLocked, setCurNodes, setCurEdges, setCurSelectedId, onSyncPreviewFacades, curHostContext, activePane, setEdges, setPeerEdges])
 
   // ---- Add node (active pane) ----
   const addNode = useCallback((kind: FlowEffectKind) => {
@@ -835,6 +848,15 @@ export function FlowEffectEditor({
           <div className="fxeditor-header-actions">
             {onRequestPeer && !hasPeer && (
               <button type="button" className="fxeditor-link-btn" onClick={onRequestPeer}>Link Node</button>
+            )}
+            {hasPeer && onUnlinkPeer && (
+              <button type="button" className="fxeditor-link-btn" disabled={!!hasCrossEdges}
+                title={hasCrossEdges ? 'Delete all cross-connections first' : undefined}
+                onClick={() => {
+                  const cleanedEffect = { ...effect, graph: { nodes, edges } }
+                  const cleanedPeer = peerEffect ? { ...peerEffect, graph: { nodes: peerNodes, edges: peerEdges } } : undefined
+                  onUnlinkPeer(cleanedEffect, cleanedPeer)
+                }}>Unlink Node</button>
             )}
             <button type="button" className="fxeditor-save-btn" onClick={handleSave}>Save</button>
             <button type="button" className="fxeditor-close-btn" onClick={onClose}>×</button>

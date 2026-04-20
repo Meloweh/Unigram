@@ -2,7 +2,7 @@ import type { Model, ModelNode, FlowEffect } from '../model/sampleModels'
 import { FlowEffectEditor, type EffectEditorHostContext } from './FlowEffectEditor'
 
 interface FlowEffectEditorModalProps {
-  editingEffect: { nodeId: string; effectId: string; peerNodeId?: string; peerEffectId?: string }
+  editingEffect: { nodeId: string; effectId: string; peerNodeId?: string | null; peerEffectId?: string }
   model: Model
   frameModelId: string
   stackLength: number
@@ -10,12 +10,13 @@ interface FlowEffectEditorModalProps {
   updateNodeProps: (modelId: string, nodeId: string, props: Partial<ModelNode>) => void
   onClose: () => void
   onRequestPeer?: (sourceNodeId: string, sourceEffectId: string) => void
+  onUnlinkPeer?: () => void
   onSyncPreviewFacades?: (hostNodeId: string, graphNodeId: string, items: import('./FlowEffectEditor').SpawnItem[]) => void
 }
 
 export function FlowEffectEditorModal({
   editingEffect, model, frameModelId, stackLength,
-  storeModels, updateNodeProps, onClose, onRequestPeer, onSyncPreviewFacades,
+  storeModels, updateNodeProps, onClose, onRequestPeer, onUnlinkPeer, onSyncPreviewFacades,
 }: FlowEffectEditorModalProps) {
   const editNode = model.nodes.find(n => n.id === editingEffect.nodeId)
   // Find the effect — either from flowEffects or build the locked media virtual effect
@@ -59,7 +60,10 @@ export function FlowEffectEditorModal({
 
   // ---- Auto-detect peer node from existing cross-edges ----
   let resolvedPeerNodeId = editingEffect.peerNodeId
-  if (!resolvedPeerNodeId) {
+  if (resolvedPeerNodeId === null) {
+    // Explicitly unlinked — skip auto-detection
+    resolvedPeerNodeId = undefined
+  } else if (!resolvedPeerNodeId) {
     // Check if this effect has outgoing cross-edges
     const outCross = editFx.graph.edges.find(e => !!e.crossNodeId)
     if (outCross) {
@@ -126,6 +130,7 @@ export function FlowEffectEditorModal({
 
   return (
     <FlowEffectEditor
+      key={resolvedPeerNodeId ?? '__no-peer__'}
       effect={editFx}
       hostContext={hostCtx}
       peerEffect={peerFx}
@@ -139,6 +144,14 @@ export function FlowEffectEditorModal({
         saveEffect(resolvedPeerNodeId!, peerNode, updated)
       } : undefined}
       onRequestPeer={onRequestPeer ? () => onRequestPeer(editingEffect.nodeId, editingEffect.effectId) : undefined}
+      onUnlinkPeer={(cleanedEffect, cleanedPeerEffect) => {
+        saveEffect(editingEffect.nodeId, editNode, cleanedEffect)
+        if (cleanedPeerEffect && resolvedPeerNodeId) {
+          const peerNode = model.nodes.find(n => n.id === resolvedPeerNodeId)
+          saveEffect(resolvedPeerNodeId, peerNode, cleanedPeerEffect)
+        }
+        onUnlinkPeer?.()
+      }}
       onSyncPreviewFacades={onSyncPreviewFacades}
       onClose={onClose}
     />

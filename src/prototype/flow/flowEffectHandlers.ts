@@ -11,10 +11,8 @@ import {
 // Each handler returns the layerMaxDuration contribution for that effect.
 
 export function handlePlayMedia(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
-  const isReactive = !!gNode.config.audioReactive
-  const reactiveEffect = (gNode.config.visualEffect as string) ?? 'glow-pulse'
-  const reactiveIntensity = (gNode.config.reactiveIntensity as number) ?? 1
   const capturedNodeId = ctx.nodeId
+  ctx.pendingMedia.count++
   ctx.scheduleEffect(() => {
     ctx.triggerMediaPlay(capturedNodeId)
     // Listen for media completion to signal the flow DAG
@@ -23,9 +21,17 @@ export function handlePlayMedia(ctx: FlowEffectCtx, gNode: EffectGraphNode, dela
     const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
     if (media) {
       const onMediaDone = () => {
-        ctx.cleanup.mediaDone.add(capturedNodeId)
         media.removeEventListener('pause', onMediaDone)
         media.removeEventListener('ended', onMediaDone)
+        if (--ctx.pendingMedia.count <= 0) {
+          if (ctx.pendingMedia.onAllDone) {
+            const cb = ctx.pendingMedia.onAllDone
+            ctx.pendingMedia.onAllDone = undefined
+            cb()
+          } else {
+            ctx.cleanup.mediaDone.add(capturedNodeId)
+          }
+        }
       }
       // Wait for playback to actually start before listening for pause/ended
       const onPlaying = () => {
@@ -36,80 +42,15 @@ export function handlePlayMedia(ctx: FlowEffectCtx, gNode: EffectGraphNode, dela
       media.addEventListener('playing', onPlaying)
     } else {
       // GIF or image node: no media element, signal completion immediately
-      ctx.cleanup.mediaDone.add(capturedNodeId)
-    }
-    if (isReactive) {
-      // Start audio-reactive visualization after a short delay for media to begin
-      setTimeout(() => {
-        const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
-        if (!article) return
-        const media = article.querySelector('video, audio') as HTMLVideoElement | HTMLAudioElement | null
-        if (!media) return
-
-        let cached = ctx.audioCtxCache.get(media)
-        if (!cached) {
-          try {
-            const audioCtx = new AudioContext()
-            const analyser = audioCtx.createAnalyser()
-            analyser.fftSize = 256
-            const source = audioCtx.createMediaElementSource(media)
-            source.connect(analyser)
-            analyser.connect(audioCtx.destination)
-            cached = { ctx: audioCtx, analyser }
-            ctx.audioCtxCache.set(media, cached)
-          } catch {
-            return
-          }
+      if (--ctx.pendingMedia.count <= 0) {
+        if (ctx.pendingMedia.onAllDone) {
+          const cb = ctx.pendingMedia.onAllDone
+          ctx.pendingMedia.onAllDone = undefined
+          cb()
+        } else {
+          ctx.cleanup.mediaDone.add(capturedNodeId)
         }
-        // Resume context if it was suspended (e.g. browser autoplay policy)
-        if (cached.ctx.state === 'suspended') cached.ctx.resume()
-
-        const { analyser } = cached
-        const dataArray = new Uint8Array(analyser.frequencyBinCount)
-        const origFilter = article.style.filter
-        const origOpacity = article.style.opacity
-        const origTransform = article.style.transform
-
-        const arTick = () => {
-          // Stop when media is paused or ended
-          if (media.paused || media.ended) {
-            article.style.filter = origFilter
-            article.style.opacity = origOpacity
-            article.style.transform = origTransform
-            return
-          }
-
-          analyser.getByteFrequencyData(dataArray)
-          let sum = 0
-          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]
-          const amp = (sum / dataArray.length / 255) * reactiveIntensity
-
-          switch (reactiveEffect) {
-            case 'glow-pulse': {
-              const glow = Math.round(amp * 30)
-              article.style.filter = `drop-shadow(0 0 ${glow}px rgba(56, 189, 248, ${amp}))`
-              break
-            }
-            case 'scale-bounce': {
-              const scaleVal = 1 + amp * 0.15
-              article.style.transform = origTransform.replace(/scale\([^)]*\)/, '').trim() + ` scale(${scaleVal})`
-              break
-            }
-            case 'opacity-pulse': {
-              const op = 0.4 + amp * 0.6
-              article.style.opacity = `${op}`
-              break
-            }
-            case 'color-shift': {
-              const hue = Math.round(amp * 360)
-              article.style.filter = `hue-rotate(${hue}deg) saturate(${1 + amp})`
-              break
-            }
-          }
-          requestAnimationFrame(arTick)
-        }
-        requestAnimationFrame(arTick)
-      }, 100)
+      }
     }
   }, delay)
   // Use large cap duration; actual completion signalled by media pause/ended event
@@ -139,7 +80,7 @@ export function handleColor(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
       }
     }
   }, delay)
-  return keepPlaying ? 0 : dur
+  return dur
 }
 
 export function handleMove(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
@@ -198,7 +139,7 @@ export function handleMove(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: nu
       })
     }
   }, delay)
-  return keepPlaying ? 0 : totalWpDur
+  return totalWpDur
 }
 
 export function handleSpawn(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
@@ -606,7 +547,7 @@ export function handleJitter(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: 
     }
     entry.rafId = requestAnimationFrame(animateJitter)
   }, delay)
-  return keepPlaying ? 0 : durationMs
+  return durationMs
 }
 
 export function handleFloat(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
@@ -644,15 +585,15 @@ export function handleFloat(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
     }
     entry.rafId = requestAnimationFrame(animateFloat)
   }, delay)
-  return keepPlaying ? 0 : durationMs
+  return durationMs
 }
 
 export function handleSegmentPlay(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
   const startTime = (gNode.config.startTime as number) ?? 0
   const endTime = (gNode.config.endTime as number) ?? 0
   if (endTime <= startTime) return 0
-  const durationMs = (endTime - startTime) * 1000
   const capturedNodeId = ctx.nodeId
+  ctx.pendingMedia.count++
   ctx.scheduleEffect(() => {
     const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
     if (!article) return
@@ -660,11 +601,22 @@ export function handleSegmentPlay(ctx: FlowEffectCtx, gNode: EffectGraphNode, de
     if (!media) return
     media.currentTime = startTime
     media.play().catch(() => {})
+    const signalDone = () => {
+      if (--ctx.pendingMedia.count <= 0) {
+        if (ctx.pendingMedia.onAllDone) {
+          const cb = ctx.pendingMedia.onAllDone
+          ctx.pendingMedia.onAllDone = undefined
+          cb()
+        } else {
+          ctx.cleanup.mediaDone.add(capturedNodeId)
+        }
+      }
+    }
     const onTimeUpdate = () => {
       if (media.currentTime >= endTime) {
         media.pause()
         media.removeEventListener('timeupdate', onTimeUpdate)
-        ctx.cleanup.mediaDone.add(capturedNodeId)
+        signalDone()
       }
     }
     media.addEventListener('timeupdate', onTimeUpdate)
@@ -672,11 +624,12 @@ export function handleSegmentPlay(ctx: FlowEffectCtx, gNode: EffectGraphNode, de
     const onEnded = () => {
       media.removeEventListener('timeupdate', onTimeUpdate)
       media.removeEventListener('ended', onEnded)
-      ctx.cleanup.mediaDone.add(capturedNodeId)
+      signalDone()
     }
     media.addEventListener('ended', onEnded)
   }, delay)
-  return durationMs
+  // Use large sentinel; actual completion signalled via mediaDone
+  return 600000
 }
 
 export function handleAudioClip(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
@@ -684,21 +637,101 @@ export function handleAudioClip(ctx: FlowEffectCtx, gNode: EffectGraphNode, dela
   if (!clipBlobUrl) return 0
   const blob = getMediaBlob(clipBlobUrl)
   if (!blob) return 0
+  const isReactive = !!gNode.config.audioReactive
+  const reactiveEffect = (gNode.config.visualEffect as string) ?? 'glow-pulse'
+  const reactiveIntensity = (gNode.config.reactiveIntensity as number) ?? 1
   const capturedNodeId = ctx.nodeId
   const audio = new Audio()
   const objUrl = URL.createObjectURL(blob)
   audio.src = objUrl
+  ctx.pendingMedia.count++
   ctx.scheduleEffect(() => {
     const onEnded = () => {
       audio.removeEventListener('ended', onEnded)
       URL.revokeObjectURL(objUrl)
-      ctx.cleanup.mediaDone.add(capturedNodeId)
+      if (--ctx.pendingMedia.count <= 0) {
+        if (ctx.pendingMedia.onAllDone) {
+          const cb = ctx.pendingMedia.onAllDone
+          ctx.pendingMedia.onAllDone = undefined
+          cb()
+        } else {
+          ctx.cleanup.mediaDone.add(capturedNodeId)
+        }
+      }
     }
     audio.addEventListener('ended', onEnded)
     audio.play().catch(() => {})
+
+    if (isReactive) {
+      // Start audio-reactive visualization driven by the clip's audio element
+      const article = document.querySelector(`[data-node-id="${CSS.escape(capturedNodeId)}"]`) as HTMLElement | null
+      if (!article) return
+
+      let cached = ctx.audioCtxCache.get(audio)
+      if (!cached) {
+        try {
+          const audioCtx = new AudioContext()
+          const analyser = audioCtx.createAnalyser()
+          analyser.fftSize = 256
+          const source = audioCtx.createMediaElementSource(audio)
+          source.connect(analyser)
+          analyser.connect(audioCtx.destination)
+          cached = { ctx: audioCtx, analyser }
+          ctx.audioCtxCache.set(audio, cached)
+        } catch {
+          return
+        }
+      }
+      if (cached.ctx.state === 'suspended') cached.ctx.resume()
+
+      const { analyser } = cached
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      const origFilter = article.style.filter
+      const origOpacity = article.style.opacity
+      const origTransform = article.style.transform
+
+      const arTick = () => {
+        if (audio.paused || audio.ended) {
+          article.style.filter = origFilter
+          article.style.opacity = origOpacity
+          article.style.transform = origTransform
+          return
+        }
+
+        analyser.getByteFrequencyData(dataArray)
+        let sum = 0
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]
+        const amp = (sum / dataArray.length / 255) * reactiveIntensity
+
+        switch (reactiveEffect) {
+          case 'glow-pulse': {
+            const glow = Math.round(amp * 30)
+            article.style.filter = `drop-shadow(0 0 ${glow}px rgba(56, 189, 248, ${amp}))`
+            break
+          }
+          case 'scale-bounce': {
+            const scaleVal = 1 + amp * 0.15
+            article.style.transform = origTransform.replace(/scale\([^)]*\)/, '').trim() + ` scale(${scaleVal})`
+            break
+          }
+          case 'opacity-pulse': {
+            const op = 0.4 + amp * 0.6
+            article.style.opacity = `${op}`
+            break
+          }
+          case 'color-shift': {
+            const hue = Math.round(amp * 360)
+            article.style.filter = `hue-rotate(${hue}deg) saturate(${1 + amp})`
+            break
+          }
+        }
+        requestAnimationFrame(arTick)
+      }
+      requestAnimationFrame(arTick)
+    }
   }, delay)
-  // Return 0 — duration unknown ahead of time; completion signalled via mediaDone
-  return 0
+  // Return large sentinel; actual completion signalled via mediaDone
+  return 600000
 }
 
 export function dispatchEffect(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {

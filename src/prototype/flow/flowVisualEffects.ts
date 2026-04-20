@@ -328,7 +328,7 @@ export function handleScale(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: n
     }
     requestAnimationFrame(animateScale)
   }, delay)
-  return keepPlaying ? 0 : scaleDur * 2 + 200
+  return keepPlaying ? scaleDur : scaleDur * 2 + 200
 }
 
 export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {
@@ -628,7 +628,7 @@ export function handleTextFormat(ctx: FlowEffectCtx, gNode: EffectGraphNode, del
       }
     }
   }, delay)
-  return resetMode === 'persist' ? 0 : holdDur
+  return resetMode === 'persist' ? (rescaleDur > 0 ? rescaleDur : 100) : holdDur
 }
 
 export function handleRecord(ctx: FlowEffectCtx, gNode: EffectGraphNode, delay: number): number {

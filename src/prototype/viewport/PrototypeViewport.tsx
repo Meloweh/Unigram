@@ -1090,6 +1090,11 @@ export function PrototypeViewport() {
             setEditingEffect(null)
             setPickingPeerFor({ nodeId: sourceNodeId, effectId: sourceEffectId })
           }}
+          onUnlinkPeer={() => {
+            const { nodeId, effectId } = editingEffect
+            setEditingEffect(null)
+            queueMicrotask(() => setEditingEffect({ nodeId, effectId, peerNodeId: null }))
+          }}
           onSyncPreviewFacades={(hostNodeId, graphNodeId, items) => {
             const modelNodes = model.nodes
             // Remove existing previews for this host+graphNode that are no longer in items

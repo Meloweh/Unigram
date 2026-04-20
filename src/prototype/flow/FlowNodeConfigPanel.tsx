@@ -14,6 +14,7 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [clipDuration, setClipDuration] = useState<number | null>(null)
+  const [countdown, setCountdown] = useState(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -23,22 +24,39 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true },
+      })
       streamRef.current = stream
       const audioCtx = new AudioContext()
       audioCtxRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
-      // Processing chain: highpass → lowpass → compressor → limiter → dest
-      const hp1 = audioCtx.createBiquadFilter(); hp1.type = 'highpass'; hp1.frequency.value = 100
-      const hp2 = audioCtx.createBiquadFilter(); hp2.type = 'highpass'; hp2.frequency.value = 100
-      const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 15000
+      // Processing chain: highpass → de-plosive notch → lowpass → noise gate → de-esser → compressor → limiter → dest
+      const hp1 = audioCtx.createBiquadFilter(); hp1.type = 'highpass'; hp1.frequency.value = 120; hp1.Q.value = 0.7
+      const hp2 = audioCtx.createBiquadFilter(); hp2.type = 'highpass'; hp2.frequency.value = 120; hp2.Q.value = 0.7
+      // Notch out plosive/smacking energy around 1–3 kHz
+      const notch1 = audioCtx.createBiquadFilter(); notch1.type = 'peaking'; notch1.frequency.value = 1500; notch1.Q.value = 1.5; notch1.gain.value = -6
+      const notch2 = audioCtx.createBiquadFilter(); notch2.type = 'peaking'; notch2.frequency.value = 2500; notch2.Q.value = 2; notch2.gain.value = -4
+      const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 13000; lp.Q.value = 0.7
+      // Tame background hum/buzz at common mains frequencies
+      const hum1 = audioCtx.createBiquadFilter(); hum1.type = 'notch'; hum1.frequency.value = 50; hum1.Q.value = 10
+      const hum2 = audioCtx.createBiquadFilter(); hum2.type = 'notch'; hum2.frequency.value = 60; hum2.Q.value = 10
+      // Noise gate: aggressively squash signals below speech level
+      const gate = audioCtx.createDynamicsCompressor()
+      gate.threshold.value = -45; gate.ratio.value = 16; gate.attack.value = 0.001; gate.release.value = 0.08
+      // De-esser: tame sibilance across 4–10 kHz range
+      const deess1 = audioCtx.createBiquadFilter(); deess1.type = 'peaking'; deess1.frequency.value = 5000; deess1.Q.value = 1.5; deess1.gain.value = -5
+      const deess2 = audioCtx.createBiquadFilter(); deess2.type = 'peaking'; deess2.frequency.value = 7000; deess2.Q.value = 1.5; deess2.gain.value = -6
+      const deess3 = audioCtx.createBiquadFilter(); deess3.type = 'peaking'; deess3.frequency.value = 9000; deess3.Q.value = 2; deess3.gain.value = -4
+      // Shelf to roll off harsh upper treble
+      const hiShelf = audioCtx.createBiquadFilter(); hiShelf.type = 'highshelf'; hiShelf.frequency.value = 10000; hiShelf.gain.value = -4
       const comp = audioCtx.createDynamicsCompressor()
       comp.threshold.value = -24; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.15
       const limiter = audioCtx.createDynamicsCompressor()
       limiter.threshold.value = -3; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.05
       const gain = audioCtx.createGain(); gain.gain.value = 1.4
       const dest = audioCtx.createMediaStreamDestination()
-      source.connect(hp1).connect(hp2).connect(lp).connect(comp).connect(limiter).connect(gain).connect(dest)
+      source.connect(hp1).connect(hp2).connect(notch1).connect(notch2).connect(lp).connect(hum1).connect(hum2).connect(gate).connect(deess1).connect(deess2).connect(deess3).connect(hiShelf).connect(comp).connect(limiter).connect(gain).connect(dest)
 
       const recorder = new MediaRecorder(dest.stream)
       const chunks: BlobPart[] = []
@@ -59,11 +77,18 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
       }
       recorderRef.current = recorder
       recorder.start()
+      setCountdown(false)
       setIsRecording(true)
     } catch {
+      setCountdown(false)
       // mic permission denied
     }
   }, [effectiveClipKey, updateNodeConfig])
+
+  const startWithCountdown = useCallback(() => {
+    setCountdown(true)
+    setTimeout(() => startRecording(), 500)
+  }, [startRecording])
 
   const stopRecording = useCallback(() => {
     if (recorderRef.current?.state !== 'inactive') {
@@ -120,8 +145,15 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
         {hasBlobUrl ? 'Drop audio file to replace' : 'Drop audio file here'}
       </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-        {!isRecording ? (
-          <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={startRecording}>
+        {countdown ? (
+          <button type="button" className="fxeditor-add-node-btn" style={{
+            flex: 1, color: '#f59e0b',
+            animation: 'rec-countdown-pulse 0.5s ease-in-out',
+          }} disabled>
+            ● Starting…
+          </button>
+        ) : !isRecording ? (
+          <button type="button" className="fxeditor-add-node-btn" style={{ flex: 1 }} onClick={startWithCountdown}>
             ⏺ Record
           </button>
         ) : (
@@ -143,6 +175,44 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
       </div>
       {clipDuration != null && (
         <div className="fxeditor-field-hint">Duration: {clipDuration.toFixed(1)}s</div>
+      )}
+      <label className="fxeditor-checkbox">
+        <input
+          type="checkbox"
+          checked={!!selectedNode.config.audioReactive}
+          onChange={(e) => {
+            if (e.target.checked) {
+              updateNodeConfig('audioReactive', true)
+              if (!selectedNode.config.visualEffect) updateNodeConfig('visualEffect', 'glow-pulse')
+              if (!selectedNode.config.reactiveIntensity) updateNodeConfig('reactiveIntensity', 1)
+            } else {
+              updateNodeConfig('audioReactive', false)
+            }
+          }}
+        />
+        <span>Audio Reactive</span>
+      </label>
+      {!!selectedNode.config.audioReactive && (
+        <>
+          <label className="fxeditor-field">
+            <span>Visual Effect</span>
+            <select
+              value={(selectedNode.config.visualEffect as string) ?? 'glow-pulse'}
+              onChange={(e) => updateNodeConfig('visualEffect', e.target.value)}
+            >
+              <option value="glow-pulse">Glow Pulse</option>
+              <option value="scale-bounce">Scale Bounce</option>
+              <option value="opacity-pulse">Opacity Pulse</option>
+              <option value="color-shift">Color Shift</option>
+            </select>
+          </label>
+          <label className="fxeditor-field">
+            <span>Intensity</span>
+            <input type="number" min={0.1} max={3} step={0.1}
+              value={(selectedNode.config.reactiveIntensity as number) ?? 1}
+              onChange={(e) => updateNodeConfig('reactiveIntensity', Number(e.target.value))} />
+          </label>
+        </>
       )}
     </>
   )
@@ -317,44 +387,6 @@ export function FlowNodeConfigPanel({
             <div className="fxeditor-field-hint">
               Triggers media playback on the host node.
             </div>
-            <label className="fxeditor-checkbox">
-              <input
-                type="checkbox"
-                checked={!!selectedNode.config.audioReactive}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    updateNodeConfig('audioReactive', true)
-                    if (!selectedNode.config.visualEffect) updateNodeConfig('visualEffect', 'glow-pulse')
-                    if (!selectedNode.config.reactiveIntensity) updateNodeConfig('reactiveIntensity', 1)
-                  } else {
-                    updateNodeConfig('audioReactive', false)
-                  }
-                }}
-              />
-              <span>Audio Reactive</span>
-            </label>
-            {!!selectedNode.config.audioReactive && (
-              <>
-                <label className="fxeditor-field">
-                  <span>Visual Effect</span>
-                  <select
-                    value={(selectedNode.config.visualEffect as string) ?? 'glow-pulse'}
-                    onChange={(e) => updateNodeConfig('visualEffect', e.target.value)}
-                  >
-                    <option value="glow-pulse">Glow Pulse</option>
-                    <option value="scale-bounce">Scale Bounce</option>
-                    <option value="opacity-pulse">Opacity Pulse</option>
-                    <option value="color-shift">Color Shift</option>
-                  </select>
-                </label>
-                <label className="fxeditor-field">
-                  <span>Intensity</span>
-                  <input type="number" min={0.1} max={3} step={0.1}
-                    value={(selectedNode.config.reactiveIntensity as number) ?? 1}
-                    onChange={(e) => updateNodeConfig('reactiveIntensity', Number(e.target.value))} />
-                </label>
-              </>
-            )}
           </>
         )}
         {selectedNode.kind === 'spawn' && (() => {

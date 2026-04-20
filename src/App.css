@@ -1698,8 +1698,13 @@
   font-weight: 500;
 }
 
-.fxeditor-link-btn:hover {
+.fxeditor-link-btn:hover:not(:disabled) {
   background: rgba(168, 85, 247, 0.25);
+}
+
+.fxeditor-link-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .fxeditor-divider {
@@ -2018,6 +2023,11 @@
 .fxeditor-add-node-btn:hover {
   background: rgba(255, 255, 255, 0.06);
   color: #e2e8f0;
+}
+@keyframes rec-countdown-pulse {
+  0% { opacity: 0.4; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.02); }
+  100% { opacity: 1; transform: scale(1); }
 }
 .fxeditor-add-node-dot {
   width: 8px;

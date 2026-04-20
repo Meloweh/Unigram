@@ -53,7 +53,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const obsWsRef = useRef<import('./obsWebSocket').OBSConnection | null>(null)
 
   // ---- Flow effect editor state ----
-  const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string; peerNodeId?: string; peerEffectId?: string } | null>(null)
+  const [editingEffect, setEditingEffect] = useState<{ nodeId: string; effectId: string; peerNodeId?: string | null; peerEffectId?: string } | null>(null)
 
   const flowDAGRef = useRef<FlowDAG | null>(null)
 
@@ -399,6 +399,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       obsWsRef,
       viewportRef: depsRef.current.viewportRef,
       startFlowAnimationRef,
+      pendingMedia: { count: 0 },
     }
     for (const effect of effects) {
       const graphNodes = effect.graph.nodes
@@ -422,85 +423,143 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       const entryNodes = graphNodes.filter(n => n.kind === 'entry')
       if (entryNodes.length === 0) continue
 
-      let frontier = entryNodes.map(n => n.id)
-      const visited = new Set<string>(frontier)
-      let totalDelay = 0
+      const MEDIA_SENTINEL = 600000
+      const visited = new Set<string>(entryNodes.map(n => n.id))
       const repeaterCounters = new Map<string, number>()
-      let bfsSafety = 0
+      let hasMediaBlocking = false
 
-      while (frontier.length > 0 && bfsSafety++ < 10000) {
-        const nextFrontier: string[] = []
-        let layerMaxDuration = 0
+      // BFS layer processor — can be re-invoked from onAllDone callbacks
+      // for sequential media chaining.  Returns accumulated non-media delay.
+      const processLayers = (startFrontier: string[], startDelay: number, isChained: boolean): number => {
+        let layerFrontier = startFrontier
+        let delay = startDelay
+        let safety = 0
 
-        for (const gNodeId of frontier) {
-          // Determine targets — repeater nodes route based on counter
-          let targets: string[]
-          const selfNode = graphNodes.find(n => n.id === gNodeId)
-          if (selfNode?.kind === 'repeater') {
-            const count = (repeaterCounters.get(gNodeId) ?? 0) + 1
-            repeaterCounters.set(gNodeId, count)
-            const rptCount = (selfNode.config.repeatCount as number) ?? 3
-            const outEdges = graphEdges.filter(e => e.from === gNodeId)
+        while (layerFrontier.length > 0 && safety++ < 10000) {
+          const nextFrontier: string[] = []
+          let layerMaxDuration = 0
+          let nonMediaMaxDur = 0
+          const countBefore = ctx.pendingMedia.count
+          const layerDispatchTime = Date.now()
 
-            if (count <= rptCount) {
-              // Follow circuit edges, clear visited for circuit path nodes
-              targets = outEdges.filter(e => e.fromPort === 'circuit').map(e => e.to)
-              for (const tId of targets) {
-                const pathQueue = [tId]
-                const pathSeen = new Set<string>()
-                while (pathQueue.length > 0) {
-                  const pid = pathQueue.shift()!
-                  if (pid === gNodeId || pathSeen.has(pid)) continue
-                  pathSeen.add(pid)
-                  visited.delete(pid)
-                  for (const e of graphEdges) {
-                    if (e.from === pid) pathQueue.push(e.to)
+          for (const gNodeId of layerFrontier) {
+            let targets: string[]
+            const selfNode = graphNodes.find(n => n.id === gNodeId)
+            if (selfNode?.kind === 'repeater') {
+              const count = (repeaterCounters.get(gNodeId) ?? 0) + 1
+              repeaterCounters.set(gNodeId, count)
+              const rptCount = (selfNode.config.repeatCount as number) ?? 3
+              const outEdges = graphEdges.filter(e => e.from === gNodeId)
+
+              if (count <= rptCount) {
+                targets = outEdges.filter(e => e.fromPort === 'circuit').map(e => e.to)
+                for (const tId of targets) {
+                  const pathQueue = [tId]
+                  const pathSeen = new Set<string>()
+                  while (pathQueue.length > 0) {
+                    const pid = pathQueue.shift()!
+                    if (pid === gNodeId || pathSeen.has(pid)) continue
+                    pathSeen.add(pid)
+                    visited.delete(pid)
+                    for (const e of graphEdges) {
+                      if (e.from === pid) pathQueue.push(e.to)
+                    }
                   }
                 }
+                visited.delete(gNodeId)
+              } else {
+                targets = outEdges.filter(e => e.fromPort !== 'circuit').map(e => e.to)
               }
-              visited.delete(gNodeId) // allow repeater to be re-reached via circuit-in
             } else {
-              // Follow default edges
-              targets = outEdges.filter(e => e.fromPort !== 'circuit').map(e => e.to)
+              targets = adj.get(gNodeId) ?? []
+            }
+
+            for (const targetId of targets) {
+              if (visited.has(targetId)) continue
+              visited.add(targetId)
+              nextFrontier.push(targetId)
+
+              const gNode = graphNodes.find(n => n.id === targetId)
+              if (!gNode) continue
+
+              const dur = dispatchEffect(ctx, gNode, delay)
+              layerMaxDuration = Math.max(layerMaxDuration, dur)
+              if (dur < MEDIA_SENTINEL) nonMediaMaxDur = Math.max(nonMediaMaxDur, dur)
+            }
+
+            const crossEdges = crossEdgeMap.get(gNodeId)
+            if (crossEdges) {
+              for (const ce of crossEdges) {
+                const targetModelNode = depsRef.current.model.nodes.find(n => n.id === ce.crossNodeId)
+                if (!targetModelNode) continue
+                const targetEffects = targetModelNode.flowEffects ?? []
+                for (const tEffect of targetEffects) {
+                  const tGraphNode = tEffect.graph.nodes.find(n => n.id === ce.to)
+                  if (!tGraphNode) continue
+                  const crossCtx: FlowEffectCtx = { ...ctx, nodeId: ce.crossNodeId!, node: targetModelNode }
+                  const dur = dispatchEffect(crossCtx, tGraphNode, delay)
+                  layerMaxDuration = Math.max(layerMaxDuration, dur)
+                  if (dur < MEDIA_SENTINEL) nonMediaMaxDur = Math.max(nonMediaMaxDur, dur)
+                }
+              }
+            }
+          }
+
+          const layerMediaCount = ctx.pendingMedia.count - countBefore
+
+          if (layerMediaCount > 0) {
+            hasMediaBlocking = true
+            // Check if any nextFrontier node has unvisited targets downstream
+            const hasDownstream = nextFrontier.some(nid =>
+              (adj.get(nid) ?? []).some(tid => !visited.has(tid))
+            )
+
+            // When media finishes, also wait for non-media effects in this layer
+            const resumeAfterLayer = (cb: () => void) => {
+              const elapsed = Date.now() - layerDispatchTime
+              const effectEnd = delay + nonMediaMaxDur
+              const wait = Math.max(0, effectEnd - elapsed)
+              if (wait > 0) {
+                const id = window.setTimeout(cb, wait)
+                flowEffectTimersRef.current.push(id)
+              } else {
+                cb()
+              }
+            }
+
+            if (hasDownstream) {
+              // Sequential chain: when all media + non-media in this layer finish, resume BFS
+              const remaining = [...nextFrontier]
+              ctx.pendingMedia.onAllDone = () => {
+                ctx.pendingMedia.onAllDone = undefined
+                resumeAfterLayer(() => processLayers(remaining, 0, true))
+              }
+              return delay
+            } else {
+              // Terminal media layer: signal mediaDone when all effects complete
+              ctx.pendingMedia.onAllDone = () => {
+                ctx.pendingMedia.onAllDone = undefined
+                resumeAfterLayer(() => ctx.cleanup.mediaDone.add(ctx.nodeId))
+              }
             }
           } else {
-            targets = adj.get(gNodeId) ?? []
+            delay += layerMaxDuration
           }
 
-          for (const targetId of targets) {
-            if (visited.has(targetId)) continue
-            visited.add(targetId)
-            nextFrontier.push(targetId)
-
-            const gNode = graphNodes.find(n => n.id === targetId)
-            if (!gNode) continue
-
-            layerMaxDuration = Math.max(layerMaxDuration, dispatchEffect(ctx, gNode, totalDelay))
-          }
-
-          // Dispatch cross-graph edges: fire effects in the target node's effect graph
-          const crossEdges = crossEdgeMap.get(gNodeId)
-          if (crossEdges) {
-            for (const ce of crossEdges) {
-              const targetModelNode = depsRef.current.model.nodes.find(n => n.id === ce.crossNodeId)
-              if (!targetModelNode) continue
-              const targetEffects = targetModelNode.flowEffects ?? []
-              for (const tEffect of targetEffects) {
-                const tGraphNode = tEffect.graph.nodes.find(n => n.id === ce.to)
-                if (!tGraphNode) continue
-                // Build a context for the target node and dispatch
-                const crossCtx: FlowEffectCtx = { ...ctx, nodeId: ce.crossNodeId!, node: targetModelNode }
-                layerMaxDuration = Math.max(layerMaxDuration, dispatchEffect(crossCtx, tGraphNode, totalDelay))
-              }
-            }
-          }
+          layerFrontier = nextFrontier
         }
 
-        totalDelay += layerMaxDuration
-        frontier = nextFrontier
+        // BFS completed naturally — if called from a media chain and
+        // no more media pending, signal completion
+        if (isChained && ctx.pendingMedia.count <= 0 && !ctx.pendingMedia.onAllDone) {
+          ctx.cleanup.mediaDone.add(ctx.nodeId)
+        }
+
+        return delay
       }
 
-      maxDuration = Math.max(maxDuration, totalDelay)
+      const finalDelay = processLayers(entryNodes.map(n => n.id), 0, false)
+      maxDuration = Math.max(maxDuration, hasMediaBlocking ? MEDIA_SENTINEL : finalDelay)
     }
 
     // If there's implicit media and no locked effect, still play media

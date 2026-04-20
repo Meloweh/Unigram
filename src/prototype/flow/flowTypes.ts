@@ -95,6 +95,8 @@ export interface FlowEffectCtx {
   viewportRef: RefObject<HTMLDivElement | null>
   // Recursive call
   startFlowAnimationRef: RefObject<(nodeId: string) => void>
+  // Media completion barrier — handlers increment count; onAllDone called when count reaches 0
+  pendingMedia: { count: number; onAllDone?: () => void }
 }
 
 export function createCleanupState(): FlowCleanupState {
