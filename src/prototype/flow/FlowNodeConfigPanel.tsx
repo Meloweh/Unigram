@@ -4,6 +4,43 @@ import type { EffectEditorHostContext, MoveWaypoint, SpawnItem, SpawnCircularIte
 import { TextGeneratorConfigPanel } from './TextGeneratorConfigPanel'
 import { storeMediaBlob, getMediaBlob } from '../model/mediaStore'
 
+/** Encode an AudioBuffer to a WAV Blob */
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numCh = buffer.numberOfChannels
+  const sampleRate = buffer.sampleRate
+  const length = buffer.length
+  const bytesPerSample = 2
+  const blockAlign = numCh * bytesPerSample
+  const dataSize = length * blockAlign
+  const buf = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buf)
+  const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)) }
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, numCh, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * blockAlign, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, 16, true)
+  writeStr(36, 'data')
+  view.setUint32(40, dataSize, true)
+  const channels: Float32Array[] = []
+  for (let ch = 0; ch < numCh; ch++) channels.push(buffer.getChannelData(ch))
+  let offset = 44
+  for (let i = 0; i < length; i++) {
+    for (let ch = 0; ch < numCh; ch++) {
+      const s = Math.max(-1, Math.min(1, channels[ch][i]))
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+      offset += 2
+    }
+  }
+  return new Blob([buf], { type: 'audio/wav' })
+}
+
 /** Inline audio clip config with record/play capability */
 function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
   selectedNode: EffectGraphNode
@@ -61,18 +98,47 @@ function AudioClipConfig({ selectedNode, updateNodeConfig, hostNodeId }: {
       const recorder = new MediaRecorder(dest.stream)
       const chunks: BlobPart[] = []
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop())
         audioCtx.close()
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
-        const blobUrl = storeMediaBlob(blob)
-        updateNodeConfig('clipKey', effectiveClipKey)
-        updateNodeConfig('clipBlobUrl', blobUrl)
-        // Compute duration
-        const tempAudio = new Audio(blobUrl)
-        tempAudio.addEventListener('loadedmetadata', () => {
-          setClipDuration(tempAudio.duration)
-        })
+        const rawBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+
+        // Trim last 0.5s to cut off the stop-click sound
+        try {
+          const arrayBuf = await rawBlob.arrayBuffer()
+          const decodeCtx = new AudioContext()
+          const decoded = await decodeCtx.decodeAudioData(arrayBuf)
+          decodeCtx.close()
+          const trimSec = 0.5
+          const trimSamples = Math.round(trimSec * decoded.sampleRate)
+          const newLength = Math.max(0, decoded.length - trimSamples)
+          if (newLength > 0) {
+            const offline = new OfflineAudioContext(decoded.numberOfChannels, newLength, decoded.sampleRate)
+            const src = offline.createBufferSource()
+            src.buffer = decoded
+            src.connect(offline.destination)
+            src.start(0, 0, newLength / decoded.sampleRate)
+            const rendered = await offline.startRendering()
+            // Encode trimmed buffer to WAV
+            const wavBlob = audioBufferToWav(rendered)
+            const blobUrl = storeMediaBlob(wavBlob)
+            updateNodeConfig('clipKey', effectiveClipKey)
+            updateNodeConfig('clipBlobUrl', blobUrl)
+            const tempAudio = new Audio(blobUrl)
+            tempAudio.addEventListener('loadedmetadata', () => {
+              setClipDuration(tempAudio.duration)
+            })
+          }
+        } catch {
+          // Fallback: store untrimmed
+          const blobUrl = storeMediaBlob(rawBlob)
+          updateNodeConfig('clipKey', effectiveClipKey)
+          updateNodeConfig('clipBlobUrl', blobUrl)
+          const tempAudio = new Audio(blobUrl)
+          tempAudio.addEventListener('loadedmetadata', () => {
+            setClipDuration(tempAudio.duration)
+          })
+        }
         setIsRecording(false)
       }
       recorderRef.current = recorder

@@ -53,6 +53,7 @@ export interface FlowCleanupState {
   textGenAudioNodes: { osc?: OscillatorNode; gain?: GainNode; source?: AudioBufferSourceNode; ctx: AudioContext }[]
   spawnedNodeIds: string[]
   activatedPreviews: { nodeId: string; previewOf: { hostNodeId: string; spawnEffectNodeId: string; itemIndex: number } }[]
+  audioElements: HTMLAudioElement[]
 }
 
 /** Context passed to effect handler functions */
@@ -118,5 +119,6 @@ export function createCleanupState(): FlowCleanupState {
     textGenAudioNodes: [],
     spawnedNodeIds: [],
     activatedPreviews: [],
+    audioElements: [],
   }
 }

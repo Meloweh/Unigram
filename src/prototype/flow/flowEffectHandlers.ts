@@ -644,6 +644,7 @@ export function handleAudioClip(ctx: FlowEffectCtx, gNode: EffectGraphNode, dela
   const audio = new Audio()
   const objUrl = URL.createObjectURL(blob)
   audio.src = objUrl
+  ctx.cleanup.audioElements.push(audio)
   ctx.pendingMedia.count++
   ctx.scheduleEffect(() => {
     const onEnded = () => {

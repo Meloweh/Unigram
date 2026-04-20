@@ -92,6 +92,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
   const textGenAudioNodesRef = useRef<{ osc?: OscillatorNode; gain?: GainNode; source?: AudioBufferSourceNode; ctx: AudioContext }[]>([])
   const flowKeepPlayingAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
   const flowLevitateAnimsRef = useRef<{ rafId: number; cleanup: () => void }[]>([])
+  const flowAudioElementsRef = useRef<HTMLAudioElement[]>([])
   const flowEffectTimersRef = useRef<number[]>([])
   const flowSpawnedNodeIdsRef = useRef<string[]>([])
   const flowActivatedPreviewsRef = useRef<{ nodeId: string; previewOf: { hostNodeId: string; spawnEffectNodeId: string; itemIndex: number } }[]>([])
@@ -287,6 +288,11 @@ export function useFlowEngine(deps: FlowEngineDeps) {
       const media = el as HTMLVideoElement | HTMLAudioElement
       if (!media.paused) media.pause()
     })
+    // Stop audio clip elements (created via new Audio(), not in DOM)
+    for (const audio of flowAudioElementsRef.current) {
+      if (!audio.paused) audio.pause()
+    }
+    flowAudioElementsRef.current = []
     // Stop flow recording and download result
     if (flowRecorderRef.current && flowRecorderRef.current.state !== 'inactive') {
       flowRecorderRef.current.stop()
@@ -372,6 +378,7 @@ export function useFlowEngine(deps: FlowEngineDeps) {
         textGenAudioNodes: textGenAudioNodesRef.current,
         spawnedNodeIds: flowSpawnedNodeIdsRef.current,
         activatedPreviews: flowActivatedPreviewsRef.current,
+        audioElements: flowAudioElementsRef.current,
       },
       triggerMediaPlay,
       audioCtxCache,
@@ -510,8 +517,10 @@ export function useFlowEngine(deps: FlowEngineDeps) {
           if (layerMediaCount > 0) {
             hasMediaBlocking = true
             // Check if any nextFrontier node has unvisited targets downstream
+            // (includes cross-edges so media waits before dispatching them)
             const hasDownstream = nextFrontier.some(nid =>
-              (adj.get(nid) ?? []).some(tid => !visited.has(tid))
+              (adj.get(nid) ?? []).some(tid => !visited.has(tid)) ||
+              crossEdgeMap.has(nid)
             )
 
             // When media finishes, also wait for non-media effects in this layer
