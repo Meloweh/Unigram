@@ -21,18 +21,24 @@ import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 
 interface ActiveDrag {
-  kind: 'pan' | 'node' | 'connect'
+  kind: 'pan' | 'node' | 'connect' | 'box'
   pointerId: number
   startClient: { x: number; y: number }
   startScene: { x: number; y: number }
-  // For 'node':
+  // For 'node' (drag, possibly multi):
   nodeId?: string
-  startNodeXY?: { x: number; y: number }
+  /** Per-id baseline x/y captured at drag start, for renderer + commit. */
+  dragBaselines?: Array<{ id: string; x: number; y: number }>
   // For 'pan':
   startCamera?: { panX: number; panY: number }
   // For 'connect':
   ghost?: Graphics
   hoverTargetId?: string | null
+  // For 'box':
+  /** Whether shift was held → additive box-select (preserves prior selection). */
+  additive?: boolean
+  /** Snapshot of selection at gesture start (for additive box-select). */
+  baseSelection?: ReadonlySet<string>
   totalMoved?: number
 }
 
@@ -94,6 +100,7 @@ export class PointerController {
     const scene = this.toScene(e)
     const hitId = this.renderer.pickNode(scene.x, scene.y)
     const isRight = e.button === 2
+    const shift = e.shiftKey
     this.host.setPointerCapture(e.pointerId)
 
     if (isRight && hitId) {
@@ -111,12 +118,49 @@ export class PointerController {
       return
     }
 
+    if (isRight && !hitId) {
+      // Right-drag empty → box-select.
+      this.active = {
+        kind: 'box',
+        pointerId: e.pointerId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startScene: scene,
+        additive: shift,
+        baseSelection: new Set(useOmniStore.getState().selectedIds),
+        totalMoved: 0,
+      }
+      this.renderer.setBoxSelect({
+        minX: scene.x,
+        minY: scene.y,
+        maxX: scene.x,
+        maxY: scene.y,
+      })
+      return
+    }
+
     if (e.button === 0 && hitId) {
-      const node = useOmniStore.getState().model.nodes.get(hitId)
+      const store = useOmniStore.getState()
+      const node = store.model.nodes.get(hitId)
       if (!node) return
-      // Single-select on press; full select-on-up if it turns into a click.
-      if (!useOmniStore.getState().selectedIds.has(hitId)) {
-        useOmniStore.getState().select(hitId)
+      // Selection rules:
+      //   shift + click → toggle membership in current selection
+      //   click on already-selected node → keep selection (start multi-drag)
+      //   click on unselected node → replace selection with just this id
+      if (shift) {
+        store.select(hitId, true)
+      } else if (!store.selectedIds.has(hitId)) {
+        store.select(hitId, false)
+      }
+      // Build baselines for whatever is selected now (post-select).
+      const sel = useOmniStore.getState().selectedIds
+      const baselines: Array<{ id: string; x: number; y: number }> = []
+      if (sel.size > 1 && sel.has(hitId)) {
+        for (const id of sel) {
+          const n = useOmniStore.getState().model.nodes.get(id)
+          if (n) baselines.push({ id, x: n.x, y: n.y })
+        }
+      } else {
+        baselines.push({ id: hitId, x: node.x, y: node.y })
       }
       this.active = {
         kind: 'node',
@@ -124,7 +168,7 @@ export class PointerController {
         startClient: { x: e.clientX, y: e.clientY },
         startScene: scene,
         nodeId: hitId,
-        startNodeXY: { x: node.x, y: node.y },
+        dragBaselines: baselines,
         totalMoved: 0,
       }
       return
@@ -162,20 +206,29 @@ export class PointerController {
       return
     }
 
-    if (a.kind === 'node' && a.nodeId && a.startNodeXY) {
+    if (a.kind === 'node' && a.dragBaselines) {
       const sceneNow = this.toScene(e)
       const sceneStart = a.startScene
-      // Update store directly; renderer will re-render on next dirty cycle.
-      // Per-frame store writes are acceptable at stage 1 because moveNodes
-      // diff suppresses no-ops and patches are tiny. Stage 2 will move this
-      // to a renderer-direct path.
-      useOmniStore.getState().moveNodes([
-        {
-          id: a.nodeId,
-          x: a.startNodeXY.x + (sceneNow.x - sceneStart.x),
-          y: a.startNodeXY.y + (sceneNow.y - sceneStart.y),
-        },
-      ])
+      const dx = sceneNow.x - sceneStart.x
+      const dy = sceneNow.y - sceneStart.y
+      // Renderer-direct write for every dragged node. Mutates the live
+      // ModelNode and quadtree; commit is one transaction on pointerup.
+      for (let i = 0; i < a.dragBaselines.length; i++) {
+        const b = a.dragBaselines[i]
+        this.renderer.moveNodeDirect(b.id, b.x + dx, b.y + dy)
+      }
+      return
+    }
+
+    if (a.kind === 'box') {
+      const sceneNow = this.toScene(e)
+      const aabb = {
+        minX: Math.min(a.startScene.x, sceneNow.x),
+        minY: Math.min(a.startScene.y, sceneNow.y),
+        maxX: Math.max(a.startScene.x, sceneNow.x),
+        maxY: Math.max(a.startScene.y, sceneNow.y),
+      }
+      this.renderer.setBoxSelect(aabb)
       return
     }
 
@@ -206,17 +259,52 @@ export class PointerController {
       return
     }
 
-    if (a.kind === 'node' && a.nodeId && a.startNodeXY) {
+    if (a.kind === 'pan' && a.startCamera) {
+      // Push the new camera to the store (camera is NOT undoable per spec).
+      const cam = this.renderer.getCamera()
+      useOmniStore.getState().setCamera(cam)
+      return
+    }
+
+    if (a.kind === 'node' && a.dragBaselines) {
       if (movedFar) {
-        // Snap on commit.
-        const cur = useOmniStore.getState().model.nodes.get(a.nodeId)
+        // Snap each dragged node to the grid using the *first* node as the
+        // anchor so the relative offsets are preserved.
+        const store = useOmniStore.getState()
+        const anchor = a.dragBaselines[0]
+        const cur = store.model.nodes.get(anchor.id)
         if (cur) {
           const snapped = snapToGrid(cur.x, cur.y, this.snap)
-          if (snapped.x !== cur.x || snapped.y !== cur.y) {
-            useOmniStore.getState().moveNodes([{ id: a.nodeId, x: snapped.x, y: snapped.y }])
+          const sx = snapped.x - cur.x
+          const sy = snapped.y - cur.y
+          if (sx !== 0 || sy !== 0) {
+            for (let i = 0; i < a.dragBaselines.length; i++) {
+              const b = a.dragBaselines[i]
+              const live = store.model.nodes.get(b.id)
+              if (!live) continue
+              this.renderer.moveNodeDirect(b.id, live.x + sx, live.y + sy)
+            }
           }
         }
+        store.commitDrag(a.dragBaselines)
       }
+      return
+    }
+
+    if (a.kind === 'box') {
+      this.renderer.setBoxSelect(null)
+      const sceneNow = this.toScene(e)
+      const aabb = {
+        minX: Math.min(a.startScene.x, sceneNow.x),
+        minY: Math.min(a.startScene.y, sceneNow.y),
+        maxX: Math.max(a.startScene.x, sceneNow.x),
+        maxY: Math.max(a.startScene.y, sceneNow.y),
+      }
+      const hits: string[] = []
+      this.renderer.queryAabb(aabb, hits)
+      const next = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
+      for (let i = 0; i < hits.length; i++) next.add(hits[i])
+      useOmniStore.getState().selectMany(next)
       return
     }
 

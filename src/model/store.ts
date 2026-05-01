@@ -17,6 +17,13 @@ import {
   type Model,
   type ModelNode,
 } from './types'
+import {
+  applyZoomStep,
+  createInitialSnapshot,
+  isAtRest,
+  isHandoffReady,
+  type HybridZoomSnapshot,
+} from '../zoom/hybridZoom'
 
 let idCounter = 0
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(idCounter++).toString(36)}`
@@ -27,15 +34,38 @@ interface Camera {
   freeScale: number
 }
 
+/**
+ * One frame of the RMM zoom stack: state to restore when we zoom *out* of a
+ * child model back to its parent.
+ */
+export interface ZoomStackFrame {
+  modelId: string
+  focusedNodeId: string
+  /** Camera state at the moment we handed off into the child. */
+  camera: Camera
+  /** Selection at handoff time, restored on return. */
+  selectedIds: Set<string>
+}
+
 export interface OmniState {
   model: Model
+  /** All models reachable from the project root, keyed by id. The active model is mirrored at `model`. */
+  models: Map<string, Model>
   camera: Camera
   selectedIds: Set<string>
   /** Bumps any time entity maps change — cheap subscription target. */
   rev: number
   /** Bumps any time selection changes. */
   selRev: number
+  /** Bumps any time the RMM zoom snapshot or focused node changes. */
+  zoomRev: number
   undoStack: UndoStack
+  /** Active RMM zoom state. `progress === 0` means we're at rest (free zoom). */
+  zoom: HybridZoomSnapshot
+  /** Node currently being inflated; null when zoom is at rest. */
+  focusedNodeId: string | null
+  /** Stack of parent frames for `rmmZoomOut`. */
+  zoomStack: ZoomStackFrame[]
 }
 
 interface Actions {
@@ -60,10 +90,28 @@ interface Actions {
   // Multi-step transaction support for drag commits.
   applyTransaction(patches: Patch[]): void
 
+  /**
+   * Commit a drag/move whose intermediate frames were applied directly to the
+   * renderer (and thus to the live ModelNode references in place). This
+   * builds the undo patches from the supplied baselines vs current node state
+   * and pushes them as a single transaction.
+   */
+  commitDrag(baselines: Iterable<{ id: string; x: number; y: number }>): void
+
   undo(): void
   redo(): void
   /** Replace the entire model (e.g. project load, bench spawn). Clears undo. */
   loadModel(model: Model): void
+  /** Register a model in the project registry without activating it. Returns the id. */
+  registerModel(model: Model): string
+  /** Replace the active model from the registry. Does NOT clear undo (use `loadModel` for project loads). */
+  setActiveModel(id: string): void
+
+  // RMM zoom (hot-path; NOT undoable per specification.md §4.7).
+  /** Step the zoom snapshot in/out by one notch. Performs handoff/return at the boundaries. */
+  rmmZoomStep(direction: 'in' | 'out', step?: number): void
+  /** Reset zoom to rest without performing handoff (e.g. selection cleared). */
+  rmmReset(): void
 }
 
 export type Store = OmniState & Actions
@@ -77,11 +125,16 @@ const emptyModel = (): Model => ({
 
 export const useOmniStore = create<Store>((set, get) => ({
   model: emptyModel(),
+  models: new Map(),
   camera: { panX: 0, panY: 0, freeScale: 1 },
   selectedIds: new Set(),
   rev: 0,
   selRev: 0,
+  zoomRev: 0,
   undoStack: new UndoStack(),
+  zoom: createInitialSnapshot(),
+  focusedNodeId: null,
+  zoomStack: [],
 
   setCamera(c) {
     set((s) => ({ camera: { ...s.camera, ...c } }))
@@ -201,6 +254,26 @@ export const useOmniStore = create<Store>((set, get) => ({
     })
   },
 
+  commitDrag(baselines) {
+    const { model } = get()
+    const tx: Patch[] = []
+    for (const b of baselines) {
+      const cur = model.nodes.get(b.id)
+      if (!cur) continue
+      if (cur.x === b.x && cur.y === b.y) continue
+      const before: ModelNode = { ...cur, x: b.x, y: b.y }
+      tx.push({ kind: 'node', op: 'update', id: b.id, before, after: cur })
+    }
+    if (tx.length === 0) return
+    // Live nodes already hold the new positions (renderer wrote them in
+    // place). Push the patches to the undo stack and bump rev so other
+    // subscribers see the change; do NOT call applyPatch again.
+    set((s) => {
+      s.undoStack.push(tx)
+      return { model: { ...s.model }, rev: s.rev + 1 }
+    })
+  },
+
   undo() {
     const inverted = get().undoStack.undo()
     if (!inverted) return
@@ -226,11 +299,126 @@ export const useOmniStore = create<Store>((set, get) => ({
   loadModel(model) {
     set((s) => {
       s.undoStack.clear()
+      const models = new Map(s.models)
+      models.set(model.id, model)
       return {
         model,
+        models,
         selectedIds: new Set(),
         rev: s.rev + 1,
         selRev: s.selRev + 1,
+        zoomRev: s.zoomRev + 1,
+        zoom: createInitialSnapshot(),
+        focusedNodeId: null,
+        zoomStack: [],
+        camera: { panX: 0, panY: 0, freeScale: 1 },
+      }
+    })
+  },
+
+  registerModel(model) {
+    set((s) => {
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { models }
+    })
+    return model.id
+  },
+
+  setActiveModel(id) {
+    const next = get().models.get(id)
+    if (!next) return
+    set((s) => ({
+      model: next,
+      selectedIds: new Set(),
+      rev: s.rev + 1,
+      selRev: s.selRev + 1,
+    }))
+  },
+
+  rmmZoomStep(direction, step) {
+    const s = get()
+    if (direction === 'in') {
+      // Pick a focus target on first step into a fresh transition.
+      let focusedNodeId = s.focusedNodeId
+      if (!focusedNodeId) {
+        // Use the single selected node as focus; abort if no childModelId
+        // (RMM is a no-op without a child to zoom into).
+        if (s.selectedIds.size !== 1) return
+        const onlyId = s.selectedIds.values().next().value as string
+        const node = s.model.nodes.get(onlyId)
+        if (!node?.childModelId) return
+        focusedNodeId = onlyId
+      }
+      const next = applyZoomStep(s.zoom, 'in', step)
+      set((cur) => ({
+        zoom: next,
+        focusedNodeId,
+        zoomRev: cur.zoomRev + 1,
+      }))
+      // Handoff: when fully inflated, swap to the child model and reset.
+      if (isHandoffReady(next)) {
+        const node = s.model.nodes.get(focusedNodeId)
+        const childId = node?.childModelId
+        const child = childId ? s.models.get(childId) : undefined
+        if (!child) return // child unavailable; stay inflated until loaded
+        set((cur) => {
+          const frame: ZoomStackFrame = {
+            modelId: cur.model.id,
+            focusedNodeId: focusedNodeId!,
+            camera: { ...cur.camera },
+            selectedIds: new Set(cur.selectedIds),
+          }
+          return {
+            zoomStack: [...cur.zoomStack, frame],
+            model: child,
+            selectedIds: new Set(),
+            zoom: createInitialSnapshot(),
+            focusedNodeId: null,
+            camera: { panX: 0, panY: 0, freeScale: 1 },
+            rev: cur.rev + 1,
+            selRev: cur.selRev + 1,
+            zoomRev: cur.zoomRev + 1,
+          }
+        })
+      }
+      return
+    }
+    // Zoom out.
+    if (isAtRest(s.zoom)) {
+      // Already at rest; pop a frame if we have one.
+      const top = s.zoomStack[s.zoomStack.length - 1]
+      if (!top) return
+      const parent = s.models.get(top.modelId)
+      if (!parent) return
+      set((cur) => ({
+        zoomStack: cur.zoomStack.slice(0, -1),
+        model: parent,
+        camera: top.camera,
+        selectedIds: top.selectedIds,
+        zoom: { progress: 0.92, nodeProgress: 0.92, cameraScale: 1 + (1.8 - 1) * 0.92, nodeInflation: 0.92, handoffMode: 'host' },
+        focusedNodeId: top.focusedNodeId,
+        rev: cur.rev + 1,
+        selRev: cur.selRev + 1,
+        zoomRev: cur.zoomRev + 1,
+      }))
+      return
+    }
+    const next = applyZoomStep(s.zoom, 'out', step)
+    set((cur) => ({
+      zoom: next,
+      focusedNodeId: isAtRest(next) ? null : cur.focusedNodeId,
+      zoomRev: cur.zoomRev + 1,
+    }))
+  },
+
+  rmmReset() {
+    set((s) => {
+      if (isAtRest(s.zoom) && s.focusedNodeId == null) return s
+      return {
+        zoom: createInitialSnapshot(),
+        focusedNodeId: null,
+        zoomRev: s.zoomRev + 1,
       }
     })
   },

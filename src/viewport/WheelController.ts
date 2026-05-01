@@ -1,6 +1,11 @@
 /**
- * WheelController — free-zoom only at stage 1. Anchors zoom around the cursor
- * so the scene point under the cursor stays put. RMM hybrid zoom is stage 3.
+ * WheelController — routes wheel input.
+ *
+ * - With a single selected node that has a `childModelId` *or* with an RMM
+ *   transition already in progress: drives the hybrid recursive-model zoom
+ *   via `rmmZoomStep`. Camera composition (RMM cameraScale × free zoom) is
+ *   applied by the scene bridge so this handler stays free of math.
+ * - Otherwise: free zoom anchored on the cursor (stage-1 behaviour).
  */
 
 import {
@@ -10,6 +15,8 @@ import {
   type CameraTransform,
 } from '../scene/sceneConstants'
 import type { SceneRenderer } from '../scene/SceneRenderer'
+import { useOmniStore } from '../model/store'
+import { isAtRest } from '../zoom/hybridZoom'
 
 const ZOOM_PER_NOTCH = 1.1
 
@@ -29,15 +36,34 @@ export class WheelController {
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault()
+    const store = useOmniStore.getState()
+    const direction: 'in' | 'out' = e.deltaY < 0 ? 'in' : 'out'
+
+    // RMM is active if a transition is mid-flight, or if zooming-in on a
+    // single selected node that exposes a child model.
+    const transitionActive = !isAtRest(store.zoom) || store.focusedNodeId != null
+    const canStartRmm =
+      direction === 'in' &&
+      store.selectedIds.size === 1 &&
+      (() => {
+        const id = store.selectedIds.values().next().value as string
+        return store.model.nodes.get(id)?.childModelId != null
+      })()
+    const canPopStack = direction === 'out' && store.zoomStack.length > 0
+
+    if (transitionActive || canStartRmm || canPopStack) {
+      store.rmmZoomStep(direction)
+      return
+    }
+
     const cam = this.renderer.getCamera()
-    const factor = e.deltaY < 0 ? ZOOM_PER_NOTCH : 1 / ZOOM_PER_NOTCH
+    const factor = direction === 'in' ? ZOOM_PER_NOTCH : 1 / ZOOM_PER_NOTCH
     const nextScale = clamp(cam.freeScale * factor, FREE_ZOOM_MIN, FREE_ZOOM_MAX)
     if (nextScale === cam.freeScale) return
     const rect = this.host.getBoundingClientRect()
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
     const vp = this.renderer.getViewport()
-    // Anchor: the scene point under the cursor before and after must match.
     const before = clientToScene(cx, cy, cam, vp)
     const tentative: CameraTransform = { ...cam, freeScale: nextScale }
     const after = clientToScene(cx, cy, tentative, vp)
@@ -46,7 +72,9 @@ export class WheelController {
       panY: cam.panY + (after.y - before.y) * (1080 / 100),
       freeScale: nextScale,
     }
-    this.renderer.setCamera(next)
+    // Persist to store so the bridge & sidebar see it; renderer is updated
+    // inside the camera subscription on the bridge.
+    useOmniStore.getState().setCamera(next)
   }
 }
 

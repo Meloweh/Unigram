@@ -10,6 +10,7 @@
 import { Container, Graphics, Text } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 import type { ModelNode } from '../model/types'
+import { drawNodeShape } from './shapes'
 
 /** LOD presented to the pool when a node becomes (re)visible. */
 export type Lod = 'full' | 'simple' | 'dot'
@@ -24,7 +25,7 @@ interface PooledNode {
 }
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod): string =>
-  `${lod}|${n.shape}|${n.w}|${n.h}|${n.cellColor}|${n.membraneColor}`
+  `${lod}|${n.shape}|${n.w}|${n.h}|${n.cellColor}|${n.membraneColor}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}`
 
 const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' ? n.label : '')
 
@@ -37,22 +38,17 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod): void {
   // Convert percent → pixels using SCENE_W/H for stable proportions.
   const wPx = (n.w / 100) * SCENE_W
   const hPx = (n.h / 100) * SCENE_H
-  switch (n.shape) {
-    case 'circle': {
-      const r = Math.min(wPx, hPx) / 2
-      g.circle(0, 0, r)
-      break
-    }
-    case 'rectangle':
-      g.rect(-wPx / 2, -hPx / 2, wPx, hPx)
-      break
-    case 'rounded-rect':
-    default:
-      g.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, Math.min(wPx, hPx) * 0.18)
-      break
-  }
-  g.fill({ color: n.cellColor })
-  g.stroke({ color: n.membraneColor, width: 2, alignment: 0.5 })
+  const tip = n.tip
+    ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
+    : undefined
+  drawNodeShape(g, n.shape, {
+    w: wPx,
+    h: hPx,
+    fill: n.cellColor,
+    stroke: n.membraneColor,
+    strokeWidth: 2,
+    tip,
+  })
 }
 
 function setLabel(t: Text, n: ModelNode, lod: Lod): void {

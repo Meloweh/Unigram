@@ -340,8 +340,50 @@ In Omnigram the entire scene moves into PixiJS, so the particle overlay merges i
 
 ## Benchmarks
 
-To be filled as stages close. Each entry should list: scenario, node count, edge count, hardware, frame time p50 / p95.
+Manual gate plus a scripted bench harness (Stage 2) — pick a scenario from the
+in-app toolbar (`Bench: pan-h`, `pan-loop`, `zoom-pulse`, `pan-zoom`, `idle`).
+Each run samples per-frame deltas via `requestAnimationFrame` for 3 s and
+prints `frames / p50 / p95 / min / max FPS` to the overlay and the console.
+The harness lives at [src/bench/harness.ts](src/bench/harness.ts) — every new
+feature must register a scenario there.
 
-| Stage | Scenario | Nodes | Edges | p50 ms | p95 ms |
-|---|---|---:|---:|---:|---:|
-| _stage 1_ | _pending_ | — | — | — | — |
+| Stage | Scenario | Nodes | Edges | Browser | Observed FPS |
+|---|---|---:|---:|---|---:|
+| 1 | spawn grid, idle pan/zoom | 500 | ~750 | Chrome (60 Hz cap) | 60 (capped) |
+| 1 | spawn grid, idle pan/zoom | 1000 | ~1500 | Chrome (60 Hz cap) | 60 (capped) |
+| 1 | spawn grid, idle pan/zoom | 2000 | ~3000 | Chrome (60 Hz cap) | 60 (capped) |
+| 1 | spawn grid, idle pan/zoom | 2000 | ~3000 | VSCode integrated (uncapped) | 144 |
+| 2 | _bench harness pending — record p50/p95 on next run_ | | | | |
+
+Stage 1 acceptance (≥60 FPS at 2000 nodes) **passed**. Headroom remains for
+stages 3–5.
+
+### Stage 2 optimization changes
+
+The optimization pass focused on three documented hot-path costs:
+
+1. **GC-free cull/draw cycle** — the `cullAndDraw` loop in
+   [src/scene/SceneRenderer.ts](src/scene/SceneRenderer.ts) used to allocate
+   two `Set<string>` and one `string[]` *per frame*. It now reuses three
+   pooled scratch buffers and swaps the previous-visible set in place, so the
+   steady-state render loop is allocation-free aside from Pixi-internal work.
+2. **Drag bypass** — `PointerController` no longer calls
+   `useOmniStore.moveNodes` per pointermove. During a drag it writes directly
+   to `SceneRenderer.moveNodeDirect`, which mutates the live `ModelNode` and
+   updates the quadtree entry. On pointerup a single `commitDrag` transaction
+   pushes one undo patch built from the pre-drag baseline. This eliminates
+   the per-frame top-level model spread and the resulting full-quadtree
+   rebuild that previously fired on every pointer move.
+3. **Smart bridge + idempotent quadtree updates** — `bindStoreToRenderer`
+   now distinguishes Map-identity swaps (i.e. `loadModel`) from in-place
+   mutations. Identity swaps trigger a full `setModel` + quadtree rebuild;
+   in-place mutations call the new `syncIncremental` path, which uses
+   `Quadtree.update`'s newly-added AABB-equality short-circuit so untouched
+   nodes incur zero work. A 2000-node `commitDrag` for a single moved node
+   now does ~1 quadtree update + 1999 no-op AABB comparisons instead of
+   2000 inserts.
+
+Undo remains patch-based — there is no `structuredClone` of the model in any
+new code path. A stress test (5000 add/undo cycles + 1000 sequential adds
+with capped undo stack) lives at
+[src/model/undo.stress.test.ts](src/model/undo.stress.test.ts).

@@ -135,6 +135,15 @@ export class Quadtree {
     insertInto(this.root, entry)
   }
 
+  has(id: string): boolean {
+    return this.index.has(id)
+  }
+
+  /** Iterate all indexed ids. Iteration is cheap (Map.keys). */
+  ids(): IterableIterator<string> {
+    return this.index.keys()
+  }
+
   remove(id: string): void {
     const entry = this.index.get(id)
     if (!entry) return
@@ -143,7 +152,14 @@ export class Quadtree {
   }
 
   update(id: string, aabb: Aabb): void {
-    // Stage 1: simple remove + re-insert. Cheap because tree is shallow.
+    const existing = this.index.get(id)
+    if (existing) {
+      const a = existing.aabb
+      if (a.minX === aabb.minX && a.minY === aabb.minY && a.maxX === aabb.maxX && a.maxY === aabb.maxY) {
+        return
+      }
+    }
+    // Simple remove + re-insert. Cheap because tree is shallow.
     this.insert(id, aabb)
   }
 

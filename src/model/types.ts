@@ -5,7 +5,23 @@
  * later schemas don't lose data.
  */
 
-export type NodeShape = 'rectangle' | 'rounded-rect' | 'circle'
+export type NodeShape =
+  | 'rectangle'
+  | 'rounded-rect'
+  | 'circle'
+  | 'oval'
+  | 'diamond'
+  | 'hexagon'
+  | 'parallelogram'
+  | 'triangle'
+  | 'chat-bubble'
+  | 'thinking-cloud'
+
+/** Pixel-space tip offset relative to node centre (cosmetic shapes only). */
+export interface CosmeticTip {
+  x: number
+  y: number
+}
 
 export interface ModelNode {
   id: string
@@ -21,6 +37,10 @@ export interface ModelNode {
   cellColor: string
   /** Border / membrane color. */
   membraneColor: string
+  /** Optional child-model id for RMM zoom. */
+  childModelId?: string
+  /** Cosmetic-only tail/trail tip (in scene-percent of node size). */
+  tip?: CosmeticTip
   /** Forward-compat slot for fields owned by later stages. */
   extra?: Record<string, unknown>
 }
