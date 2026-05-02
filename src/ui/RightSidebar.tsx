@@ -12,7 +12,7 @@
 import { useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import { useOmniStore } from '../model/store'
-import type { ModelNode, NodeShape } from '../model/types'
+import type { ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
 import { collapsedStripStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
 import { ALL_THEME_OPTIONS } from '../theme/themes'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
@@ -86,12 +86,34 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
       if (edge) {
         const fromNode = state.model.nodes.get(edge.from)
         const toNode = state.model.nodes.get(edge.to)
+        const dash: ConnectionDashStyle = edge.dash ?? 'solid'
+        const arrow: ConnectionArrowStyle = edge.arrowStyle ?? 'standard'
+        const kind: ConnectionKind = edge.kind ?? 'default'
         return (
           <Panel onCollapse={() => setCollapsed(true)}>
             <Title>Connection</Title>
             <Hint>
               {fromNode?.label || edge.from} → {toNode?.label || edge.to}
             </Hint>
+            <Field label="Kind">
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['default', 'flow'] as ConnectionKind[]).map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => useOmniStore.getState().updateEdge(eid, { kind: k })}
+                    style={{
+                      ...buttonStyle,
+                      flex: 1,
+                      background: kind === k ? '#2b6cb0' : '#1a2030',
+                      borderColor: kind === k ? '#4aa3ff' : '#384055',
+                      color: kind === k ? '#fff' : '#cfe',
+                    }}
+                  >
+                    {k === 'default' ? 'Default' : 'Flow'}
+                  </button>
+                ))}
+              </div>
+            </Field>
             <Field label="Color">
               <input
                 type="color"
@@ -109,6 +131,56 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
                 max={2}
                 step={0.05}
                 onChange={(v) => useOmniStore.getState().updateEdge(eid, { width: v })}
+              />
+            </Field>
+            <Field label="Dash">
+              <select
+                value={dash}
+                onChange={(e) =>
+                  useOmniStore.getState().updateEdge(eid, { dash: e.target.value as ConnectionDashStyle })
+                }
+                style={inputStyle}
+              >
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+                <option value="dash-dot">Dash-Dot</option>
+              </select>
+            </Field>
+            <Field label="Arrow">
+              <select
+                value={arrow}
+                onChange={(e) =>
+                  useOmniStore.getState().updateEdge(eid, { arrowStyle: e.target.value as ConnectionArrowStyle })
+                }
+                style={inputStyle}
+              >
+                <option value="none">None</option>
+                <option value="standard">Standard</option>
+                <option value="filled-triangle">Filled triangle</option>
+                <option value="line-arrow">Line arrow</option>
+                <option value="stealth">Stealth</option>
+                <option value="diamond">Diamond</option>
+              </select>
+            </Field>
+            <Field label="Label">
+              <input
+                type="text"
+                value={edge.label ?? ''}
+                placeholder="(none)"
+                onChange={(e) =>
+                  useOmniStore.getState().updateEdge(eid, { label: e.target.value || undefined })
+                }
+                style={inputStyle}
+              />
+            </Field>
+            <Field label="Label size">
+              <NumberField
+                value={edge.labelFontSize ?? 22}
+                min={8}
+                max={64}
+                step={1}
+                onChange={(v) => useOmniStore.getState().updateEdge(eid, { labelFontSize: v })}
               />
             </Field>
             <button
@@ -260,12 +332,18 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
         </Field>
       </Row>
 
+      {(shape === 'chat-bubble' || shape === 'thinking-cloud') && (
+        <CosmeticTipControls nodes={nodes} updateAll={updateAll} />
+      )}
+
       <button
         onClick={() => useOmniStore.getState().removeNodes(nodes.map((n) => n.id))}
         style={{ ...buttonStyle, background: '#5a1f1f', borderColor: '#a04040', marginTop: 8 }}
       >
         Delete {isMulti ? `${nodes.length} nodes` : 'node'}
       </button>
+
+      <BehaviourFlags nodes={nodes} updateAll={updateAll} />
 
       {!isMulti && <MpdSection node={nodes[0]} />}
       {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
@@ -566,6 +644,124 @@ function normaliseHex(c: string): string {
     return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3]
   }
   return '#365f8f'
+}
+
+/**
+ * Behavioural flags surfaced for selection (single or multi). Each flag
+ * follows the legacy semantics:
+ *  - `locked`: drag and untangle skip this node.
+ *  - `hideDuringFlow`: node is hidden while a flow effect is playing.
+ *  - `cameraTracked`: viewport `move`/`camera` flow effects keep this node
+ *    centred.
+ *
+ * For multi-selection the checkbox is checked iff *every* selected node has
+ * the flag on; toggling sets the same value across the entire selection.
+ */
+function BehaviourFlags({
+  nodes,
+  updateAll,
+}: {
+  nodes: ModelNode[]
+  updateAll: (patch: Partial<ModelNode>) => void
+}) {
+  const allHave = (pick: (n: ModelNode) => boolean | undefined) => nodes.every((n) => !!pick(n))
+  const locked = allHave((n) => n.locked)
+  const hideDuringFlow = allHave((n) => n.hideDuringFlow)
+  const cameraTracked = allHave((n) => n.cameraTracked)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Behaviour</span>
+      <Checkbox
+        label="Locked (skip drag & untangle)"
+        checked={locked}
+        onChange={(v) => updateAll({ locked: v || undefined })}
+      />
+      <Checkbox
+        label="Hide while flow plays"
+        checked={hideDuringFlow}
+        onChange={(v) => updateAll({ hideDuringFlow: v || undefined })}
+      />
+      <Checkbox
+        label="Camera tracks this node"
+        checked={cameraTracked}
+        onChange={(v) => updateAll({ cameraTracked: v || undefined })}
+      />
+    </div>
+  )
+}
+
+function Checkbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#cfe', cursor: 'pointer' }}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      {label}
+    </label>
+  )
+}
+
+/**
+ * Polar tip editor for cosmetic shapes (chat-bubble, thinking-cloud).
+ *
+ * The model stores `tip: { x, y }` in scene-percent of the node size; this
+ * UI surfaces an angle (degrees, 0 = right, 90 = down) and a length so the
+ * user can rotate the tail without juggling two axes. We compute x/y from
+ * the polar form on every change and write the cartesian back to the model.
+ */
+function CosmeticTipControls({
+  nodes,
+  updateAll,
+}: {
+  nodes: ModelNode[]
+  updateAll: (patch: Partial<ModelNode>) => void
+}) {
+  const first = nodes[0]
+  const tip = first.tip ?? { x: -45, y: 60 }
+  const len = Math.hypot(tip.x, tip.y)
+  // 0° = right, sweep clockwise (screen-y is down).
+  const angDeg = (Math.atan2(tip.y, tip.x) * 180) / Math.PI
+  const setPolar = (deg: number, length: number) => {
+    const rad = (deg * Math.PI) / 180
+    const x = Math.round(Math.cos(rad) * length * 10) / 10
+    const y = Math.round(Math.sin(rad) * length * 10) / 10
+    updateAll({ tip: { x, y } })
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Tip / tail</span>
+      <Row>
+        <Field label="Angle°">
+          <NumberField
+            value={Math.round(angDeg)}
+            min={-180}
+            max={360}
+            step={5}
+            onChange={(v) => setPolar(v, len || 60)}
+          />
+        </Field>
+        <Field label="Length %">
+          <NumberField
+            value={Math.round(len * 10) / 10}
+            min={0}
+            max={200}
+            step={1}
+            onChange={(v) => setPolar(angDeg, v)}
+          />
+        </Field>
+      </Row>
+    </div>
+  )
 }
 
 function MpdSection({ node }: { node: ModelNode }) {

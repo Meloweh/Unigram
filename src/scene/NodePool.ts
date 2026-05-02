@@ -12,6 +12,15 @@ import { SCENE_W, SCENE_H } from './sceneConstants'
 import type { ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 import { drawNodeShape } from './shapes'
+import {
+  NODE_FONT_FAMILY,
+  NODE_FONT_SIZE,
+  NODE_LABEL_FILL,
+  NODE_MIN_H,
+  NODE_MIN_W,
+  NODE_STROKE_WIDTH,
+  nodeFillGradient,
+} from './nodeStyle'
 
 /** LOD presented to the pool when a node becomes (re)visible. */
 export type Lod = 'full' | 'simple' | 'dot'
@@ -47,12 +56,15 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod): void {
   const tip = n.tip
     ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
     : undefined
+  // `simple` LOD draws a flat fill (cheap); `full` uses the cached gradient
+  // for the legacy 145° cell→darker look.
+  const fill = lod === 'simple' ? n.cellColor : nodeFillGradient(n.cellColor)
   drawNodeShape(g, n.shape, {
     w: wPx,
     h: hPx,
-    fill: n.cellColor,
+    fill,
     stroke: n.membraneColor,
-    strokeWidth: 2,
+    strokeWidth: NODE_STROKE_WIDTH,
     tip,
   })
 }
@@ -125,12 +137,19 @@ export class NodePool {
       pn.lod = lod
       // Auto-grow the node to fit its label. Only grows; never shrinks (so
       // a user-resized node sticks). The renderer hook updates the model +
-      // quadtree on our behalf.
+      // quadtree on our behalf. Floor the result at NODE_MIN_W/H to match
+      // the legacy minimum chrome size.
       if (lod === 'full' && this.onNodeFit && pn.label.visible) {
         const labelWPx = pn.label.width
         const labelHPx = pn.label.height
-        const requiredW = (labelWPx / TEXT_INSET / SCENE_W) * 100 + TEXT_PAD_PCT
-        const requiredH = (labelHPx / TEXT_INSET / SCENE_H) * 100 + TEXT_PAD_PCT
+        const requiredW = Math.max(
+          NODE_MIN_W,
+          (labelWPx / TEXT_INSET / SCENE_W) * 100 + TEXT_PAD_PCT,
+        )
+        const requiredH = Math.max(
+          NODE_MIN_H,
+          (labelHPx / TEXT_INSET / SCENE_H) * 100 + TEXT_PAD_PCT,
+        )
         if (requiredW > n.w + 0.01 || requiredH > n.h + 0.01) {
           this.onNodeFit(n.id, Math.max(n.w, requiredW), Math.max(n.h, requiredH))
         }
@@ -174,9 +193,9 @@ export class NodePool {
     const label = new Text({
       text: '',
       style: {
-        fontFamily: 'sans-serif',
-        fontSize: 36,
-        fill: 0x223046,
+        fontFamily: NODE_FONT_FAMILY,
+        fontSize: NODE_FONT_SIZE,
+        fill: NODE_LABEL_FILL,
         align: 'center',
       },
     })

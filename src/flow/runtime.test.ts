@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { FlowRuntime } from './runtime'
-import type { FlowEffect } from './types'
+import type { FlowEffect, FlowEffectKind } from './types'
 import { mergeOverride } from './types'
 
 const mkEffect = (
-  nodes: { id: string; kind: 'wait' | 'move' | 'scale' | 'color' | 'jitter'; params?: Record<string, number> }[],
+  nodes: { id: string; kind: FlowEffectKind; params?: Record<string, number> }[],
   edges: { from: string; to: string }[] = [],
 ): FlowEffect => ({
   id: 'eff',
@@ -130,6 +130,138 @@ describe('FlowRuntime', () => {
     const ov = rt.getOverride('n1')!
     expect(Math.abs(ov.dx ?? 0)).toBeLessThanOrEqual(5)
     expect(Math.abs(ov.dy ?? 0)).toBeLessThanOrEqual(5)
+  })
+})
+
+describe('FlowRuntime — extended kinds', () => {
+  it('move with roundtrip returns to origin at midpoint of lifetime peak', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'm', kind: 'move', params: { dx: 10, dy: 0, ms: 100, roundtrip: 1 } }]),
+      0,
+    )
+    rt.tick(50) // sin(π/2) = 1 → max displacement
+    expect(rt.getOverride('n1')!.dx).toBeCloseTo(10, 1)
+    rt.tick(99) // approaching end → ~0
+    expect(rt.getOverride('n1')!.dx).toBeLessThan(1)
+  })
+
+  it('emerge ramps alpha and scale 0→1', () => {
+    const rt = new FlowRuntime()
+    rt.start('n1', mkEffect([{ id: 'e', kind: 'emerge', params: { ms: 100 } }]), 0)
+    rt.tick(50)
+    const ov = rt.getOverride('n1')!
+    expect(ov.alphaMul).toBeCloseTo(0.5, 2)
+    expect(ov.scaleMul).toBeCloseTo(0.5, 2)
+  })
+
+  it('dismiss ramps alpha and scale 1→0', () => {
+    const rt = new FlowRuntime()
+    rt.start('n1', mkEffect([{ id: 'd', kind: 'dismiss', params: { ms: 100 } }]), 0)
+    rt.tick(50)
+    const ov = rt.getOverride('n1')!
+    expect(ov.alphaMul).toBeCloseTo(0.5, 2)
+    expect(ov.scaleMul).toBeCloseTo(0.5, 2)
+  })
+
+  it('float produces a bounded vertical sin offset', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'f', kind: 'float', params: { amp: 2, freq: 1, ms: 1000 } }]),
+      0,
+    )
+    rt.tick(250) // ¼ period at 1Hz → sin(π/2) = 1 → dy = 2
+    expect(rt.getOverride('n1')!.dy).toBeCloseTo(2, 1)
+    expect(rt.getOverride('n1')!.dx ?? 0).toBe(0)
+  })
+
+  it('cloud-levitate offsets both axes', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'c', kind: 'cloud-levitate', params: { ampX: 1, ampY: 1, freq: 1, ms: 1000 } }]),
+      0,
+    )
+    rt.tick(250)
+    const ov = rt.getOverride('n1')!
+    // Each axis bounded by its amp.
+    expect(Math.abs(ov.dx ?? 0)).toBeLessThanOrEqual(1.0001)
+    expect(Math.abs(ov.dy ?? 0)).toBeLessThanOrEqual(1.0001)
+  })
+
+  it('bubble-levitate combines dy with a scale pulse near 1', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampY: 1, scaleAmp: 0.05, freq: 1, ms: 1000 } }]),
+      0,
+    )
+    rt.tick(125)
+    const ov = rt.getOverride('n1')!
+    expect(ov.scaleMul).toBeGreaterThan(0.95)
+    expect(ov.scaleMul).toBeLessThan(1.05)
+  })
+
+  it('repeater rewinds the run a finite number of times', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'm', kind: 'move', params: { dx: 10, dy: 0, ms: 100 } },
+          { id: 'r', kind: 'repeater', params: { times: 2 } },
+        ],
+        [{ from: 'm', to: 'r' }],
+      ),
+      0,
+    )
+    rt.tick(50)
+    expect(rt.hasActiveRuns).toBe(true)
+    // Cycle 1 ends at 100; repeater consumes 1 → cycle 2 starts.
+    rt.tick(150)
+    expect(rt.hasActiveRuns).toBe(true)
+    // Cycle 2 ends at 200; repeater consumes 2nd → cycle 3 starts.
+    rt.tick(250)
+    expect(rt.hasActiveRuns).toBe(true)
+    // Past the 3rd cycle end (300).
+    rt.tick(350)
+    expect(rt.hasActiveRuns).toBe(false)
+  })
+
+  it('color with permanent flag holds tint after task ends', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'c', kind: 'color', params: { tint: 0xff0000, ms: 100, permanent: 1 } },
+          { id: 'w', kind: 'wait', params: { ms: 500 } },
+        ],
+        [{ from: 'c', to: 'w' }],
+      ),
+      0,
+    )
+    rt.tick(150) // color done; wait running
+    expect(rt.getOverride('n1')?.tint).toBe(0xff0000)
+  })
+
+  it('scale with permanent flag holds final scale after task ends', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 's', kind: 'scale', params: { mul: 1.5, ms: 100, permanent: 1 } },
+          { id: 'w', kind: 'wait', params: { ms: 500 } },
+        ],
+        [{ from: 's', to: 'w' }],
+      ),
+      0,
+    )
+    rt.tick(200)
+    expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(1.5, 3)
   })
 })
 

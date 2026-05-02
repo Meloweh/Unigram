@@ -21,6 +21,12 @@ export type FlowEffectKind =
   | 'scale'
   | 'color'
   | 'jitter'
+  | 'float'
+  | 'emerge'
+  | 'dismiss'
+  | 'cloud-levitate'
+  | 'bubble-levitate'
+  | 'repeater'
 
 export interface EffectNode {
   id: string
@@ -29,11 +35,20 @@ export interface EffectNode {
   x: number
   y: number
   /** Per-kind parameters. Shape depends on `kind`:
-   *  - wait:   { ms }
-   *  - move:   { dx, dy, ms }                 (relative offset, scene-percent)
-   *  - scale:  { mul, ms }                    (final scale multiplier)
-   *  - color:  { tint, ms }                   (Pixi tint hex, e.g. 0xffaa66)
-   *  - jitter: { amp, ms }                    (sine wobble amplitude, scene-percent)
+   *  - wait:             { ms }
+   *  - move:             { dx, dy, ms, roundtrip? }   (relative offset, scene-percent;
+   *                                                    roundtrip≠0 returns to origin)
+   *  - scale:            { mul, ms, permanent? }     (final scale multiplier; permanent≠0 holds)
+   *  - color:            { tint, ms, permanent? }     (Pixi tint hex; permanent≠0 holds final tint)
+   *  - jitter:           { amp, ms }                  (sine wobble amplitude, scene-percent)
+   *  - float:            { amp, ms, freq? }           (sinusoidal vertical hover; default freq 1 Hz)
+   *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
+   *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
+   *  - cloud-levitate:   { ampX, ampY, ms, freq? }    (X/Y phase-offset sin)
+   *  - bubble-levitate:  { ampY, scaleAmp, ms, freq? }(vertical sin + scale pulse)
+   *  - repeater:         { times }                    (when reached, rewinds the run;
+   *                                                    times<0 means infinite, otherwise
+   *                                                    decrements until exhausted. 0 contribution.)
    */
   params: Record<string, number>
 }

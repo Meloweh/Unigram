@@ -49,9 +49,27 @@ export interface ModelNode {
   tip?: CosmeticTip
   /** Stage 5 flow effects attached to this node (override-based, render-only). */
   flowEffects?: import('../flow/types').FlowEffect[]
+  /** When true, drag and untangle skip this node. */
+  locked?: boolean
+  /** When true, the node is hidden while a flow effect is playing. */
+  hideDuringFlow?: boolean
+  /** When true, viewport `move`/`camera` flow effects keep this node in view. */
+  cameraTracked?: boolean
   /** Forward-compat slot for fields owned by later stages. */
   extra?: Record<string, unknown>
 }
+
+export type ConnectionKind = 'default' | 'flow'
+
+export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
+
+export type ConnectionArrowStyle =
+  | 'none'
+  | 'standard'
+  | 'filled-triangle'
+  | 'line-arrow'
+  | 'stealth'
+  | 'diamond'
 
 export interface Connection {
   id: string
@@ -63,6 +81,18 @@ export interface Connection {
   color: string
   /** Stroke width in scene percent. */
   width: number
+  /** Connection kind — `flow` connections animate during playback. */
+  kind?: ConnectionKind
+  /** Stroke dash pattern. */
+  dash?: ConnectionDashStyle
+  /** Arrow head style at the target end. */
+  arrowStyle?: ConnectionArrowStyle
+  /** Optional mid-line label. */
+  label?: string
+  /** Label font size in scene pixels (defaults to 22). */
+  labelFontSize?: number
+  /** When set, this connection only appears once the named spawn effect runs. */
+  dependsOnSpawn?: string
   /** Forward-compat slot. */
   extra?: Record<string, unknown>
 }
@@ -113,7 +143,10 @@ export const DEFAULT_NODE: Pick<
   membraneColor: '#365f8f',
 }
 
-export const DEFAULT_EDGE: Pick<Connection, 'color' | 'width'> = {
+export const DEFAULT_EDGE: Pick<Connection, 'color' | 'width' | 'kind' | 'dash' | 'arrowStyle'> = {
   color: '#365f8f',
   width: 0.15,
+  kind: 'default',
+  dash: 'solid',
+  arrowStyle: 'standard',
 }

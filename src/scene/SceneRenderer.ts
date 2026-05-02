@@ -582,11 +582,20 @@ export class SceneRenderer {
     const lod: Lod = effective >= LOD_FULL ? 'full' : effective >= LOD_SIMPLE ? 'simple' : 'dot'
 
     // Acquire newly visible / update existing nodes.
+    const flowActive = this.flow.hasActiveRuns
     for (let i = 0; i < this.visibleIds.length; i++) {
       const id = this.visibleIds[i]
       const n = this.model.nodes.get(id)
       if (!n) continue
-      this.nodePool.acquire(n, lod, this.flow.getOverride(id))
+      let override = this.flow.getOverride(id)
+      // Behavioural flag: nodes flagged `hideDuringFlow` go invisible while
+      // any flow effect is running on the diagram.
+      if (flowActive && n.hideDuringFlow) {
+        override = override
+          ? { ...override, alphaMul: 0 }
+          : { alphaMul: 0 }
+      }
+      this.nodePool.acquire(n, lod, override)
     }
     // Release nodes that fell out of view.
     for (const id of this.prevVisibleNodes) {

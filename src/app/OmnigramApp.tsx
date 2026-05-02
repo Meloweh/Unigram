@@ -18,13 +18,13 @@ import { KeyboardController } from '../viewport/KeyboardController'
 import { useOmniStore } from '../model/store'
 import { spawnGrid, spawnNested } from '../bench/spawnGrid'
 import { runScenario, listScenarios, type BenchResult } from '../bench/harness'
-import { exportBundle, importBundle } from '../model/projectBundle'
 import { applyThemeToDOM, resolvePalette } from '../theme/themes'
 import { resolveBackground } from '../theme/backgrounds'
 import type { ThemeMode, BackgroundConfig } from '../theme/types'
 import { FpsOverlay } from './FpsOverlay'
 import { LeftSidebar, DRAG_MIME_SHAPE } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
+import { EditorToolbar } from '../ui/EditorToolbar'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { NodeShape } from '../model/types'
@@ -131,7 +131,8 @@ export function OmnigramApp() {
         }}
       />
       <FpsOverlay renderer={renderer} />
-      <Toolbar renderer={renderer} />
+      <EditorToolbar renderer={renderer} />
+      <DevPanel renderer={renderer} />
       <LeftSidebar />
       <RightSidebar renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
@@ -174,7 +175,7 @@ function BackgroundLayer({ config }: { config: BackgroundConfig | undefined }) {
   )
 }
 
-function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
+function DevPanel({ renderer }: { renderer: SceneRenderer | null }) {
   const [bench, setBench] = useState<BenchResult | null>(null)
   const [running, setRunning] = useState(false)
   const runBench = async (scenario: string) => {
@@ -193,13 +194,13 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
     <div
       style={{
         position: 'absolute',
-        top: 8,
+        top: 52,
         left: 264,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'flex-start',
         gap: 6,
-        zIndex: 10,
+        zIndex: 9,
       }}
     >
       <div style={{ display: 'flex', gap: 6 }}>
@@ -232,10 +233,6 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
         >
           Spawn Nested
         </button>
-        <button onClick={() => useOmniStore.getState().undo()}>Undo</button>
-        <button onClick={() => useOmniStore.getState().redo()}>Redo</button>
-        <SaveLoadButtons />
-        <RecordingButtons renderer={renderer} />
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         {listScenarios().map((s) => (
@@ -259,123 +256,6 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
         </div>
       )}
     </div>
-  )
-}
-
-function RecordingButtons({ renderer }: { renderer: SceneRenderer | null }) {
-  const [recording, setRecording] = useState<{ stop: () => Promise<Blob>; cancel: () => void } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [obs, setObs] = useState<import('../recording/obsClient').ObsConnection | null>(null)
-  const onStart = async () => {
-    if (!renderer || busy) return
-    const canvas = renderer.getCanvas()
-    if (!canvas) return
-    setBusy(true)
-    try {
-      const { startCanvasRecording, isRecordingSupported } = await import('../recording/canvasRecorder')
-      if (!isRecordingSupported()) {
-        alert('Recording is not supported in this browser.')
-        return
-      }
-      setRecording(startCanvasRecording(canvas, 30))
-    } finally {
-      setBusy(false)
-    }
-  }
-  const onStop = async () => {
-    if (!recording || busy) return
-    setBusy(true)
-    try {
-      const blob = await recording.stop()
-      const { downloadBlob } = await import('../recording/canvasRecorder')
-      const ext = blob.type.includes('mp4') ? 'mp4' : 'webm'
-      downloadBlob(blob, `omnigram-${Date.now()}.${ext}`)
-    } finally {
-      setRecording(null)
-      setBusy(false)
-    }
-  }
-  const onObsToggle = async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      if (obs) {
-        const { obsStopRecord } = await import('../recording/obsClient')
-        try { await obsStopRecord(obs) } catch { /* ignore */ }
-        obs.close()
-        setObs(null)
-        return
-      }
-      const host = window.prompt('OBS host:port (e.g. 127.0.0.1:4455)?', '127.0.0.1:4455')
-      if (!host) return
-      const password = window.prompt('OBS WebSocket password (blank if none):', '') ?? ''
-      const [h, portStr] = host.split(':')
-      const port = Number(portStr) || 4455
-      const { connectObs, obsStartRecord } = await import('../recording/obsClient')
-      const conn = await connectObs(h, port, password)
-      await obsStartRecord(conn)
-      setObs(conn)
-    } catch (err) {
-      alert('OBS error: ' + (err instanceof Error ? err.message : String(err)))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <>
-      {recording ? (
-        <button onClick={onStop} disabled={busy} title="Stop recording and download" style={{ background: '#7a2f2f' }}>
-          ⏹ Stop rec
-        </button>
-      ) : (
-        <button onClick={onStart} disabled={busy || !renderer} title="Record canvas to .webm">
-          ⏺ Record
-        </button>
-      )}
-      <button onClick={onObsToggle} disabled={busy} title="Toggle OBS recording via WebSocket">
-        {obs ? '⏹ OBS' : '◉ OBS'}
-      </button>
-    </>
-  )
-}
-
-function SaveLoadButtons() {
-  const fileRef = useRef<HTMLInputElement | null>(null)
-  const onSave = async () => {
-    const s = useOmniStore.getState()
-    const blob = await exportBundle({ rootModelId: s.model.id, models: s.models })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${s.model.name || 'project'}.unigram`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-  const onPick = () => fileRef.current?.click()
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    try {
-      const snap = await importBundle(file)
-      useOmniStore.getState().loadProject(snap)
-    } catch (err) {
-      console.error('Failed to load bundle:', err)
-      alert(`Failed to load bundle: ${(err as Error).message}`)
-    }
-  }
-  return (
-    <>
-      <button onClick={onSave} title="Save project as .unigram">Save</button>
-      <button onClick={onPick} title="Load .unigram bundle">Load</button>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".unigram,.zip,application/zip"
-        style={{ display: 'none' }}
-        onChange={onFile}
-      />
-    </>
   )
 }
 

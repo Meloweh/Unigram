@@ -13,7 +13,7 @@
  * absent we fall back to a sensible default.
  */
 
-import type { Graphics } from 'pixi.js'
+import type { FillGradient, Graphics } from 'pixi.js'
 
 export type StandardShape =
   | 'rectangle'
@@ -34,8 +34,9 @@ export interface DrawOptions {
   w: number
   /** Height in pixels (full extent). */
   h: number
-  fill: string
-  stroke: string
+  /** Solid colour (`#rrggbb` / int) or a Pixi `FillGradient` instance. */
+  fill: string | number | FillGradient
+  stroke: string | number
   strokeWidth: number
   /** Cosmetic-only: tip offset from node centre, in pixels. */
   tip?: { x: number; y: number }
@@ -78,7 +79,10 @@ export function drawNodeShape(g: Graphics, shape: NodeShape, o: DrawOptions): vo
 }
 
 function applyFillStroke(g: Graphics, o: DrawOptions): void {
-  g.fill({ color: o.fill })
+  // Pixi's `fill()` accepts a `FillGradient` directly, or a colour-bearing
+  // options object for solid colours.
+  if (typeof o.fill === 'object') g.fill(o.fill)
+  else g.fill({ color: o.fill })
   g.stroke({ color: o.stroke, width: o.strokeWidth, alignment: 0.5 })
 }
 
@@ -156,8 +160,7 @@ function drawChatBubble(g: Graphics, o: DrawOptions): void {
   const baseY = o.h / 2
   const halfBase = Math.max(o.h * 0.06, 4)
   g.poly([baseX - halfBase, baseY, baseX + halfBase, baseY, tip.x, tip.y])
-  g.fill({ color: o.fill })
-  g.stroke({ color: o.stroke, width: o.strokeWidth, alignment: 0.5 })
+  applyFillStroke(g, o)
 }
 
 function drawThinkingCloud(g: Graphics, o: DrawOptions): void {
@@ -183,8 +186,7 @@ function drawThinkingCloud(g: Graphics, o: DrawOptions): void {
     [tip.x * 0.85, tip.y * 0.85, ry * 0.18],
   ]
   for (const [x, y, r] of trail) g.circle(x, y, r)
-  g.fill({ color: o.fill })
-  g.stroke({ color: o.stroke, width: o.strokeWidth, alignment: 0.5 })
+  applyFillStroke(g, o)
 }
 
 // ---- narrow-phase hit-test ----------------------------------------------

@@ -159,16 +159,23 @@ export class PointerController {
       } else if (!store.selectedIds.has(hitId)) {
         store.select(hitId, false)
       }
-      // Build baselines for whatever is selected now (post-select).
+      // Build baselines for whatever is selected now (post-select). Locked
+      // nodes are skipped (legacy parity: locked nodes refuse drag and
+      // untangle).
       const sel = useOmniStore.getState().selectedIds
       const baselines: Array<{ id: string; x: number; y: number }> = []
       if (sel.size > 1 && sel.has(hitId)) {
         for (const id of sel) {
           const n = useOmniStore.getState().model.nodes.get(id)
-          if (n) baselines.push({ id, x: n.x, y: n.y })
+          if (n && !n.locked) baselines.push({ id, x: n.x, y: n.y })
         }
-      } else {
+      } else if (!node.locked) {
         baselines.push({ id: hitId, x: node.x, y: node.y })
+      }
+      if (baselines.length === 0) {
+        // Whole selection (or the single click target) is locked — leave
+        // selection as-is, but don't begin a drag.
+        return
       }
       this.active = {
         kind: 'node',

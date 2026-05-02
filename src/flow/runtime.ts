@@ -49,6 +49,13 @@ interface Run {
   dependents: Map<string, string[]>
   /** When true, the run rewinds to start once all tasks complete. */
   loop: boolean
+  /** Cumulative override held past task end for `permanent`-flagged tasks. */
+  held: NodeOverride | null
+  /**
+   * Per-task remaining repeats from `repeater` nodes. When > 0, completing
+   * the run rewinds and decrements; 0 means done; -1 means infinite.
+   */
+  repeatLeft: number
 }
 
 let RUN_COUNTER = 0
@@ -101,6 +108,15 @@ export class FlowRuntime {
       })
     }
     const runId = `run_${++RUN_COUNTER}`
+    // Sum repeats across all `repeater` nodes; -1 (infinite) wins.
+    let repeatLeft = 0
+    for (const n of nodes) {
+      if (n.kind === 'repeater') {
+        const t = (n.params.times ?? 0) | 0
+        if (t < 0) { repeatLeft = -1; break }
+        repeatLeft += t
+      }
+    }
     this.runs.set(runId, {
       id: runId,
       targetNodeId,
@@ -109,6 +125,8 @@ export class FlowRuntime {
       active: new Set(),
       dependents,
       loop: effect.alwaysPlay === true,
+      held: null,
+      repeatLeft,
     })
     return runId
   }
@@ -147,10 +165,19 @@ export class FlowRuntime {
           }
         }
         if (anyAlive) break
-        if (!run.loop) {
+        if (!run.loop && run.repeatLeft === 0) {
+          // Final flush so any held overrides land in this tick.
+          if (run.held) {
+            const cur = this.overrides.get(run.targetNodeId)
+            this.overrides.set(
+              run.targetNodeId,
+              cur ? mergeOverride(cur, run.held) : run.held,
+            )
+          }
           this.runs.delete(id)
           break
         }
+        if (run.repeatLeft > 0) run.repeatLeft -= 1
         // Rewind: bump start time by total cycle length and clear task state.
         let cycle = 0
         for (const t of run.tasks.values()) {
@@ -210,14 +237,28 @@ export class FlowRuntime {
       }
     }
     // 2. Contribution pass — single sweep, each task contributes at most once.
-    //    After a task's lifetime, its visual contribution stops (no carry-over
-    //    so cancellation is symmetric: drop run → all overrides vanish).
-    let merged: NodeOverride | null = null
+    //    After a task's lifetime, its visual contribution stops UNLESS it has
+    //    a `permanent` flag, in which case its end-of-task value is captured
+    //    into `run.held` and merged each subsequent tick (cancellation still
+    //    drops everything since the run leaves the runtime).
+    let merged: NodeOverride | null = run.held
     for (const t of run.tasks.values()) {
       if (!t.scheduled) continue
       const taskEnd = t.startAt + t.durationMs
       if (elapsed >= taskEnd) {
-        if (t.endedAt < 0) t.endedAt = taskEnd
+        if (t.endedAt < 0) {
+          t.endedAt = taskEnd
+          // Capture final value for permanent-flagged kinds.
+          if ((t.node.params.permanent ?? 0) !== 0) {
+            const finalContrib = contribution(t.node, 1, t.durationMs)
+            if (finalContrib) {
+              run.held = run.held
+                ? mergeOverride(run.held, finalContrib)
+                : finalContrib
+              merged = merged ? mergeOverride(merged, finalContrib) : finalContrib
+            }
+          }
+        }
         continue
       }
       if (elapsed < t.startAt) continue
@@ -254,8 +295,12 @@ function contribution(
     case 'wait':
       return null
     case 'move': {
-      const dx = (n.params.dx ?? 0) * ratio
-      const dy = (n.params.dy ?? 0) * ratio
+      // `roundtrip` (truthy): ramp 0→1→0 across the lifetime so the node
+      // returns to its origin at end-of-task.
+      const roundtrip = (n.params.roundtrip ?? 0) !== 0
+      const t = roundtrip ? Math.sin(Math.PI * ratio) : ratio
+      const dx = (n.params.dx ?? 0) * t
+      const dy = (n.params.dy ?? 0) * t
       return { dx, dy }
     }
     case 'scale': {
@@ -279,6 +324,56 @@ function contribution(
       const dy = Math.cos(t * 22.7) * amp
       return { dx, dy }
     }
+    case 'float': {
+      // Sinusoidal hover. `amp` in scene-percent, `freq` in Hz (default 1).
+      const amp = n.params.amp ?? 0.5
+      const freq = n.params.freq ?? 1
+      const t = localElapsed / 1000
+      return { dy: Math.sin(t * 2 * Math.PI * freq) * amp }
+    }
+    case 'emerge': {
+      // Alpha + scale 0→1 (or fromScale→1).
+      const fromScale = n.params.fromScale ?? 0
+      return {
+        alphaMul: ratio,
+        scaleMul: fromScale + (1 - fromScale) * ratio,
+      }
+    }
+    case 'dismiss': {
+      // Alpha + scale 1→0 (or 1→toScale).
+      const toScale = n.params.toScale ?? 0
+      return {
+        alphaMul: 1 - ratio,
+        scaleMul: 1 + (toScale - 1) * ratio,
+      }
+    }
+    case 'cloud-levitate': {
+      // X/Y phase-offset sin — drifts laterally while bobbing vertically.
+      const ampX = n.params.ampX ?? 0.6
+      const ampY = n.params.ampY ?? 0.4
+      const freq = n.params.freq ?? 0.6
+      const t = localElapsed / 1000
+      return {
+        dx: Math.sin(t * 2 * Math.PI * freq) * ampX,
+        dy: Math.cos(t * 2 * Math.PI * freq * 1.3) * ampY,
+      }
+    }
+    case 'bubble-levitate': {
+      // Vertical sin + slight scale pulse. Common chat-bubble idle animation.
+      const ampY = n.params.ampY ?? 0.5
+      const scaleAmp = n.params.scaleAmp ?? 0.04
+      const freq = n.params.freq ?? 1
+      const t = localElapsed / 1000
+      const phase = Math.sin(t * 2 * Math.PI * freq)
+      return {
+        dy: phase * ampY,
+        scaleMul: 1 + scaleAmp * phase,
+      }
+    }
+    case 'repeater':
+      // Pure scheduling node — no per-frame contribution. Repeat semantics
+      // are applied by `tick()` when the run drains.
+      return null
   }
 }
 

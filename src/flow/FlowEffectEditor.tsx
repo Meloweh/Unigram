@@ -11,7 +11,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
 
-const KINDS: FlowEffectKind[] = ['wait', 'move', 'scale', 'color', 'jitter']
+const KINDS: FlowEffectKind[] = [
+  'wait',
+  'move',
+  'scale',
+  'color',
+  'jitter',
+  'float',
+  'emerge',
+  'dismiss',
+  'cloud-levitate',
+  'bubble-levitate',
+  'repeater',
+]
 
 const NODE_W = 140
 const NODE_H = 64
@@ -22,22 +34,76 @@ const KIND_COLORS: Record<FlowEffectKind, string> = {
   scale: '#5a3d7a',
   color: '#7a4540',
   jitter: '#3f6b3a',
+  float: '#356b7a',
+  emerge: '#4a7a3a',
+  dismiss: '#7a4a3a',
+  'cloud-levitate': '#4f5d8a',
+  'bubble-levitate': '#7a5b3a',
+  repeater: '#5b3a7a',
 }
 
 const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   wait: ['ms'],
-  move: ['dx', 'dy', 'ms'],
-  scale: ['mul', 'ms'],
-  color: ['tint', 'ms'],
+  move: ['dx', 'dy', 'ms', 'roundtrip'],
+  scale: ['mul', 'ms', 'permanent'],
+  color: ['tint', 'ms', 'permanent'],
   jitter: ['amp', 'ms'],
+  float: ['amp', 'freq', 'ms'],
+  emerge: ['ms', 'fromScale'],
+  dismiss: ['ms', 'toScale'],
+  'cloud-levitate': ['ampX', 'ampY', 'freq', 'ms'],
+  'bubble-levitate': ['ampY', 'scaleAmp', 'freq', 'ms'],
+  repeater: ['times'],
 }
 
 const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   wait: { ms: 500 },
-  move: { dx: 4, dy: 0, ms: 400 },
-  scale: { mul: 1.3, ms: 250 },
-  color: { tint: 0xff5555, ms: 400 },
+  move: { dx: 4, dy: 0, ms: 400, roundtrip: 0 },
+  scale: { mul: 1.3, ms: 250, permanent: 0 },
+  color: { tint: 0xff5555, ms: 400, permanent: 0 },
   jitter: { amp: 0.4, ms: 600 },
+  float: { amp: 0.5, freq: 1, ms: 2000 },
+  emerge: { ms: 400, fromScale: 0 },
+  dismiss: { ms: 400, toScale: 0 },
+  'cloud-levitate': { ampX: 0.6, ampY: 0.4, freq: 0.6, ms: 4000 },
+  'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, freq: 1, ms: 3000 },
+  repeater: { times: 1 },
+}
+
+/**
+ * Auto-injected entry node id. The entry node is a `wait` with `ms: 0` that
+ * the editor surfaces visually as a signal-source — every fresh effect graph
+ * gets one so the user has a clear "play here" anchor (legacy parity, see
+ * `src/old/flow/FlowEffectEditor.tsx`). It is filtered out of the runtime
+ * via `durationOf` returning 0.
+ */
+export const ENTRY_NODE_ID = '__entry__'
+
+/** Editor grid step in svg pixels (legacy `GRID = 20`). */
+const GRID = 20
+
+/** Snap a coord to the editor grid. */
+function snapToGrid(v: number): number {
+  return Math.round(v / GRID) * GRID
+}
+
+/** Ensure the entry node exists; returns the unchanged effect when present. */
+function withEntryNode(effect: FlowEffect): FlowEffect {
+  if (effect.graph.nodes.some((n) => n.id === ENTRY_NODE_ID)) return effect
+  const entry: EffectNode = {
+    id: ENTRY_NODE_ID,
+    kind: 'wait',
+    x: GRID,
+    y: GRID,
+    params: { ms: 0 },
+  }
+  return {
+    ...effect,
+    graph: {
+      ...effect.graph,
+      nodes: [entry, ...effect.graph.nodes],
+    },
+  }
 }
 
 export function emptyEffect(): FlowEffect {
@@ -56,7 +122,7 @@ interface Props {
 }
 
 export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props) {
-  const [effect, setEffect] = useState<FlowEffect>(() => deepClone(initial))
+  const [effect, setEffect] = useState<FlowEffect>(() => withEntryNode(deepClone(initial)))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingFromId, setPendingFromId] = useState<string | null>(null)
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
@@ -88,6 +154,7 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
   }
 
   const removeNode = (id: string) => {
+    if (id === ENTRY_NODE_ID) return // entry node is permanent
     setEffect((e) => ({
       ...e,
       graph: {
@@ -111,11 +178,14 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
   }
 
   const moveNode = (id: string, x: number, y: number) => {
+    // Snap to the editor grid so manually positioned nodes line up cleanly.
+    const sx = snapToGrid(x)
+    const sy = snapToGrid(y)
     setEffect((e) => ({
       ...e,
       graph: {
         ...e.graph,
-        nodes: e.graph.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)),
+        nodes: e.graph.nodes.map((n) => (n.id === id ? { ...n, x: sx, y: sy } : n)),
       },
     }))
   }
@@ -208,7 +278,7 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                 + {k}
               </button>
             ))}
-            {selected && (
+            {selected && selected.id !== ENTRY_NODE_ID && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontSize: 11, color: '#7a8aa0', marginBottom: 4 }}>
                   {selected.kind} params
@@ -310,10 +380,10 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                   strokeWidth={selectedId === n.id ? 2 : 1}
                 />
                 <text x={10} y={22} fill="#fff" fontSize={13} fontWeight={600}>
-                  {n.kind}
+                  {n.id === ENTRY_NODE_ID ? '▶ entry' : n.kind}
                 </text>
                 <text x={10} y={42} fill="#cde" fontSize={11}>
-                  {summariseParams(n)}
+                  {n.id === ENTRY_NODE_ID ? '(signal source)' : summariseParams(n)}
                 </text>
                 {/* Output port */}
                 <circle
@@ -325,9 +395,10 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                   onPointerDown={(e) => beginEdge(e, n.id)}
                   style={{ cursor: 'crosshair' }}
                 />
-                {/* Input port (visual only) */}
-                <circle cx={0} cy={NODE_H / 2} r={4} fill="#456" stroke="#cfe" />
-              </g>
+                {/* Input port (visual only) — entry node has no input. */}
+                {n.id !== ENTRY_NODE_ID && (
+                  <circle cx={0} cy={NODE_H / 2} r={4} fill="#456" stroke="#cfe" />
+                )}              </g>
             ))}
           </svg>
         </div>
