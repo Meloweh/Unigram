@@ -10,9 +10,14 @@
  */
 
 import { useState, useSyncExternalStore } from 'react'
+import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import { useOmniStore } from '../model/store'
 import type { ModelNode, NodeShape } from '../model/types'
 import { collapsedStripStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
+import { ALL_THEME_OPTIONS } from '../theme/themes'
+import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
+import { PARTICLE_PRESETS } from '../theme/particles'
+import type { BackgroundType, ThemeMode } from '../theme/types'
 
 const ALL_SHAPES: NodeShape[] = [
   'rectangle',
@@ -49,7 +54,7 @@ function useStoreVersion(): number {
   )
 }
 
-export function RightSidebar() {
+export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRenderer').SceneRenderer | null } = {}) {
   useStoreVersion()
   const [collapsed, setCollapsed] = useState(false)
   const state = useOmniStore.getState()
@@ -73,6 +78,49 @@ export function RightSidebar() {
   }
 
   if (nodes.length === 0) {
+    // Edge inspector takes precedence over the diagram panel.
+    const edgeIds = state.selectedEdgeIds
+    if (edgeIds.size > 0) {
+      const eid = [...edgeIds][0]
+      const edge = state.model.edges.get(eid)
+      if (edge) {
+        const fromNode = state.model.nodes.get(edge.from)
+        const toNode = state.model.nodes.get(edge.to)
+        return (
+          <Panel onCollapse={() => setCollapsed(true)}>
+            <Title>Connection</Title>
+            <Hint>
+              {fromNode?.label || edge.from} → {toNode?.label || edge.to}
+            </Hint>
+            <Field label="Color">
+              <input
+                type="color"
+                value={normaliseHex(edge.color)}
+                onChange={(e) =>
+                  useOmniStore.getState().updateEdge(eid, { color: e.target.value })
+                }
+                style={{ width: '100%', height: 26, padding: 0, border: '1px solid #2a3a52' }}
+              />
+            </Field>
+            <Field label="Width %">
+              <NumberField
+                value={edge.width}
+                min={0.05}
+                max={2}
+                step={0.05}
+                onChange={(v) => useOmniStore.getState().updateEdge(eid, { width: v })}
+              />
+            </Field>
+            <button
+              onClick={() => useOmniStore.getState().removeEdges([eid])}
+              style={dangerButtonStyle}
+            >
+              Delete connection
+            </button>
+          </Panel>
+        )
+      }
+    }
     const grid = state.model.grid ?? { enabled: false, snap: false, sizePercent: 4 }
     return (
       <Panel onCollapse={() => setCollapsed(true)}>
@@ -120,6 +168,7 @@ export function RightSidebar() {
             />
           </Field>
         </div>
+        <CosmeticsControls />
         <Hint>Click or box-select a node to edit it.</Hint>
       </Panel>
     )
@@ -219,6 +268,8 @@ export function RightSidebar() {
       </button>
 
       {!isMulti && <MpdSection node={nodes[0]} />}
+      {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
+      {!isMulti && renderer && <TextGenSection node={nodes[0]} renderer={renderer} />}
     </Panel>
   )
 }
@@ -365,6 +416,120 @@ function Hint({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 11, color: '#7a8aa0', fontStyle: 'italic' }}>{children}</div>
 }
 
+/**
+ * Diagram-level cosmetics: theme palette, background, ambient particles.
+ *
+ * Keeps form state in `useOmniStore` directly via `setCosmetics`; non-undoable
+ * (UI state, mirrors `setGrid`).
+ */
+function CosmeticsControls() {
+  const cosmetics = useSyncExternalStore(
+    useOmniStore.subscribe,
+    () => useOmniStore.getState().model.cosmetics,
+  )
+  const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light'
+  const bg = cosmetics?.background
+  const particle = cosmetics?.particleEffect ?? ''
+  const setMode = (m: ThemeMode) => useOmniStore.getState().setCosmetics({ themeMode: m })
+  const setBg = (b: { type: BackgroundType; value: string } | undefined) =>
+    useOmniStore.getState().setCosmetics({ background: b })
+  const setParticle = (id: string) =>
+    useOmniStore.getState().setCosmetics({ particleEffect: id || null })
+  const bgType = bg?.type ?? 'solid'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Theme</span>
+      <select
+        value={themeMode}
+        onChange={(e) => setMode(e.target.value as ThemeMode)}
+        style={inputStyle}
+      >
+        <optgroup label="Base">
+          {ALL_THEME_OPTIONS.filter((t) => t.group === 'base').map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </optgroup>
+        <optgroup label="Topical">
+          {ALL_THEME_OPTIONS.filter((t) => t.group === 'topical').map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </optgroup>
+      </select>
+
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Background</span>
+      <select
+        value={bgType}
+        onChange={(e) => {
+          const t = e.target.value as BackgroundType | ''
+          if (!t) return setBg(undefined)
+          if (t === 'solid') setBg({ type: 'solid', value: '#10131a' })
+          else if (t === 'gradient') setBg({ type: 'gradient', value: GRADIENT_PRESETS[0].value })
+          else if (t === 'pattern') setBg({ type: 'pattern', value: PATTERN_PRESETS[0].value })
+          else setBg({ type: 'image', value: '' })
+        }}
+        style={inputStyle}
+      >
+        <option value="solid">Solid</option>
+        <option value="gradient">Gradient</option>
+        <option value="pattern">Pattern</option>
+        <option value="image">Image</option>
+      </select>
+      {bgType === 'solid' && bg && (
+        <input
+          type="color"
+          value={normaliseHex(bg.value || '#10131a')}
+          onChange={(e) => setBg({ type: 'solid', value: e.target.value })}
+          style={{ width: '100%', height: 28, padding: 0, border: '1px solid #2a3142' }}
+        />
+      )}
+      {bgType === 'gradient' && bg && (
+        <select
+          value={bg.value}
+          onChange={(e) => setBg({ type: 'gradient', value: e.target.value })}
+          style={inputStyle}
+        >
+          {GRADIENT_PRESETS.map((p) => (
+            <option key={p.id} value={p.value}>{p.name}</option>
+          ))}
+        </select>
+      )}
+      {bgType === 'pattern' && bg && (
+        <select
+          value={bg.value}
+          onChange={(e) => setBg({ type: 'pattern', value: e.target.value })}
+          style={inputStyle}
+        >
+          {PATTERN_PRESETS.map((p) => (
+            <option key={p.id} value={p.value}>{p.name}</option>
+          ))}
+        </select>
+      )}
+      {bgType === 'image' && bg && (
+        <input
+          type="text"
+          placeholder="Image URL or data URI"
+          value={bg.value}
+          onChange={(e) => setBg({ type: 'image', value: e.target.value })}
+          style={inputStyle}
+        />
+      )}
+      <button onClick={() => setBg(undefined)} style={buttonStyle}>Clear background</button>
+
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Particles</span>
+      <select
+        value={particle}
+        onChange={(e) => setParticle(e.target.value)}
+        style={inputStyle}
+      >
+        <option value="">None</option>
+        {PARTICLE_PRESETS.map((p) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 const inputStyle: React.CSSProperties = {
   background: '#0e131c',
   color: '#e0eaf5',
@@ -384,6 +549,23 @@ const buttonStyle: React.CSSProperties = {
   padding: '4px 6px',
   font: '11px system-ui, sans-serif',
   cursor: 'pointer',
+}
+
+const dangerButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  background: '#3a1a20',
+  color: '#fcc',
+  border: '1px solid #6e2a36',
+}
+
+function normaliseHex(c: string): string {
+  // <input type="color"> requires #rrggbb form. Pass through if already valid;
+  // otherwise fall back to a neutral grey rather than crashing.
+  if (/^#[0-9a-fA-F]{6}$/.test(c)) return c
+  if (/^#[0-9a-fA-F]{3}$/.test(c)) {
+    return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3]
+  }
+  return '#365f8f'
 }
 
 function MpdSection({ node }: { node: ModelNode }) {
@@ -436,6 +618,267 @@ function MpdSection({ node }: { node: ModelNode }) {
         </ul>
       )}
       <button onClick={handleAdd} style={buttonStyle}>+ Add MPD dimension</button>
+    </div>
+  )
+}
+
+const FLOW_PRESETS: { id: string; label: string; effect: import('../flow/types').FlowEffect }[] = [
+  {
+    id: 'pulse',
+    label: 'Pulse',
+    effect: {
+      id: 'pulse',
+      label: 'Pulse',
+      graph: {
+        nodes: [{ id: 's', kind: 'scale', x: 0, y: 0, params: { mul: 1.3, ms: 250 } }],
+        edges: [],
+      },
+    },
+  },
+  {
+    id: 'shake',
+    label: 'Shake',
+    effect: {
+      id: 'shake',
+      label: 'Shake',
+      graph: {
+        nodes: [{ id: 'j', kind: 'jitter', x: 0, y: 0, params: { amp: 0.4, ms: 600 } }],
+        edges: [],
+      },
+    },
+  },
+  {
+    id: 'flash',
+    label: 'Flash red',
+    effect: {
+      id: 'flash',
+      label: 'Flash',
+      graph: {
+        nodes: [{ id: 'c', kind: 'color', x: 0, y: 0, params: { tint: 0xff5555, ms: 500 } }],
+        edges: [],
+      },
+    },
+  },
+  {
+    id: 'nudge',
+    label: 'Nudge right',
+    effect: {
+      id: 'nudge',
+      label: 'Nudge',
+      graph: {
+        nodes: [{ id: 'm', kind: 'move', x: 0, y: 0, params: { dx: 4, dy: 0, ms: 400 } }],
+        edges: [],
+      },
+    },
+  },
+  {
+    id: 'pulse-then-flash',
+    label: 'Pulse → flash',
+    effect: {
+      id: 'pulse-then-flash',
+      label: 'Pulse → flash',
+      graph: {
+        nodes: [
+          { id: 's', kind: 'scale', x: 0, y: 0, params: { mul: 1.4, ms: 250 } },
+          { id: 'c', kind: 'color', x: 0, y: 0, params: { tint: 0x55ff55, ms: 400 } },
+        ],
+        edges: [{ from: 's', to: 'c' }],
+      },
+    },
+  },
+]
+
+function FlowEffectsSection({
+  node,
+  renderer,
+}: {
+  node: ModelNode
+  renderer: import('../scene/SceneRenderer').SceneRenderer
+}) {
+  const [selected, setSelected] = useState<string>(FLOW_PRESETS[0].id)
+  const [editing, setEditing] = useState<import('../flow/types').FlowEffect | null>(null)
+  const play = () => {
+    const preset = FLOW_PRESETS.find((p) => p.id === selected)
+    if (!preset) return
+    renderer.playFlowEffect(node.id, preset.effect)
+  }
+  const attach = () => {
+    const preset = FLOW_PRESETS.find((p) => p.id === selected)
+    if (!preset) return
+    attachEffect(node.id, { ...preset.effect, alwaysPlay: true }, node.flowEffects)
+  }
+  const detach = (effectId: string) => {
+    const existing = node.flowEffects ?? []
+    useOmniStore
+      .getState()
+      .updateNode(node.id, { flowEffects: existing.filter((e) => e.id !== effectId) })
+  }
+  const editExisting = (eff: import('../flow/types').FlowEffect) => setEditing(eff)
+  const editor = editing ? (
+    <FlowEffectEditor
+      initial={editing}
+      onPreview={(eff) => renderer.playFlowEffect(node.id, eff)}
+      onSave={(eff) => {
+        const existing = node.flowEffects ?? []
+        const withId = { ...eff, id: eff.id || `eff_${Date.now().toString(36)}`, alwaysPlay: true }
+        // Replace by id if it already exists.
+        const next = existing.some((x) => x.id === withId.id)
+          ? existing.map((x) => (x.id === withId.id ? withId : x))
+          : [...existing, withId]
+        useOmniStore.getState().updateNode(node.id, { flowEffects: next })
+        setEditing(null)
+      }}
+      onClose={() => setEditing(null)}
+    />
+  ) : null
+  const attached = (node.flowEffects ?? []).filter((e) => e.alwaysPlay)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Flow effects</span>
+      <select
+        value={selected}
+        onChange={(e) => setSelected(e.target.value)}
+        style={inputStyle}
+      >
+        {FLOW_PRESETS.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.label}
+          </option>
+        ))}
+      </select>
+      <Row>
+        <button onClick={play} style={buttonStyle}>
+          ▶ Play once
+        </button>
+        <button onClick={attach} style={buttonStyle}>
+          ∞ Attach loop
+        </button>
+      </Row>
+      <button
+        onClick={() => setEditing(emptyEffect())}
+        style={buttonStyle}
+      >
+        + New custom effect
+      </button>
+      {attached.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {attached.map((e) => (
+            <li
+              key={e.id}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: '#bcd' }}
+            >
+              <span>∞ {e.label}</span>
+              <span>
+                <button
+                  onClick={() => editExisting(e)}
+                  style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
+                  title="Edit effect"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={() => detach(e.id)}
+                  style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
+                  title="Remove looped effect"
+                >
+                  ✕
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {editor}
+    </div>
+  )
+}
+
+function attachEffect(
+  nodeId: string,
+  effect: import('../flow/types').FlowEffect,
+  existing: import('../flow/types').FlowEffect[] | undefined,
+) {
+  // Stable per-attachment id so always-play reconciliation works.
+  const attached: import('../flow/types').FlowEffect = {
+    ...effect,
+    id: `${effect.id}-${Date.now().toString(36)}`,
+  }
+  useOmniStore
+    .getState()
+    .updateNode(nodeId, { flowEffects: [...(existing ?? []), attached] })
+}
+
+function TextGenSection({
+  node,
+  renderer,
+}: {
+  node: ModelNode
+  renderer: import('../scene/SceneRenderer').SceneRenderer
+}) {
+  const [text, setText] = useState<string>('Hello, world!')
+  const [cps, setCps] = useState<number>(24)
+  const [sound, setSound] = useState<import('../audio/textGenSounds').TextGenSoundPreset>('typewriter')
+  const [loop, setLoop] = useState<boolean>(false)
+  const [running, setRunning] = useState<boolean>(false)
+  const start = () => {
+    renderer.startTextGen(node.id, { text, charsPerSec: cps, sound, loop, endHoldMs: 1500 })
+    setRunning(true)
+  }
+  const stop = () => {
+    renderer.stopTextGen(node.id)
+    setRunning(false)
+  }
+  // Sound preset choices loaded lazily so SSR/test paths don't touch the
+  // audio module unless this section actually mounts.
+  const SOUNDS: { id: import('../audio/textGenSounds').TextGenSoundPreset; label: string }[] = [
+    { id: 'none', label: 'None' },
+    { id: 'undertale', label: 'Undertale' },
+    { id: 'inscryption', label: 'Inscryption' },
+    { id: 'pokemon', label: 'Pokémon' },
+    { id: 'typewriter', label: 'Typewriter' },
+    { id: 'terminal', label: 'Terminal' },
+  ]
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Text generator</span>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={2}
+        style={{ ...inputStyle, resize: 'vertical', minHeight: 32, fontFamily: 'inherit' }}
+      />
+      <Row>
+        <Field label="cps">
+          <NumberField value={cps} min={1} max={120} step={1} onChange={setCps} />
+        </Field>
+        <Field label="loop">
+          <input
+            type="checkbox"
+            checked={loop}
+            onChange={(e) => setLoop(e.target.checked)}
+            style={{ accentColor: '#5da' }}
+          />
+        </Field>
+      </Row>
+      <select
+        value={sound}
+        onChange={(e) => setSound(e.target.value as import('../audio/textGenSounds').TextGenSoundPreset)}
+        style={inputStyle}
+      >
+        {SOUNDS.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.label}
+          </option>
+        ))}
+      </select>
+      <Row>
+        <button onClick={start} style={buttonStyle} disabled={running}>
+          ▶ Type
+        </button>
+        <button onClick={stop} style={buttonStyle} disabled={!running}>
+          ⏹ Stop
+        </button>
+      </Row>
     </div>
   )
 }

@@ -54,6 +54,8 @@ export class PointerController {
   private active: ActiveDrag | null = null
   private lastClickAt = 0
   private lastClickPos = { x: 0, y: 0 }
+  private lastNodeClickId: string | null = null
+  private lastNodeClickAt = 0
   private readonly host: HTMLElement
   private readonly renderer: SceneRenderer
 
@@ -296,6 +298,20 @@ export class PointerController {
           }
         }
         store.commitDrag(a.dragBaselines)
+      } else if (a.nodeId) {
+        // Click on node — detect double-click → enter inline label edit.
+        const now = e.timeStamp
+        if (
+          this.lastNodeClickId === a.nodeId &&
+          now - this.lastNodeClickAt < DOUBLE_CLICK_MS
+        ) {
+          useOmniStore.getState().setEditingNode(a.nodeId)
+          this.lastNodeClickId = null
+          this.lastNodeClickAt = 0
+        } else {
+          this.lastNodeClickId = a.nodeId
+          this.lastNodeClickAt = now
+        }
       }
       return
     }
@@ -346,6 +362,12 @@ export class PointerController {
         label: 'node',
       })
       useOmniStore.getState().select(id)
+      return
+    }
+    // Single click on empty space — try an edge hit before clearing selection.
+    const edgeId = this.renderer.pickEdge(scene.x, scene.y)
+    if (edgeId) {
+      useOmniStore.getState().selectEdge(edgeId)
       return
     }
     useOmniStore.getState().clearSelection()

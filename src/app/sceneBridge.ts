@@ -50,19 +50,28 @@ export function bindStoreToRenderer(renderer: SceneRenderer): () => void {
   pushCamera(useOmniStore.getState())
   pushRmm(useOmniStore.getState())
   renderer.setSelection(useOmniStore.getState().selectedIds)
+  renderer.setEdgeSelection(useOmniStore.getState().selectedEdgeIds)
+  renderer.setParticles(useOmniStore.getState().model.cosmetics?.particleEffect ?? null)
 
   let lastRev = useOmniStore.getState().rev
   let lastSelRev = useOmniStore.getState().selRev
   let lastZoomRev = useOmniStore.getState().zoomRev
   let lastCam = useOmniStore.getState().camera
+  let lastParticles = useOmniStore.getState().model.cosmetics?.particleEffect ?? null
   const unsub = useOmniStore.subscribe((s) => {
     if (s.rev !== lastRev) {
       lastRev = s.rev
       pushModel(s)
+      const p = s.model.cosmetics?.particleEffect ?? null
+      if (p !== lastParticles) {
+        lastParticles = p
+        renderer.setParticles(p)
+      }
     }
     if (s.selRev !== lastSelRev) {
       lastSelRev = s.selRev
       renderer.setSelection(s.selectedIds)
+      renderer.setEdgeSelection(s.selectedEdgeIds)
     }
     if (s.zoomRev !== lastZoomRev) {
       lastZoomRev = s.zoomRev

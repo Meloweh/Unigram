@@ -10,6 +10,7 @@
 import { Container, Graphics, Text } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 import type { ModelNode } from '../model/types'
+import type { NodeOverride } from '../flow/types'
 import { drawNodeShape } from './shapes'
 
 /** LOD presented to the pool when a node becomes (re)visible. */
@@ -85,7 +86,7 @@ export class NodePool {
   }
 
   /** Make a node visible; create or recycle a container as needed. */
-  acquire(n: ModelNode, lod: Lod): void {
+  acquire(n: ModelNode, lod: Lod, override?: NodeOverride): void {
     let pn = this.active.get(n.id)
     if (!pn) {
       pn = this.free.pop() ?? this.createNew()
@@ -93,15 +94,29 @@ export class NodePool {
       pn.dirtyKey = '' // force redraw
       this.active.set(n.id, pn)
     }
-    this.update(n, lod)
+    this.update(n, lod, override)
   }
 
   /** Update an already-visible node. No-op if nothing visual changed. */
-  update(n: ModelNode, lod: Lod): void {
+  update(n: ModelNode, lod: Lod, override?: NodeOverride): void {
     const pn = this.active.get(n.id)
     if (!pn) return
-    pn.container.x = (n.x / 100) * SCENE_W
-    pn.container.y = (n.y / 100) * SCENE_H
+    const baseX = (n.x / 100) * SCENE_W
+    const baseY = (n.y / 100) * SCENE_H
+    if (override) {
+      pn.container.x = baseX + ((override.dx ?? 0) / 100) * SCENE_W
+      pn.container.y = baseY + ((override.dy ?? 0) / 100) * SCENE_H
+      const s = override.scaleMul ?? 1
+      pn.container.scale.set(s, s)
+      pn.container.alpha = override.alphaMul ?? 1
+      pn.container.tint = override.tint ?? 0xffffff
+    } else {
+      pn.container.x = baseX
+      pn.container.y = baseY
+      if (pn.container.scale.x !== 1) pn.container.scale.set(1, 1)
+      if (pn.container.alpha !== 1) pn.container.alpha = 1
+      if (pn.container.tint !== 0xffffff) pn.container.tint = 0xffffff
+    }
     const key = dirtyKeyOf(n, lod)
     if (key !== pn.dirtyKey) {
       drawShape(pn.shape, n, lod)

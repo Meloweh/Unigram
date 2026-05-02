@@ -47,6 +47,8 @@ export interface ModelNode {
   mpdDimensions?: string[]
   /** Cosmetic-only tail/trail tip (in scene-percent of node size). */
   tip?: CosmeticTip
+  /** Stage 5 flow effects attached to this node (override-based, render-only). */
+  flowEffects?: import('../flow/types').FlowEffect[]
   /** Forward-compat slot for fields owned by later stages. */
   extra?: Record<string, unknown>
 }
@@ -87,6 +89,8 @@ export interface Model {
   edges: Map<string, Connection>
   /** Diagram-level grid + snap configuration. */
   grid?: GridSettings
+  /** Diagram-level cosmetics (theme, background, particles). */
+  cosmetics?: import('../theme/types').ModelCosmetics
   /** Forward-compat slot. */
   extra?: Record<string, unknown>
 }

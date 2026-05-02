@@ -27,6 +27,10 @@ import { NodePool, type Lod } from './NodePool'
 import { drawNodeShape, pointInShape } from './shapes'
 import { shapeEdgeIntersect } from './shapeIntersect'
 import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZoom'
+import { ParticleLayer } from '../theme/ParticleLayer'
+import { FlowRuntime } from '../flow/runtime'
+import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
+import type { FlowEffect } from '../flow/types'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -65,6 +69,7 @@ export class SceneRenderer {
   private effectiveScale = 1
   private viewport: ViewportSize = { width: 0, height: 0 }
   private selectedIds: ReadonlySet<string> = new Set()
+  private selectedEdgeIds: ReadonlySet<string> = new Set()
   private selectionGfxPool: Graphics[] = []
   private boxSelectAabb: SceneAabb | null = null
   /** RMM inflating-frame container in SCREEN coords (not world). */
@@ -80,6 +85,16 @@ export class SceneRenderer {
   private connectGhost!: Graphics
   private connectGhostSource: string | null = null
   private connectGhostCursor: { x: number; y: number } | null = null
+
+  /** Ambient particle overlay (screen coords, above world, below RMM stage). */
+  private particleLayer!: ParticleLayer
+  private particlePresetId: string | null = null
+
+  /** Stage 5 flow effect runtime. Produces per-frame node overrides. */
+  readonly flow = new FlowRuntime()
+  /** Per (nodeId,effectId) key → currently active always-play runId. */
+  private alwaysPlayRuns = new Map<string, string>()
+  readonly textGen = new TextGenRunner()
 
   /** MPD curtain: sprite painted with a snapshot of the previous scene. */
   private curtainSprite: Sprite | null = null
@@ -119,8 +134,9 @@ export class SceneRenderer {
       preference: 'webgl',
       resizeTo: host,
       antialias: true,
-      backgroundAlpha: 1,
-      backgroundColor: 0xf6f9fc,
+      // Transparent canvas — diagram background is rendered by a DOM layer
+      // behind the host so themes/gradients/patterns show through.
+      backgroundAlpha: 0,
       resolution: window.devicePixelRatio || 1,
       autoDensity: true,
     })
@@ -156,7 +172,11 @@ export class SceneRenderer {
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
     app.stage.addChild(this.world)
+    // Particle overlay sits above world (screen-anchored), below RMM stage.
+    this.particleLayer = new ParticleLayer()
+    app.stage.addChild(this.particleLayer.container)
     // RMM stage + connection ghost live in screen coords ABOVE the world.
+    this.rmmStage = new Container()
     this.rmmStage = new Container()
     this.rmmStage.eventMode = 'none'
     this.rmmStage.visible = false
@@ -183,6 +203,7 @@ export class SceneRenderer {
     }
     this.edgePool = new EdgePool(this.edgesLayer)
     this.viewport = { width: app.screen.width, height: app.screen.height }
+    this.particleLayer.setViewport(this.viewport.width, this.viewport.height)
     this.applyCameraTransform()
     app.ticker.add(this.onTick)
   }
@@ -198,6 +219,7 @@ export class SceneRenderer {
     this.cancelMpdCurtain()
     this.nodePool?.destroy()
     this.edgePool?.destroy()
+    this.particleLayer?.destroy()
     let canvas: HTMLCanvasElement | null = null
     try {
       canvas = this.app.canvas
@@ -221,6 +243,7 @@ export class SceneRenderer {
   setModel(model: ModelView): void {
     this.model = model
     this.rebuildQuadtree()
+    this.syncAlwaysPlayEffects(model.nodes)
     this.dirty = true
   }
 
@@ -252,6 +275,75 @@ export class SceneRenderer {
   setSelection(ids: ReadonlySet<string>): void {
     this.selectedIds = ids
     this.dirty = true
+  }
+
+  /** Replace the visualised edge selection set. */
+  setEdgeSelection(ids: ReadonlySet<string>): void {
+    this.selectedEdgeIds = ids
+    this.dirty = true
+  }
+
+  /** Set or clear the active particle preset (id from `PARTICLE_PRESETS`). */
+  setParticles(presetId: string | null): void {
+    if (this.particlePresetId === presetId) return
+    this.particlePresetId = presetId
+    if (!this.particleLayer) return
+    this.particleLayer.setPreset(presetId)
+  }
+
+  /** The Pixi-owned canvas (for capture / screenshot). */
+  getCanvas(): HTMLCanvasElement | null {
+    return this.app?.canvas ?? null
+  }
+
+  /** Start a flow effect against a target node. Returns a runId (or null). */
+  playFlowEffect(targetNodeId: string, effect: FlowEffect): string | null {
+    return this.flow.start(targetNodeId, effect, performance.now())
+  }
+
+  /** Begin a text-generator on `nodeId`. Restores original label on stop. */
+  startTextGen(nodeId: string, config: TextGenConfig): void {
+    const node = this.model.nodes.get(nodeId)
+    if (!node) return
+    this.textGen.start(node, config, performance.now())
+    this.dirty = true
+  }
+
+  /** Stop the active text-generator (if any) on `nodeId`. */
+  stopTextGen(nodeId: string): void {
+    const node = this.model.nodes.get(nodeId)
+    if (!node) return
+    this.textGen.stop(node)
+    this.dirty = true
+  }
+
+  /**
+   * Reconcile always-play flow effects with the current model. For each
+   * `ModelNode.flowEffects` entry with `alwaysPlay`, ensure exactly one run
+   * is active; drop runs whose effect was removed or whose owning node is
+   * gone. One-shot effects are never auto-started.
+   */
+  syncAlwaysPlayEffects(nodes: ReadonlyMap<string, ModelNode>): void {
+    const now = performance.now()
+    const seen = new Set<string>()
+    for (const n of nodes.values()) {
+      const effects = n.flowEffects
+      if (!effects) continue
+      for (const e of effects) {
+        if (!e.alwaysPlay) continue
+        const key = `${n.id}::${e.id}`
+        seen.add(key)
+        if (this.alwaysPlayRuns.has(key)) continue
+        const runId = this.flow.start(n.id, e, now)
+        if (runId) this.alwaysPlayRuns.set(key, runId)
+      }
+    }
+    for (const [key, runId] of [...this.alwaysPlayRuns]) {
+      if (!seen.has(key)) {
+        this.flow.cancel(runId)
+        this.alwaysPlayRuns.delete(key)
+      }
+    }
   }
 
   /**
@@ -339,6 +431,34 @@ export class SceneRenderer {
     return best
   }
 
+  /**
+   * Hit-test edges by scene point. Returns the closest edge whose centre
+   * line passes within `tolerancePercent` (scene-percent) of the point, or
+   * null if none. Tolerance scales with the inverse of the effective scale
+   * so a fixed pixel hitbox feels consistent at any zoom.
+   */
+  pickEdge(sceneX: number, sceneY: number): string | null {
+    // ~6 screen-px tolerance, in scene-percent units.
+    const tolPx = 6 / Math.max(this.effectiveScale, 0.01)
+    // Convert tol from screen-pixels to scene-percent on the X axis. Since
+    // SCENE_W maps to ~SCENE_W scene-px, the conversion factor is
+    // (100 / SCENE_W).
+    const tol = (tolPx * 100) / SCENE_W
+    let best: string | null = null
+    let bestDist = tol
+    for (const e of this.model.edges.values()) {
+      const a = this.model.nodes.get(e.from)
+      const b = this.model.nodes.get(e.to)
+      if (!a || !b) continue
+      const d = pointSegmentDistance(sceneX, sceneY, a.x, a.y, b.x, b.y)
+      if (d < bestDist) {
+        bestDist = d
+        best = e.id
+      }
+    }
+    return best
+  }
+
   // ---- internals ----------------------------------------------------------
 
   private onTick = (ticker: { deltaMS: number }): void => {
@@ -349,14 +469,33 @@ export class SceneRenderer {
       this.viewport.height !== this.app.screen.height
     ) {
       this.viewport = { width: this.app.screen.width, height: this.app.screen.height }
+      this.particleLayer.setViewport(this.viewport.width, this.viewport.height)
       this.dirty = true
     }
     if (this.dirty) {
       this.cullAndDraw()
       this.dirty = false
     }
+    // Flow effects: tick the runtime + force redraw while any run is active.
+    // The runtime writes overrides; nodePool.update reads them in the draw pass.
+    if (this.flow.hasActiveRuns) {
+      this.flow.tick(performance.now())
+      this.cullAndDraw()
+    }
+    // Text-generator: progressively reveals labels in-place. When characters
+    // advance we mark dirty and redraw so the new label is baked into Pixi.
+    if (this.textGen.hasActiveRuns) {
+      const changed = this.textGen.tick(this.model.nodes, performance.now())
+      if (changed) this.cullAndDraw()
+    }
     // MPD curtain animates each frame; runs only when active.
     if (this.curtainDurationMs > 0) this.tickMpdCurtain()
+    // Particle simulation (no-op when no preset is set).
+    if (this.particlePresetId) {
+      // Convert deltaMS to "frames" (1.0 = 16.67 ms) so legacy preset tuning
+      // remains accurate at any refresh rate.
+      this.particleLayer.tick(ticker.deltaMS / 16.667)
+    }
     // Selection breathing animation: alpha pulse on the selectionLayer.
     // (Scaling the whole layer would drift rings off origin; per-ring scale
     // would need per-frame draws — alpha alone is free.)
@@ -417,6 +556,7 @@ export class SceneRenderer {
       this.nodePool.release(id)
       this.prevVisibleNodes.delete(id)
     }
+    this.syncAlwaysPlayEffects(nodes)
     this.dirty = true
   }
 
@@ -446,7 +586,7 @@ export class SceneRenderer {
       const id = this.visibleIds[i]
       const n = this.model.nodes.get(id)
       if (!n) continue
-      this.nodePool.acquire(n, lod)
+      this.nodePool.acquire(n, lod, this.flow.getOverride(id))
     }
     // Release nodes that fell out of view.
     for (const id of this.prevVisibleNodes) {
@@ -519,6 +659,36 @@ export class SceneRenderer {
       // Inner crisp ring.
       g.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, r)
       g.stroke({ color: 0x4aa3ff, width: 3, alignment: 0.5 })
+      used++
+    }
+    for (let i = used; i < this.selectionGfxPool.length; i++) {
+      this.selectionGfxPool[i].visible = false
+    }
+    // Edge selection: thicker translucent overlay along each selected edge.
+    for (const eid of this.selectedEdgeIds) {
+      const e = this.model.edges.get(eid)
+      if (!e) continue
+      const a = this.model.nodes.get(e.from)
+      const b = this.model.nodes.get(e.to)
+      if (!a || !b) continue
+      let g = this.selectionGfxPool[used]
+      if (!g) {
+        g = new Graphics()
+        g.eventMode = 'none'
+        this.selectionLayer.addChild(g)
+        this.selectionGfxPool.push(g)
+      }
+      g.visible = true
+      g.clear()
+      g.x = 0
+      g.y = 0
+      const ax = (a.x / 100) * SCENE_W
+      const ay = (a.y / 100) * SCENE_H
+      const bx = (b.x / 100) * SCENE_W
+      const by = (b.y / 100) * SCENE_H
+      const baseW = Math.max(1, (e.width / 100) * SCENE_W)
+      g.moveTo(ax, ay).lineTo(bx, by)
+      g.stroke({ color: 0x4aa3ff, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
       used++
     }
     for (let i = used; i < this.selectionGfxPool.length; i++) {
@@ -681,18 +851,58 @@ export class SceneRenderer {
       this.releaseAllPreviewLabels()
       return
     }
-    // Edges drawn first.
+    // Edges: draw with the same geometry the live EdgePool uses
+    // (boundary-clipped endpoints + filled triangle arrowhead, stroke
+    // width derived from `e.width` percent). This way the transition
+    // from preview → live render is seamless.
+    const ARROW_LEN = 16
+    const ARROW_HALF_W = 7
     for (const e of child.edges.values()) {
       const a = child.nodes.get(e.from)
       const b = child.nodes.get(e.to)
       if (!a || !b) continue
-      const ax = (a.x / 100) * SCENE_W
-      const ay = (a.y / 100) * SCENE_H
-      const bx = (b.x / 100) * SCENE_W
-      const by = (b.y / 100) * SCENE_H
-      g.moveTo(ax, ay).lineTo(bx, by)
+      const fxC = (a.x / 100) * SCENE_W
+      const fyC = (a.y / 100) * SCENE_H
+      const txC = (b.x / 100) * SCENE_W
+      const tyC = (b.y / 100) * SCENE_H
+      const dx = txC - fxC
+      const dy = tyC - fyC
+      if (Math.hypot(dx, dy) < 1e-3) continue
+      const fHw = ((a.w / 100) * SCENE_W) / 2
+      const fHh = ((a.h / 100) * SCENE_H) / 2
+      const tHw = ((b.w / 100) * SCENE_W) / 2
+      const tHh = ((b.h / 100) * SCENE_H) / 2
+      const fEdge = shapeEdgeIntersect(a.shape, fHw, fHh, dx, dy)
+      const tEdge = shapeEdgeIntersect(b.shape, tHw, tHh, -dx, -dy)
+      const fx = fxC + fEdge.x
+      const fy = fyC + fEdge.y
+      const tx = txC + tEdge.x
+      const ty = tyC + tEdge.y
+      const ndx = tx - fx
+      const ndy = ty - fy
+      const segLen = Math.hypot(ndx, ndy)
+      if (segLen < 1e-3) continue
+      const ux = ndx / segLen
+      const uy = ndy / segLen
+      const lineEndX = tx - ux * (ARROW_LEN * 0.6)
+      const lineEndY = ty - uy * (ARROW_LEN * 0.6)
+      const strokePx = Math.max(1, (e.width / 100) * SCENE_W)
+      g.moveTo(fx, fy).lineTo(lineEndX, lineEndY)
+      g.stroke({ color: e.color, width: strokePx, alignment: 0.5 })
+      const baseX = tx - ux * ARROW_LEN
+      const baseY = ty - uy * ARROW_LEN
+      const px = -uy
+      const py = ux
+      g.poly([
+        tx,
+        ty,
+        baseX + px * ARROW_HALF_W,
+        baseY + py * ARROW_HALF_W,
+        baseX - px * ARROW_HALF_W,
+        baseY - py * ARROW_HALF_W,
+      ])
+      g.fill({ color: e.color })
     }
-    g.stroke({ color: 0x7a8aa0, width: 1.5, alpha: 0.7 })
     // Nodes (shape only here; labels are pooled Text below).
     for (const n of child.nodes.values()) {
       g.save()
@@ -885,4 +1095,25 @@ function nodeAabb(n: ModelNode) {
     maxX: n.x + n.w / 2,
     maxY: n.y + n.h / 2,
   }
+}
+
+/** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by). */
+function pointSegmentDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  if (len2 < 1e-9) return Math.hypot(px - ax, py - ay)
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2
+  if (t < 0) t = 0
+  else if (t > 1) t = 1
+  const cx = ax + t * dx
+  const cy = ay + t * dy
+  return Math.hypot(px - cx, py - cy)
 }

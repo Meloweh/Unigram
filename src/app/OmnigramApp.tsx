@@ -18,6 +18,10 @@ import { KeyboardController } from '../viewport/KeyboardController'
 import { useOmniStore } from '../model/store'
 import { spawnGrid, spawnNested } from '../bench/spawnGrid'
 import { runScenario, listScenarios, type BenchResult } from '../bench/harness'
+import { exportBundle, importBundle } from '../model/projectBundle'
+import { applyThemeToDOM, resolvePalette } from '../theme/themes'
+import { resolveBackground } from '../theme/backgrounds'
+import type { ThemeMode, BackgroundConfig } from '../theme/types'
 import { FpsOverlay } from './FpsOverlay'
 import { LeftSidebar, DRAG_MIME_SHAPE } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
@@ -28,6 +32,21 @@ import type { NodeShape } from '../model/types'
 export function OmnigramApp() {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [renderer, setRenderer] = useState<SceneRenderer | null>(null)
+  const cosmetics = useSyncExternalStore(
+    useOmniStore.subscribe,
+    () => useOmniStore.getState().model.cosmetics,
+  )
+  const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light'
+  const background = cosmetics?.background
+
+  // Apply theme palette to documentElement CSS vars + topical body class.
+  useEffect(() => {
+    applyThemeToDOM(resolvePalette(themeMode))
+    document.documentElement.dataset.theme = themeMode
+    return () => {
+      delete document.documentElement.dataset.theme
+    }
+  }, [themeMode])
 
   useEffect(() => {
     const host = hostRef.current
@@ -64,7 +83,18 @@ export function OmnigramApp() {
   }, [])
 
   return (
-    <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#10131a' }}>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        overflow: 'hidden',
+        // Theme palette `viewportBg` is the diagram's resting backdrop. An
+        // explicit `BackgroundLayer` (gradient/solid/pattern/image) renders
+        // on top via the next sibling div.
+        background: resolvePalette(themeMode).viewportBg,
+      }}
+    >
+      <BackgroundLayer config={background} />
       <div
         ref={hostRef}
         style={{
@@ -103,9 +133,44 @@ export function OmnigramApp() {
       <FpsOverlay renderer={renderer} />
       <Toolbar renderer={renderer} />
       <LeftSidebar />
-      <RightSidebar />
+      <RightSidebar renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
+      <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
     </div>
+  )
+}
+
+/**
+ * Diagram background layer. Sits below the canvas and renders solid /
+ * gradient / pattern / image backgrounds via plain CSS — no GPU cost.
+ */
+function BackgroundLayer({ config }: { config: BackgroundConfig | undefined }) {
+  if (!config) return null
+  const style = resolveBackground(config)
+  // Image backgrounds need an extra <img>-style layer for fit + opacity + blur.
+  if (config.type === 'image') {
+    return (
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: 0,
+          backgroundImage: `url(${config.value})`,
+          backgroundSize: config.fit === 'contain' ? 'contain' : config.fit === 'tile' ? 'auto' : 'cover',
+          backgroundRepeat: config.fit === 'tile' ? 'repeat' : 'no-repeat',
+          backgroundPosition: 'center center',
+          opacity: config.opacity ?? 1,
+          filter: config.blur ? `blur(${config.blur}px)` : undefined,
+          pointerEvents: 'none',
+        }}
+      />
+    )
+  }
+  return (
+    <div
+      aria-hidden
+      style={{ position: 'absolute', inset: 0, pointerEvents: 'none', ...style }}
+    />
   )
 }
 
@@ -169,6 +234,8 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
         </button>
         <button onClick={() => useOmniStore.getState().undo()}>Undo</button>
         <button onClick={() => useOmniStore.getState().redo()}>Redo</button>
+        <SaveLoadButtons />
+        <RecordingButtons renderer={renderer} />
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         {listScenarios().map((s) => (
@@ -188,10 +255,127 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
             whiteSpace: 'pre',
           }}
         >
-          {`${bench.scenario}  frames=${bench.frames}  p50=${bench.fpsP50}  p95=${bench.fpsP95}  min=${bench.fpsMin}  max=${bench.fpsMax}`}
+          {`${bench.scenario}  frames=${bench.frames}  fps p50=${bench.fpsP50} p95=${bench.fpsP95}  ms p50=${bench.frameMsP50} p95=${bench.frameMsP95} max=${bench.frameMsMax}`}
         </div>
       )}
     </div>
+  )
+}
+
+function RecordingButtons({ renderer }: { renderer: SceneRenderer | null }) {
+  const [recording, setRecording] = useState<{ stop: () => Promise<Blob>; cancel: () => void } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [obs, setObs] = useState<import('../recording/obsClient').ObsConnection | null>(null)
+  const onStart = async () => {
+    if (!renderer || busy) return
+    const canvas = renderer.getCanvas()
+    if (!canvas) return
+    setBusy(true)
+    try {
+      const { startCanvasRecording, isRecordingSupported } = await import('../recording/canvasRecorder')
+      if (!isRecordingSupported()) {
+        alert('Recording is not supported in this browser.')
+        return
+      }
+      setRecording(startCanvasRecording(canvas, 30))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const onStop = async () => {
+    if (!recording || busy) return
+    setBusy(true)
+    try {
+      const blob = await recording.stop()
+      const { downloadBlob } = await import('../recording/canvasRecorder')
+      const ext = blob.type.includes('mp4') ? 'mp4' : 'webm'
+      downloadBlob(blob, `omnigram-${Date.now()}.${ext}`)
+    } finally {
+      setRecording(null)
+      setBusy(false)
+    }
+  }
+  const onObsToggle = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      if (obs) {
+        const { obsStopRecord } = await import('../recording/obsClient')
+        try { await obsStopRecord(obs) } catch { /* ignore */ }
+        obs.close()
+        setObs(null)
+        return
+      }
+      const host = window.prompt('OBS host:port (e.g. 127.0.0.1:4455)?', '127.0.0.1:4455')
+      if (!host) return
+      const password = window.prompt('OBS WebSocket password (blank if none):', '') ?? ''
+      const [h, portStr] = host.split(':')
+      const port = Number(portStr) || 4455
+      const { connectObs, obsStartRecord } = await import('../recording/obsClient')
+      const conn = await connectObs(h, port, password)
+      await obsStartRecord(conn)
+      setObs(conn)
+    } catch (err) {
+      alert('OBS error: ' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <>
+      {recording ? (
+        <button onClick={onStop} disabled={busy} title="Stop recording and download" style={{ background: '#7a2f2f' }}>
+          ⏹ Stop rec
+        </button>
+      ) : (
+        <button onClick={onStart} disabled={busy || !renderer} title="Record canvas to .webm">
+          ⏺ Record
+        </button>
+      )}
+      <button onClick={onObsToggle} disabled={busy} title="Toggle OBS recording via WebSocket">
+        {obs ? '⏹ OBS' : '◉ OBS'}
+      </button>
+    </>
+  )
+}
+
+function SaveLoadButtons() {
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const onSave = async () => {
+    const s = useOmniStore.getState()
+    const blob = await exportBundle({ rootModelId: s.model.id, models: s.models })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${s.model.name || 'project'}.unigram`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  const onPick = () => fileRef.current?.click()
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      const snap = await importBundle(file)
+      useOmniStore.getState().loadProject(snap)
+    } catch (err) {
+      console.error('Failed to load bundle:', err)
+      alert(`Failed to load bundle: ${(err as Error).message}`)
+    }
+  }
+  return (
+    <>
+      <button onClick={onSave} title="Save project as .unigram">Save</button>
+      <button onClick={onPick} title="Load .unigram bundle">Load</button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".unigram,.zip,application/zip"
+        style={{ display: 'none' }}
+        onChange={onFile}
+      />
+    </>
   )
 }
 
@@ -252,5 +436,114 @@ function MpdDialOverlay({ renderer }: { renderer: SceneRenderer | null }) {
     >
       <MpdDial options={options} activeIndex={activeIndex} onSelect={handleSelect} />
     </div>
+  )
+}
+
+/**
+ * In-place label editor: a `<textarea>` overlay sized + positioned to match
+ * the focused node's screen rect. Mounted only when `editingNodeId` is set
+ * (double-click on a node). Commits on blur or Enter (without Shift);
+ * cancels on Escape.
+ */
+function NodeLabelEditor({
+  renderer,
+  hostRef,
+}: {
+  renderer: SceneRenderer | null
+  hostRef: React.RefObject<HTMLDivElement | null>
+}) {
+  // Subscribe to editing/rev/selection so we re-render when state changes.
+  useSyncExternalStore(
+    (cb) => useOmniStore.subscribe(cb),
+    () => {
+      const s = useOmniStore.getState()
+      return s.rev * 65537 + s.selRev
+    },
+    () => 0,
+  )
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const editingId = useOmniStore.getState().editingNodeId
+  const node = editingId ? useOmniStore.getState().model.nodes.get(editingId) : null
+  const [draft, setDraft] = useState('')
+
+  // Reset draft when target changes.
+  useEffect(() => {
+    if (node) {
+      setDraft(node.label)
+      // Defer focus so the overlay is mounted first.
+      requestAnimationFrame(() => {
+        const el = taRef.current
+        if (el) {
+          el.focus()
+          el.select()
+        }
+      })
+    }
+    // We only want to seed the draft when the editing target changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId])
+
+  if (!renderer || !editingId || !node) return null
+
+  const cam = renderer.getCamera()
+  const vp = renderer.getViewport()
+  const s = cam.freeScale
+  const cx = vp.width / 2 + (cam.panX + (node.x / 100) * SCENE_W) * s
+  const cy = vp.height / 2 + (cam.panY + (node.y / 100) * SCENE_H) * s
+  const w = (node.w / 100) * SCENE_W * s
+  const h = (node.h / 100) * SCENE_H * s
+
+  const commit = () => {
+    const trimmed = draft
+    if (trimmed !== node.label) {
+      useOmniStore.getState().updateNode(editingId, { label: trimmed })
+    }
+    useOmniStore.getState().setEditingNode(null)
+  }
+  const cancel = () => {
+    useOmniStore.getState().setEditingNode(null)
+  }
+
+  // Position is relative to the host div (the renderer canvas parent).
+  const hostRect = hostRef.current?.getBoundingClientRect()
+  const left = (hostRect?.left ?? 0) + cx - w / 2
+  const top = (hostRect?.top ?? 0) + cy - h / 2
+
+  return (
+    <textarea
+      ref={taRef}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          cancel()
+        } else if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          commit()
+        }
+      }}
+      style={{
+        position: 'fixed',
+        left,
+        top,
+        width: w,
+        height: h,
+        margin: 0,
+        padding: 4,
+        boxSizing: 'border-box',
+        border: '2px solid #4aa3ff',
+        borderRadius: 4,
+        background: '#fff',
+        color: '#223046',
+        fontFamily: 'sans-serif',
+        fontSize: Math.max(10, Math.min(28, h * 0.4)),
+        textAlign: 'center',
+        resize: 'none',
+        zIndex: 100,
+        outline: 'none',
+      }}
+    />
   )
 }

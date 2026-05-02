@@ -19,6 +19,7 @@ import {
   type Model,
   type ModelNode,
 } from './types'
+import type { ModelCosmetics } from '../theme/types'
 import {
   applyZoomStep,
   createInitialSnapshot,
@@ -55,6 +56,8 @@ export interface OmniState {
   models: Map<string, Model>
   camera: Camera
   selectedIds: Set<string>
+  /** Edge selection (single-edge inspectors); separate from node selection. */
+  selectedEdgeIds: Set<string>
   /** Bumps any time entity maps change — cheap subscription target. */
   rev: number
   /** Bumps any time selection changes. */
@@ -68,6 +71,8 @@ export interface OmniState {
   focusedNodeId: string | null
   /** Stack of parent frames for `rmmZoomOut`. */
   zoomStack: ZoomStackFrame[]
+  /** Node whose label is being edited inline (null when not editing). */
+  editingNodeId: string | null
 }
 
 interface Actions {
@@ -80,11 +85,18 @@ interface Actions {
   selectMany(ids: Iterable<string>): void
   clearSelection(): void
 
+  /** Select a single edge (clears node selection). Pass null to clear. */
+  selectEdge(id: string | null): void
+
+  /** Begin / end inline label editing for a node (NOT undoable; UI state). */
+  setEditingNode(id: string | null): void
+
   // Entity authoring (each is one undoable transaction).
   addNode(partial: Partial<ModelNode> & Pick<ModelNode, 'x' | 'y'>): string
   removeNodes(ids: Iterable<string>): void
   moveNodes(updates: Iterable<{ id: string; x: number; y: number }>): void
   updateNode(id: string, patch: Partial<ModelNode>): void
+  updateEdge(id: string, patch: Partial<Connection>): void
 
   addEdge(from: string, to: string, partial?: Partial<Connection>): string | null
   removeEdges(ids: Iterable<string>): void
@@ -104,8 +116,12 @@ interface Actions {
   redo(): void
   /** Replace the entire model (e.g. project load, bench spawn). Clears undo. */
   loadModel(model: Model): void
+  /** Replace the entire project (registry + active model). Clears undo. */
+  loadProject(snapshot: { rootModelId: string; models: Map<string, Model> }): void
   /** Update diagram-level grid settings (NOT undoable; UI-state). */
   setGrid(patch: Partial<GridSettings>): void
+  /** Update diagram-level cosmetics (theme/background/particles). NOT undoable. */
+  setCosmetics(patch: Partial<ModelCosmetics>): void
   /** Register a model in the project registry without activating it. Returns the id. */
   registerModel(model: Model): string
   /** Replace the active model from the registry. Does NOT clear undo (use `loadModel` for project loads). */
@@ -142,6 +158,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   models: new Map(),
   camera: { panX: 0, panY: 0, freeScale: 1 },
   selectedIds: new Set(),
+  selectedEdgeIds: new Set(),
   rev: 0,
   selRev: 0,
   zoomRev: 0,
@@ -149,6 +166,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   zoom: createInitialSnapshot(),
   focusedNodeId: null,
   zoomStack: [],
+  editingNodeId: null,
 
   setCamera(c) {
     set((s) => ({ camera: { ...s.camera, ...c } }))
@@ -164,14 +182,36 @@ export const useOmniStore = create<Store>((set, get) => ({
         if (next.has(id)) next.delete(id)
         else next.add(id)
       }
-      return { selectedIds: next, selRev: s.selRev + 1 }
+      return { selectedIds: next, selectedEdgeIds: new Set(), selRev: s.selRev + 1 }
     })
   },
   selectMany(ids) {
-    set((s) => ({ selectedIds: new Set(ids), selRev: s.selRev + 1 }))
+    set((s) => ({ selectedIds: new Set(ids), selectedEdgeIds: new Set(), selRev: s.selRev + 1 }))
   },
   clearSelection() {
-    set((s) => (s.selectedIds.size === 0 ? s : { selectedIds: new Set(), selRev: s.selRev + 1 }))
+    set((s) => {
+      if (s.selectedIds.size === 0 && s.selectedEdgeIds.size === 0) return s
+      return { selectedIds: new Set(), selectedEdgeIds: new Set(), selRev: s.selRev + 1 }
+    })
+  },
+
+  selectEdge(id) {
+    set((s) => {
+      const next = id == null ? new Set<string>() : new Set<string>([id])
+      const sameAsBefore =
+        next.size === s.selectedEdgeIds.size &&
+        (next.size === 0 || s.selectedEdgeIds.has([...next][0]))
+      if (sameAsBefore && s.selectedIds.size === 0) return s
+      return {
+        selectedEdgeIds: next,
+        selectedIds: new Set(),
+        selRev: s.selRev + 1,
+      }
+    })
+  },
+
+  setEditingNode(id) {
+    set((s) => (s.editingNodeId === id ? s : { editingNodeId: id, selRev: s.selRev + 1 }))
   },
 
   addNode(partial) {
@@ -237,6 +277,13 @@ export const useOmniStore = create<Store>((set, get) => ({
     get().applyTransaction([{ kind: 'node', op: 'update', id, before, after }])
   },
 
+  updateEdge(id, patch) {
+    const before = get().model.edges.get(id)
+    if (!before) return
+    const after: Connection = { ...before, ...patch, id, from: before.from, to: before.to }
+    get().applyTransaction([{ kind: 'edge', op: 'update', id, before, after }])
+  },
+
   addEdge(from, to, partial) {
     if (from === to) return null
     const { model } = get()
@@ -250,11 +297,19 @@ export const useOmniStore = create<Store>((set, get) => ({
   removeEdges(ids) {
     const { model } = get()
     const tx: Patch[] = []
-    for (const id of ids) {
+    const idSet = new Set(ids)
+    for (const id of idSet) {
       const edge = model.edges.get(id)
       if (edge) tx.push({ kind: 'edge', op: 'remove', edge })
     }
     get().applyTransaction(tx)
+    // Drop any removed edges from the edge selection.
+    set((s) => {
+      let changed = false
+      const next = new Set(s.selectedEdgeIds)
+      for (const id of idSet) if (next.delete(id)) changed = true
+      return changed ? { selectedEdgeIds: next, selRev: s.selRev + 1 } : s
+    })
   },
 
   applyTransaction(patches) {
@@ -319,6 +374,28 @@ export const useOmniStore = create<Store>((set, get) => ({
         model,
         models,
         selectedIds: new Set(),
+        selectedEdgeIds: new Set(),
+        rev: s.rev + 1,
+        selRev: s.selRev + 1,
+        zoomRev: s.zoomRev + 1,
+        zoom: createInitialSnapshot(),
+        focusedNodeId: null,
+        zoomStack: [],
+        camera: { panX: 0, panY: 0, freeScale: 1 },
+      }
+    })
+  },
+
+  loadProject(snapshot) {
+    set((s) => {
+      const root = snapshot.models.get(snapshot.rootModelId)
+      if (!root) return s
+      s.undoStack.clear()
+      return {
+        model: root,
+        models: new Map(snapshot.models),
+        selectedIds: new Set(),
+        selectedEdgeIds: new Set(),
         rev: s.rev + 1,
         selRev: s.selRev + 1,
         zoomRev: s.zoomRev + 1,
@@ -336,6 +413,17 @@ export const useOmniStore = create<Store>((set, get) => ({
       const grid: GridSettings = { ...cur, ...patch }
       if (grid.sizePercent <= 0) grid.sizePercent = DEFAULT_GRID.sizePercent
       const model: Model = { ...s.model, grid }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
+    })
+  },
+
+  setCosmetics(patch) {
+    set((s) => {
+      const cur = s.model.cosmetics ?? {}
+      const cosmetics: ModelCosmetics = { ...cur, ...patch }
+      const model: Model = { ...s.model, cosmetics }
       const models = new Map(s.models)
       models.set(model.id, model)
       return { model, models, rev: s.rev + 1 }

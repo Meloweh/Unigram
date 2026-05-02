@@ -1,0 +1,287 @@
+/**
+ * FlowRuntime — schedules effect graphs against diagram nodes and produces
+ * per-frame `NodeOverride`s. The runtime owns *no* DOM and mutates *no* store
+ * state — its only outputs are the override map (read by the renderer) and
+ * an "any-active" flag (read by the renderer to know whether to mark dirty).
+ *
+ * Lifecycle:
+ *   const runId = runtime.start(targetNodeId, effect, now)
+ *   runtime.tick(now)            // each frame; updates overrides
+ *   runtime.cancel(runId)        // O(1); drops every task in the run
+ *   runtime.isActive(runId)      // false once all tasks finished
+ *
+ * Scheduling: tasks are released in topological order. A task with no inbound
+ * edges starts at run-start; otherwise it starts when *all* upstream tasks
+ * have finished. Cycles are rejected at `start()` time (the run is dropped
+ * with an empty task set).
+ */
+
+import type {
+  EffectNode,
+  FlowEffect,
+  NodeOverride,
+} from './types'
+import { mergeOverride } from './types'
+
+interface Task {
+  id: string
+  node: EffectNode
+  /** ms after run start when this task should begin. */
+  startAt: number
+  /** Total duration in ms (0 for instant or pure-source tasks). */
+  durationMs: number
+  /** ids of tasks this one waits on (nodes with edges into us). */
+  dependsOn: string[]
+  /** Set once `startAt` is computed (after dependsOn complete). */
+  scheduled: boolean
+  /** ms when the task completed (− means not yet). */
+  endedAt: number
+}
+
+interface Run {
+  id: string
+  targetNodeId: string
+  startedAt: number
+  tasks: Map<string, Task>
+  /** Tasks currently producing overrides. */
+  active: Set<string>
+  /** Reverse adjacency: id → ids of tasks that depend on this one. */
+  dependents: Map<string, string[]>
+  /** When true, the run rewinds to start once all tasks complete. */
+  loop: boolean
+}
+
+let RUN_COUNTER = 0
+
+export class FlowRuntime {
+  private runs = new Map<string, Run>()
+  /** Aggregated per-target-node override for *this* tick. */
+  private overrides = new Map<string, NodeOverride>()
+
+  /** Returns the run id, or null if the graph was empty / cyclic. */
+  start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
+    const { nodes, edges } = effect.graph
+    if (nodes.length === 0) return null
+    const tasks = new Map<string, Task>()
+    const incoming = new Map<string, string[]>()
+    const dependents = new Map<string, string[]>()
+    for (const n of nodes) {
+      incoming.set(n.id, [])
+      dependents.set(n.id, [])
+    }
+    for (const e of edges) {
+      incoming.get(e.to)?.push(e.from)
+      dependents.get(e.from)?.push(e.to)
+    }
+    // Cycle detection via Kahn's algorithm pass.
+    const indeg = new Map<string, number>()
+    for (const [id, inc] of incoming) indeg.set(id, inc.length)
+    const queue: string[] = []
+    for (const [id, d] of indeg) if (d === 0) queue.push(id)
+    let visited = 0
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      visited++
+      for (const dep of dependents.get(id) ?? []) {
+        const left = (indeg.get(dep) ?? 0) - 1
+        indeg.set(dep, left)
+        if (left === 0) queue.push(dep)
+      }
+    }
+    if (visited !== nodes.length) return null // cycle
+    for (const n of nodes) {
+      tasks.set(n.id, {
+        id: n.id,
+        node: n,
+        startAt: 0,
+        durationMs: durationOf(n),
+        dependsOn: incoming.get(n.id) ?? [],
+        scheduled: false,
+        endedAt: -1,
+      })
+    }
+    const runId = `run_${++RUN_COUNTER}`
+    this.runs.set(runId, {
+      id: runId,
+      targetNodeId,
+      startedAt: now,
+      tasks,
+      active: new Set(),
+      dependents,
+      loop: effect.alwaysPlay === true,
+    })
+    return runId
+  }
+
+  /** Stop a run immediately. Overrides for its target are cleared next tick. */
+  cancel(runId: string): void {
+    this.runs.delete(runId)
+  }
+
+  isActive(runId: string): boolean {
+    return this.runs.has(runId)
+  }
+
+  /** True if any run has unfinished tasks. */
+  get hasActiveRuns(): boolean {
+    return this.runs.size > 0
+  }
+
+  /**
+   * Recompute the override map for the current frame. Call once per frame
+   * BEFORE the renderer reads `getOverride()`.
+   */
+  tick(now: number): void {
+    this.overrides.clear()
+    for (const [id, run] of [...this.runs]) {
+      // A looped run may complete and rewind multiple times within a single
+      // tick (e.g. unfocused tab catching up). Cap the rewinds to keep this
+      // bounded; non-looped runs simply break after one pass.
+      for (let i = 0; i < 8; i++) {
+        this.tickRun(run, now)
+        let anyAlive = false
+        for (const t of run.tasks.values()) {
+          if (t.endedAt < 0) {
+            anyAlive = true
+            break
+          }
+        }
+        if (anyAlive) break
+        if (!run.loop) {
+          this.runs.delete(id)
+          break
+        }
+        // Rewind: bump start time by total cycle length and clear task state.
+        let cycle = 0
+        for (const t of run.tasks.values()) {
+          const end = t.startAt + t.durationMs
+          if (end > cycle) cycle = end
+        }
+        if (cycle <= 0) cycle = 16 // safety: avoid tight loop on zero-length
+        run.startedAt += cycle
+        for (const t of run.tasks.values()) {
+          t.scheduled = false
+          t.startAt = 0
+          t.endedAt = -1
+        }
+        // If we're still past the new cycle end, loop again to catch up.
+        if (now - run.startedAt < cycle) {
+          // Re-run contribution for the rewound cycle.
+          this.tickRun(run, now)
+          break
+        }
+      }
+    }
+  }
+
+  /** Get aggregated override for a target node, or undefined if none. */
+  getOverride(targetNodeId: string): NodeOverride | undefined {
+    return this.overrides.get(targetNodeId)
+  }
+
+  // ---- internals --------------------------------------------------------
+
+  private tickRun(run: Run, now: number): void {
+    const elapsed = now - run.startedAt
+    // 1. Schedule pass — propagate `startAt` through the topology. A task is
+    //    scheduled once *all* its dependencies have a known `startAt`. Repeat
+    //    until no further progress (linear in graph size for a DAG).
+    let progressed = true
+    while (progressed) {
+      progressed = false
+      for (const t of run.tasks.values()) {
+        if (t.scheduled) continue
+        let allReady = true
+        let latestEnd = 0
+        for (const depId of t.dependsOn) {
+          const dep = run.tasks.get(depId)
+          if (!dep || !dep.scheduled) {
+            allReady = false
+            break
+          }
+          const depEnd = dep.startAt + dep.durationMs
+          if (depEnd > latestEnd) latestEnd = depEnd
+        }
+        if (allReady) {
+          t.startAt = latestEnd
+          t.scheduled = true
+          progressed = true
+        }
+      }
+    }
+    // 2. Contribution pass — single sweep, each task contributes at most once.
+    //    After a task's lifetime, its visual contribution stops (no carry-over
+    //    so cancellation is symmetric: drop run → all overrides vanish).
+    let merged: NodeOverride | null = null
+    for (const t of run.tasks.values()) {
+      if (!t.scheduled) continue
+      const taskEnd = t.startAt + t.durationMs
+      if (elapsed >= taskEnd) {
+        if (t.endedAt < 0) t.endedAt = taskEnd
+        continue
+      }
+      if (elapsed < t.startAt) continue
+      const localElapsed = elapsed - t.startAt
+      const ratio = t.durationMs > 0 ? localElapsed / t.durationMs : 1
+      const contrib = contribution(t.node, ratio, localElapsed)
+      if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
+    }
+    if (merged) {
+      const cur = this.overrides.get(run.targetNodeId)
+      this.overrides.set(
+        run.targetNodeId,
+        cur ? mergeOverride(cur, merged) : merged,
+      )
+    }
+  }
+}
+
+function durationOf(n: EffectNode): number {
+  if (n.kind === 'wait') return Math.max(0, n.params.ms ?? 0)
+  return Math.max(0, n.params.ms ?? 0)
+}
+
+/**
+ * Per-effect-kind contribution at the given ratio (0–1) of the task lifetime.
+ * Returns null when the kind has no visual contribution (e.g. `wait`).
+ */
+function contribution(
+  n: EffectNode,
+  ratio: number,
+  localElapsed: number,
+): NodeOverride | null {
+  switch (n.kind) {
+    case 'wait':
+      return null
+    case 'move': {
+      const dx = (n.params.dx ?? 0) * ratio
+      const dy = (n.params.dy ?? 0) * ratio
+      return { dx, dy }
+    }
+    case 'scale': {
+      const target = n.params.mul ?? 1
+      const scaleMul = 1 + (target - 1) * ratio
+      return { scaleMul }
+    }
+    case 'color': {
+      const tint = (n.params.tint ?? 0xffffff) | 0
+      // Lerp from white toward tint.
+      const r = lerp(255, (tint >> 16) & 0xff, ratio)
+      const g = lerp(255, (tint >> 8) & 0xff, ratio)
+      const b = lerp(255, tint & 0xff, ratio)
+      return { tint: (r << 16) | (g << 8) | b }
+    }
+    case 'jitter': {
+      const amp = n.params.amp ?? 0
+      // 60Hz wobble; deterministic so renderer can re-compute on demand.
+      const t = localElapsed / 1000
+      const dx = Math.sin(t * 18.85) * amp
+      const dy = Math.cos(t * 22.7) * amp
+      return { dx, dy }
+    }
+  }
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return Math.round(a + (b - a) * t)
+}
