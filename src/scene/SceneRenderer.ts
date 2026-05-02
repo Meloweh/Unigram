@@ -8,7 +8,7 @@
  * React). `tick()` is registered with the Pixi ticker.
  */
 
-import { Application, Container, Graphics } from 'pixi.js'
+import { Application, Container, Graphics, RenderTexture, Sprite, Text } from 'pixi.js'
 import {
   LOD_FULL,
   LOD_SIMPLE,
@@ -25,11 +25,13 @@ import { useOmniStore } from '../model/store'
 import { EdgePool } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
 import { drawNodeShape, pointInShape } from './shapes'
+import { shapeEdgeIntersect } from './shapeIntersect'
 import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZoom'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
   edges: ReadonlyMap<string, Connection>
+  grid?: { enabled: boolean; snap: boolean; sizePercent: number }
 }
 
 export interface SceneRendererStats {
@@ -47,6 +49,8 @@ export class SceneRenderer {
   private edgesLayer!: Container
   private nodesLayer!: Container
   private overlayLayer!: Container
+  /** Grid lines, drawn beneath edges in world coords. */
+  private gridLayer!: Graphics
   /** Selection rings, drawn over `nodesLayer` and rebuilt only on dirty. */
   private selectionLayer!: Container
   /** Box-select rectangle (single Graphics). */
@@ -55,16 +59,39 @@ export class SceneRenderer {
   private edgePool!: EdgePool
   private quadtree = new Quadtree()
   private model: ModelView = { nodes: new Map(), edges: new Map() }
+  /** Raw user camera (free pan + free zoom). RMM scale composes on top. */
   private camera: CameraTransform = { panX: 0, panY: 0, freeScale: 1 }
+  /** Effective scale = camera.freeScale * rmmSnap.cameraScale. Cached for reuse. */
+  private effectiveScale = 1
   private viewport: ViewportSize = { width: 0, height: 0 }
   private selectedIds: ReadonlySet<string> = new Set()
   private selectionGfxPool: Graphics[] = []
   private boxSelectAabb: SceneAabb | null = null
-  /** RMM inflating-frame overlay (one Graphics + a child-preview container). */
+  /** RMM inflating-frame container in SCREEN coords (not world). */
+  private rmmStage!: Container
   private rmmFrame!: Graphics
-  private rmmPreview!: Container
+  /** Holds the child-model preview, scaled with the frame. */
+  private rmmContent!: Container
+  /** Pooled label Texts for the child preview. */
+  private rmmContentLabels: Text[] = []
   private rmmSnap: HybridZoomSnapshot = createInitialSnapshot()
   private rmmFocusedId: string | null = null
+  /** Connection-draft ghost line (screen coords). */
+  private connectGhost!: Graphics
+  private connectGhostSource: string | null = null
+  private connectGhostCursor: { x: number; y: number } | null = null
+
+  /** MPD curtain: sprite painted with a snapshot of the previous scene. */
+  private curtainSprite: Sprite | null = null
+  private curtainMask: Graphics | null = null
+  /** World mask, in screen coords. Clips new scene to swept band. */
+  private curtainWorldMask: Graphics | null = null
+  /** Brush-edge highlight stripe drawn on top of stage. */
+  private curtainBrush: Graphics | null = null
+  private curtainStartMs = 0
+  private curtainDurationMs = 0
+  private curtainDirection: 'left' | 'right' = 'right'
+  private curtainOnDone: (() => void) | null = null
 
   // Reusable scratch buffers — keep hot path GC-free.
   private visibleIds: string[] = []
@@ -112,6 +139,9 @@ export class SceneRenderer {
     this.world.eventMode = 'none'
     this.edgesLayer = new Container()
     this.edgesLayer.eventMode = 'none'
+    this.gridLayer = new Graphics()
+    this.gridLayer.eventMode = 'none'
+    this.gridLayer.visible = false
     this.nodesLayer = new Container()
     this.nodesLayer.eventMode = 'none'
     this.selectionLayer = new Container()
@@ -120,20 +150,37 @@ export class SceneRenderer {
     this.overlayLayer.eventMode = 'none'
     this.boxSelectGfx = new Graphics()
     this.overlayLayer.addChild(this.boxSelectGfx)
-    this.rmmPreview = new Container()
-    this.rmmPreview.eventMode = 'none'
-    this.rmmPreview.visible = false
-    this.rmmFrame = new Graphics()
-    this.rmmFrame.eventMode = 'none'
-    this.rmmFrame.visible = false
-    this.overlayLayer.addChild(this.rmmFrame)
-    this.overlayLayer.addChild(this.rmmPreview)
+    this.world.addChild(this.gridLayer)
     this.world.addChild(this.edgesLayer)
     this.world.addChild(this.nodesLayer)
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
     app.stage.addChild(this.world)
+    // RMM stage + connection ghost live in screen coords ABOVE the world.
+    this.rmmStage = new Container()
+    this.rmmStage.eventMode = 'none'
+    this.rmmStage.visible = false
+    this.rmmFrame = new Graphics()
+    this.rmmFrame.eventMode = 'none'
+    this.rmmContent = new Container()
+    this.rmmContent.eventMode = 'none'
+    this.rmmStage.addChild(this.rmmFrame)
+    this.rmmStage.addChild(this.rmmContent)
+    app.stage.addChild(this.rmmStage)
+    this.connectGhost = new Graphics()
+    this.connectGhost.eventMode = 'none'
+    this.connectGhost.visible = false
+    app.stage.addChild(this.connectGhost)
     this.nodePool = new NodePool(this.nodesLayer)
+    this.nodePool.onNodeFit = (id, w, h) => {
+      const n = this.model.nodes.get(id) as ModelNode | undefined
+      if (!n) return
+      if (n.w >= w && n.h >= h) return
+      ;(n as { w: number; h: number }).w = Math.max(n.w, w)
+      ;(n as { w: number; h: number }).h = Math.max(n.h, h)
+      this.quadtree.update(id, nodeAabb(n))
+      this.dirty = true
+    }
     this.edgePool = new EdgePool(this.edgesLayer)
     this.viewport = { width: app.screen.width, height: app.screen.height }
     this.applyCameraTransform()
@@ -148,6 +195,7 @@ export class SceneRenderer {
     } catch {
       /* ticker may not exist if init failed */
     }
+    this.cancelMpdCurtain()
     this.nodePool?.destroy()
     this.edgePool?.destroy()
     let canvas: HTMLCanvasElement | null = null
@@ -223,6 +271,7 @@ export class SceneRenderer {
   setRmm(snap: HybridZoomSnapshot, focusedNodeId: string | null): void {
     this.rmmSnap = snap
     this.rmmFocusedId = focusedNodeId
+    this.applyCameraTransform()
     this.dirty = true
   }
 
@@ -231,14 +280,28 @@ export class SceneRenderer {
     return this.quadtree.query(aabb, out)
   }
 
-  /** Hot path: pan/zoom directly. Does NOT touch the store. */
+  /** Hot path: pan/zoom directly. Does NOT touch the store. Stores RAW camera. */
   setCamera(c: CameraTransform): void {
     this.camera = c
     this.applyCameraTransform()
     this.dirty = true
   }
 
+  /**
+   * Returns the EFFECTIVE composed camera (raw freeScale × RMM cameraScale).
+   * Use for scene↔client coordinate math (e.g. PointerController) so picking
+   * stays correct mid-RMM-zoom.
+   */
   getCamera(): CameraTransform {
+    return {
+      panX: this.camera.panX,
+      panY: this.camera.panY,
+      freeScale: this.effectiveScale,
+    }
+  }
+
+  /** The raw user camera, before RMM scale composition. Used by wheel handler. */
+  getRawCamera(): CameraTransform {
     return this.camera
   }
 
@@ -292,6 +355,18 @@ export class SceneRenderer {
       this.cullAndDraw()
       this.dirty = false
     }
+    // MPD curtain animates each frame; runs only when active.
+    if (this.curtainDurationMs > 0) this.tickMpdCurtain()
+    // Selection breathing animation: alpha pulse on the selectionLayer.
+    // (Scaling the whole layer would drift rings off origin; per-ring scale
+    // would need per-frame draws — alpha alone is free.)
+    if (this.selectedIds.size > 0) {
+      const phase = (performance.now() % 1400) / 1400
+      const pulse = 0.5 - 0.5 * Math.cos(phase * Math.PI * 2)
+      this.selectionLayer.alpha = 0.65 + 0.35 * pulse
+    } else if (this.selectionLayer.alpha !== 1) {
+      this.selectionLayer.alpha = 1
+    }
     this.fpsAccumFrames++
     this.fpsAccumTimeMs += ticker.deltaMS
     if (this.fpsAccumTimeMs >= 500) {
@@ -303,11 +378,13 @@ export class SceneRenderer {
 
   private applyCameraTransform(): void {
     if (!this.app) return
+    // Effective scale composes user free-zoom with RMM cameraScale.
+    this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale
     // Scene coords are signed percent around (0,0) = viewport center.
     // World children draw at scene-pixel positions (scene% / 100 * SCENE_W).
-    this.world.scale.set(this.camera.freeScale)
-    this.world.x = this.viewport.width / 2 + this.camera.panX * this.camera.freeScale
-    this.world.y = this.viewport.height / 2 + this.camera.panY * this.camera.freeScale
+    this.world.scale.set(this.effectiveScale)
+    this.world.x = this.viewport.width / 2 + this.camera.panX * this.effectiveScale
+    this.world.y = this.viewport.height / 2 + this.camera.panY * this.effectiveScale
   }
 
   /**
@@ -320,8 +397,9 @@ export class SceneRenderer {
   syncIncremental(
     nodes: Map<string, ModelNode>,
     edges: Map<string, Connection>,
+    grid?: ModelView['grid'],
   ): void {
-    this.model = { nodes, edges }
+    this.model = { nodes, edges, grid }
     // Add or update entries for nodes currently in the model.
     for (const n of nodes.values()) {
       // quadtree.update is no-op if AABB unchanged; otherwise re-inserts.
@@ -410,7 +488,9 @@ export class SceneRenderer {
 
   private drawSelectionAndOverlays(): void {
     // Reuse a small pool of selection ring Graphics. One per visible+selected
-    // node. Hidden when not in use.
+    // node. Hidden when not in use. Animation (alpha pulse + outer ring scale)
+    // is applied in `onTick` directly on the shared selectionLayer to avoid
+    // re-issuing draw commands per frame.
     let used = 0
     for (const id of this.selectedIds) {
       if (!this.prevVisibleNodes.has(id)) continue
@@ -425,9 +505,7 @@ export class SceneRenderer {
       }
       g.visible = true
       g.clear()
-      // Selection ring: scene-percent rect 1.5pp larger than node AABB,
-      // 0.4pp dashed-equivalent stroke (solid for stage 3).
-      const pad = 1
+      const pad = 1.2
       const wPx = ((node.w + pad * 2) / 100) * SCENE_W
       const hPx = ((node.h + pad * 2) / 100) * SCENE_H
       const xPx = (node.x / 100) * SCENE_W
@@ -435,11 +513,14 @@ export class SceneRenderer {
       g.x = xPx
       g.y = yPx
       const r = Math.min(wPx, hPx) * 0.18
+      // Outer halo (drawn first, faint).
+      g.roundRect(-wPx / 2 - 6, -hPx / 2 - 6, wPx + 12, hPx + 12, r + 6)
+      g.stroke({ color: 0x4aa3ff, width: 2, alpha: 0.35, alignment: 0.5 })
+      // Inner crisp ring.
       g.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, r)
       g.stroke({ color: 0x4aa3ff, width: 3, alignment: 0.5 })
       used++
     }
-    // Hide unused rings.
     for (let i = used; i < this.selectionGfxPool.length; i++) {
       this.selectionGfxPool[i].visible = false
     }
@@ -456,120 +537,344 @@ export class SceneRenderer {
       this.boxSelectGfx.stroke({ color: 0x4aa3ff, width: 2, alignment: 0.5 })
     }
     this.drawRmm()
+    this.drawConnectGhost()
+    this.drawGrid()
+  }
+
+  private drawGrid(): void {
+    const grid = this.model.grid
+    if (!grid || !grid.enabled) {
+      this.gridLayer.visible = false
+      return
+    }
+    const stepPct = Math.max(0.5, grid.sizePercent)
+    const stepX = (stepPct / 100) * SCENE_W
+    const stepY = (stepPct / 100) * SCENE_H
+    // Visible scene rect → which grid lines must be drawn.
+    const aabb = visibleSceneAabb(this.getCamera(), this.viewport)
+    const minXpx = (aabb.minX / 100) * SCENE_W
+    const maxXpx = (aabb.maxX / 100) * SCENE_W
+    const minYpx = (aabb.minY / 100) * SCENE_H
+    const maxYpx = (aabb.maxY / 100) * SCENE_H
+    const startX = Math.floor(minXpx / stepX) * stepX
+    const startY = Math.floor(minYpx / stepY) * stepY
+    const g = this.gridLayer
+    g.visible = true
+    g.clear()
+    for (let x = startX; x <= maxXpx; x += stepX) {
+      g.moveTo(x, minYpx).lineTo(x, maxYpx)
+    }
+    for (let y = startY; y <= maxYpx; y += stepY) {
+      g.moveTo(minXpx, y).lineTo(maxXpx, y)
+    }
+    g.stroke({
+      color: 0x4aa3ff,
+      width: 1 / Math.max(this.effectiveScale, 0.01),
+      alpha: 0.18,
+    })
   }
 
   /**
-   * Draw the RMM inflating frame around the focused node and a static
-   * simplified preview of its child model inside. Allocation-light: the
-   * frame is one Graphics, the preview is a Container of one Graphics per
-   * child node (child models are typically tens of nodes — cheap to redraw).
+   * Set or clear the connection-draft ghost line.
+   * Source is identified by node id so the renderer can clip the line root
+   * to the shape boundary; cursor is in CSS-pixel screen coords.
+   */
+  setConnectGhost(
+    sourceId: string | null,
+    cursor: { x: number; y: number } | null,
+  ): void {
+    this.connectGhostSource = sourceId
+    this.connectGhostCursor = cursor
+    this.dirty = true
+  }
+
+  private drawConnectGhost(): void {
+    const srcId = this.connectGhostSource
+    const cursor = this.connectGhostCursor
+    const src = srcId ? this.model.nodes.get(srcId) : null
+    if (!src || !cursor) {
+      this.connectGhost.visible = false
+      return
+    }
+    const cam = this.camera
+    const s = this.effectiveScale
+    const vp = this.viewport
+    const cx = vp.width / 2 + (cam.panX + (src.x / 100) * SCENE_W) * s
+    const cy = vp.height / 2 + (cam.panY + (src.y / 100) * SCENE_H) * s
+    const dx = cursor.x - cx
+    const dy = cursor.y - cy
+    if (Math.hypot(dx, dy) < 1) {
+      this.connectGhost.visible = false
+      return
+    }
+    // Clip the start to the source-node boundary in screen pixels so the
+    // line never overdraws the membrane.
+    const hw = ((src.w / 100) * SCENE_W * s) / 2
+    const hh = ((src.h / 100) * SCENE_H * s) / 2
+    const edge = shapeEdgeIntersect(src.shape, hw, hh, dx, dy)
+    const ax = cx + edge.x
+    const ay = cy + edge.y
+    const g = this.connectGhost
+    g.visible = true
+    g.clear()
+    g.moveTo(ax, ay).lineTo(cursor.x, cursor.y)
+    g.stroke({ color: 0x4aa3ff, width: 2, alpha: 0.85 })
+    g.circle(cursor.x, cursor.y, 5)
+    g.fill({ color: 0x4aa3ff, alpha: 0.3 })
+    g.stroke({ color: 0x4aa3ff, width: 1.5, alpha: 0.9 })
+  }
+
+  /**
+   * Draw the RMM inflating "canvas": a frame anchored in SCREEN coords that
+   * starts at the focused node's screen position/size and grows to fill the
+   * viewport. Inside, the child model is rendered at the same scale it will
+   * appear at post-handoff, so the transition is visually continuous.
    */
   private drawRmm(): void {
     const focused = this.rmmFocusedId ? this.model.nodes.get(this.rmmFocusedId) : null
     const t = this.rmmSnap.nodeInflation
     if (!focused || t <= 0) {
-      this.rmmFrame.visible = false
-      this.rmmPreview.visible = false
+      this.rmmStage.visible = false
       return
     }
-    // Base node bounds in scene pixels.
-    const baseW = (focused.w / 100) * SCENE_W
-    const baseH = (focused.h / 100) * SCENE_H
-    // Target bounds: cover the visible scene rect at full inflation.
-    const visAabb = visibleSceneAabb(this.camera, this.viewport, 0)
-    const targetW = ((visAabb.maxX - visAabb.minX) / 100) * SCENE_W
-    const targetH = ((visAabb.maxY - visAabb.minY) / 100) * SCENE_H
-    const w = baseW + (targetW - baseW) * t
-    const h = baseH + (targetH - baseH) * t
-    const xPx = (focused.x / 100) * SCENE_W
-    const yPx = (focused.y / 100) * SCENE_H
-
-    // Frame.
+    const vp = this.viewport
+    // Focused node's current screen rect (using composed effective scale).
+    const s = this.effectiveScale
+    const focusScrX = vp.width / 2 + (this.camera.panX + (focused.x / 100) * SCENE_W) * s
+    const focusScrY = vp.height / 2 + (this.camera.panY + (focused.y / 100) * SCENE_H) * s
+    const focusScrW = (focused.w / 100) * SCENE_W * s
+    const focusScrH = (focused.h / 100) * SCENE_H * s
+    // Container origin lerps focus → screen-center.
+    const cx = focusScrX + (vp.width / 2 - focusScrX) * t
+    const cy = focusScrY + (vp.height / 2 - focusScrY) * t
+    // Uniform scale lerps focus-relative-size → 1 (post-handoff render scale).
+    const startScale = Math.max(focusScrW / vp.width, focusScrH / vp.height)
+    const scale = startScale + (1 - startScale) * t
+    this.rmmStage.visible = true
+    this.rmmStage.x = cx
+    this.rmmStage.y = cy
+    this.rmmStage.scale.set(scale)
+    // Frame: full viewport rect at scale 1; the container scale shrinks it.
     const g = this.rmmFrame
-    g.visible = true
-    g.x = xPx
-    g.y = yPx
     g.clear()
-    const r = Math.min(w, h) * 0.06
-    g.roundRect(-w / 2, -h / 2, w, h, r)
-    g.fill({ color: 0xffffff, alpha: 0.96 })
-    g.stroke({ color: 0x4aa3ff, width: 4, alignment: 0.5 })
-
-    // Child-model preview: load lazily from the store registry.
+    const r = Math.min(vp.width, vp.height) * 0.04
+    g.roundRect(-vp.width / 2, -vp.height / 2, vp.width, vp.height, r)
+    g.fill({ color: 0xffffff, alpha: 0.98 })
+    g.stroke({ color: 0x4aa3ff, width: 3 / Math.max(scale, 0.01), alignment: 0.5 })
+    // Child preview: drawn at post-handoff scene-pixel positions so that at
+    // t=1 it visually equals what the actual nodes will look like.
     const childId = focused.childModelId
     const child = childId ? useOmniStore.getState().models.get(childId) : undefined
-    this.rmmPreview.visible = true
-    this.rmmPreview.x = xPx
-    this.rmmPreview.y = yPx
-    this.drawChildPreview(child, w, h, t)
+    this.drawChildPreview(child)
   }
 
-  /** Render a simplified, static preview of `child` clipped into a w×h box. */
-  private drawChildPreview(child: Model | undefined, w: number, h: number, alpha: number): void {
-    // Reuse one pooled Graphics; clear and redraw each frame. Child models
-    // are intentionally small (≲ a few dozen nodes), so cost is negligible.
-    const c = this.rmmPreview
-    while (c.children.length > 1) c.removeChildAt(c.children.length - 1).destroy()
+  private drawChildPreview(child: Model | undefined): void {
+    const c = this.rmmContent
     let g = c.children[0] as Graphics | undefined
     if (!g) {
       g = new Graphics()
       g.eventMode = 'none'
-      c.addChild(g)
+      c.addChildAt(g, 0)
     }
     g.clear()
     if (!child || child.nodes.size === 0) {
-      // No child available — draw a label-style placeholder.
-      g.rect(-w / 2 + 8, -h / 2 + 8, 80, 18)
-      g.fill({ color: 0xe8eef7, alpha: alpha })
+      this.releaseAllPreviewLabels()
       return
     }
-    // Compute child bounds in scene-percent so we can scale into w×h.
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const n of child.nodes.values()) {
-      minX = Math.min(minX, n.x - n.w / 2)
-      minY = Math.min(minY, n.y - n.h / 2)
-      maxX = Math.max(maxX, n.x + n.w / 2)
-      maxY = Math.max(maxY, n.y + n.h / 2)
-    }
-    const cw = Math.max(1, maxX - minX)
-    const ch = Math.max(1, maxY - minY)
-    const pad = 0.85
-    const sx = (w * pad) / ((cw / 100) * SCENE_W)
-    const sy = (h * pad) / ((ch / 100) * SCENE_H)
-    const s = Math.min(sx, sy)
-    const cx = (minX + maxX) / 2
-    const cy = (minY + maxY) / 2
-    // Edges (thin grey lines).
+    // Edges drawn first.
     for (const e of child.edges.values()) {
       const a = child.nodes.get(e.from)
       const b = child.nodes.get(e.to)
       if (!a || !b) continue
-      const ax = ((a.x - cx) / 100) * SCENE_W * s
-      const ay = ((a.y - cy) / 100) * SCENE_H * s
-      const bx = ((b.x - cx) / 100) * SCENE_W * s
-      const by = ((b.y - cy) / 100) * SCENE_H * s
+      const ax = (a.x / 100) * SCENE_W
+      const ay = (a.y / 100) * SCENE_H
+      const bx = (b.x / 100) * SCENE_W
+      const by = (b.y / 100) * SCENE_H
       g.moveTo(ax, ay).lineTo(bx, by)
     }
-    g.stroke({ color: 0x7a8aa0, width: 1.2, alpha: alpha * 0.7 })
-    // Nodes.
+    g.stroke({ color: 0x7a8aa0, width: 1.5, alpha: 0.7 })
+    // Nodes (shape only here; labels are pooled Text below).
     for (const n of child.nodes.values()) {
       g.save()
-      const nx = ((n.x - cx) / 100) * SCENE_W * s
-      const ny = ((n.y - cy) / 100) * SCENE_H * s
-      const nw = (n.w / 100) * SCENE_W * s
-      const nh = (n.h / 100) * SCENE_H * s
+      const nx = (n.x / 100) * SCENE_W
+      const ny = (n.y / 100) * SCENE_H
+      const nw = (n.w / 100) * SCENE_W
+      const nh = (n.h / 100) * SCENE_H
       g.translateTransform(nx, ny)
       drawNodeShape(g, n.shape, {
         w: nw,
         h: nh,
         fill: n.cellColor,
         stroke: n.membraneColor,
-        strokeWidth: 1.5,
+        strokeWidth: 2,
         tip: n.tip,
       })
       g.restore()
     }
-    g.alpha = alpha
+    // Labels — pooled Text per child node; allocate as needed.
+    let li = 0
+    for (const n of child.nodes.values()) {
+      let label = this.rmmContentLabels[li]
+      if (!label) {
+        label = new Text({
+          text: '',
+          style: { fontFamily: 'sans-serif', fontSize: 36, fill: 0x223046, align: 'center' },
+        })
+        label.anchor.set(0.5)
+        c.addChild(label)
+        this.rmmContentLabels.push(label)
+      }
+      label.visible = true
+      if (label.text !== n.label) label.text = n.label
+      label.x = (n.x / 100) * SCENE_W
+      label.y = (n.y / 100) * SCENE_H
+      li++
+    }
+    for (let i = li; i < this.rmmContentLabels.length; i++) {
+      this.rmmContentLabels[i].visible = false
+    }
+  }
+
+  private releaseAllPreviewLabels(): void {
+    for (const t of this.rmmContentLabels) t.visible = false
+  }
+
+  /**
+   * Capture the current rendered scene into a texture and overlay it as a
+   * Sprite, ready for the caller to swap models underneath. Returns
+   * immediately; call `playMpdCurtain` next to start the wipe animation.
+   *
+   * The snapshot is held until either `playMpdCurtain` finishes its tween
+   * or `cancelMpdCurtain` is called, so the caller can safely mutate the
+   * model in between (the user sees the snapshot, not the half-swapped
+   * intermediate state).
+   */
+  beginMpdCurtain(): void {
+    if (!this.app) return
+    this.cancelMpdCurtain()
+    const w = this.viewport.width
+    const h = this.viewport.height
+    if (w <= 0 || h <= 0) return
+    // Render the live stage into a viewport-sized texture so the snapshot is
+    // exactly 1:1 with what the user is currently seeing. extract.texture()
+    // would return a texture sized to the world container's bounds (huge
+    // and offset), which makes the snapshot Sprite glitch on display.
+    let texture: RenderTexture
+    try {
+      texture = RenderTexture.create({
+        width: w,
+        height: h,
+        resolution: this.app.renderer.resolution,
+      })
+      this.app.renderer.render({ container: this.app.stage, target: texture, clear: true })
+    } catch {
+      // happy-dom / non-WebGL test envs: skip silently.
+      return
+    }
+    const sprite = new Sprite(texture)
+    sprite.eventMode = 'none'
+    sprite.x = 0
+    sprite.y = 0
+    sprite.width = w
+    sprite.height = h
+    const mask = new Graphics()
+    mask.rect(0, 0, w, h).fill(0xffffff)
+    sprite.mask = mask
+    this.app.stage.addChild(mask)
+    this.app.stage.addChild(sprite)
+    this.curtainSprite = sprite
+    this.curtainMask = mask
+    // World mask in SCREEN coords clips the new scene to the brush region.
+    // We attach it to the stage (not the world) so it's a screen-space mask;
+    // Pixi will project the world into its bounds.
+    const worldMask = new Graphics()
+    // Start: empty (new scene fully hidden).
+    this.app.stage.addChild(worldMask)
+    this.world.mask = worldMask
+    this.curtainWorldMask = worldMask
+    // Brush leading-edge highlight, painted over everything for a stroke feel.
+    const brush = new Graphics()
+    brush.eventMode = 'none'
+    this.app.stage.addChild(brush)
+    this.curtainBrush = brush
+  }
+
+  /**
+   * Animate the snapshot Sprite away to reveal the (already-swapped) live
+   * scene below it. `direction='right'` wipes the old scene to the right
+   * edge (new scene appears from the left); 'left' is the mirror.
+   */
+  playMpdCurtain(direction: 'left' | 'right', durationMs = 500, onDone?: () => void): void {
+    if (!this.curtainSprite) {
+      onDone?.()
+      return
+    }
+    this.curtainStartMs = performance.now()
+    this.curtainDurationMs = Math.max(1, durationMs)
+    this.curtainDirection = direction
+    this.curtainOnDone = onDone ?? null
+  }
+
+  cancelMpdCurtain(): void {
+    if (this.curtainSprite) {
+      this.curtainSprite.parent?.removeChild(this.curtainSprite)
+      this.curtainSprite.destroy({ texture: true, textureSource: true })
+      this.curtainSprite = null
+    }
+    if (this.curtainMask) {
+      this.curtainMask.parent?.removeChild(this.curtainMask)
+      this.curtainMask.destroy()
+      this.curtainMask = null
+    }
+    if (this.curtainWorldMask) {
+      // Detach from world before destroying so Pixi clears the mask binding.
+      if (this.world) this.world.mask = null
+      this.curtainWorldMask.parent?.removeChild(this.curtainWorldMask)
+      this.curtainWorldMask.destroy()
+      this.curtainWorldMask = null
+    }
+    if (this.curtainBrush) {
+      this.curtainBrush.parent?.removeChild(this.curtainBrush)
+      this.curtainBrush.destroy()
+      this.curtainBrush = null
+    }
+    this.curtainDurationMs = 0
+    this.curtainOnDone = null
+  }
+
+  private tickMpdCurtain(): void {
+    if (!this.curtainSprite || !this.curtainMask || this.curtainDurationMs <= 0) return
+    const t = (performance.now() - this.curtainStartMs) / this.curtainDurationMs
+    const eased = t >= 1 ? 1 : t * t * (3 - 2 * t)
+    const w = this.viewport.width
+    const h = this.viewport.height
+    const lineX = w * eased
+    const oldMask = this.curtainMask
+    const newMask = this.curtainWorldMask
+    const brush = this.curtainBrush
+    oldMask.clear()
+    newMask?.clear()
+    brush?.clear()
+    if (this.curtainDirection === 'right') {
+      // Brush sweeps L→R. Old (snapshot) visible to the right of the line;
+      // new (world) visible to the left of the line.
+      const oldRem = w - lineX
+      if (oldRem > 0) oldMask.rect(lineX, 0, oldRem, h).fill(0xffffff)
+      if (lineX > 0) newMask?.rect(0, 0, lineX, h).fill(0xffffff)
+      brush?.rect(Math.max(0, lineX - 2), 0, 4, h).fill({ color: 0xcfe4ff, alpha: 0.55 })
+    } else {
+      // Brush sweeps R→L. Old visible on the LEFT, new on the RIGHT.
+      const newStart = w - lineX
+      const oldRem = w - lineX
+      if (oldRem > 0) oldMask.rect(0, 0, oldRem, h).fill(0xffffff)
+      if (lineX > 0) newMask?.rect(newStart, 0, lineX, h).fill(0xffffff)
+      brush?.rect(Math.max(0, newStart - 2), 0, 4, h).fill({ color: 0xcfe4ff, alpha: 0.55 })
+    }
+    if (t >= 1) {
+      const cb = this.curtainOnDone
+      this.cancelMpdCurtain()
+      cb?.()
+    }
   }
 }
 

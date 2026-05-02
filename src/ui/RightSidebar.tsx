@@ -9,9 +9,10 @@
  * UI is plain React/CSS — we keep all visuals out of the canvas.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { useOmniStore } from '../model/store'
 import type { ModelNode, NodeShape } from '../model/types'
+import { collapsedStripStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
 
 const ALL_SHAPES: NodeShape[] = [
   'rectangle',
@@ -50,6 +51,7 @@ function useStoreVersion(): number {
 
 export function RightSidebar() {
   useStoreVersion()
+  const [collapsed, setCollapsed] = useState(false)
   const state = useOmniStore.getState()
   const selectedIds = state.selectedIds
   const nodes: ModelNode[] = []
@@ -58,9 +60,22 @@ export function RightSidebar() {
     if (n) nodes.push(n)
   }
 
-  if (nodes.length === 0) {
+  if (collapsed) {
     return (
-      <Panel>
+      <button
+        onClick={() => setCollapsed(false)}
+        title="Expand inspector"
+        style={collapsedStripStyle('right')}
+      >
+        <span style={{ font: 'bold 14px system-ui, sans-serif', color: '#cfe' }}>‹</span>
+      </button>
+    )
+  }
+
+  if (nodes.length === 0) {
+    const grid = state.model.grid ?? { enabled: false, snap: false, sizePercent: 4 }
+    return (
+      <Panel onCollapse={() => setCollapsed(true)}>
         <Title>Diagram</Title>
         <Field label="Name">
           <input
@@ -77,6 +92,34 @@ export function RightSidebar() {
             style={inputStyle}
           />
         </Field>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 11, color: '#7a8aa0' }}>Grid</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={grid.enabled}
+              onChange={(e) => useOmniStore.getState().setGrid({ enabled: e.target.checked })}
+            />
+            Show grid
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={grid.snap}
+              onChange={(e) => useOmniStore.getState().setGrid({ snap: e.target.checked })}
+            />
+            Snap to grid
+          </label>
+          <Field label="Grid size %">
+            <NumberField
+              value={grid.sizePercent}
+              min={0.5}
+              max={50}
+              step={0.5}
+              onChange={(v) => useOmniStore.getState().setGrid({ sizePercent: v })}
+            />
+          </Field>
+        </div>
         <Hint>Click or box-select a node to edit it.</Hint>
       </Panel>
     )
@@ -95,7 +138,7 @@ export function RightSidebar() {
   }
 
   return (
-    <Panel>
+    <Panel onCollapse={() => setCollapsed(true)}>
       <Title>{isMulti ? `${nodes.length} nodes` : 'Node'}</Title>
 
       <Field label="Shape">
@@ -123,12 +166,12 @@ export function RightSidebar() {
       </Field>
 
       <Field label="Label">
-        <input
-          type="text"
+        <textarea
           value={label === MIXED ? '' : (label as string)}
           placeholder={label === MIXED ? '(mixed)' : ''}
+          rows={3}
           onChange={(e) => updateAll({ label: e.target.value })}
-          style={inputStyle}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: 48, fontFamily: 'inherit' }}
         />
       </Field>
 
@@ -174,6 +217,8 @@ export function RightSidebar() {
       >
         Delete {isMulti ? `${nodes.length} nodes` : 'node'}
       </button>
+
+      {!isMulti && <MpdSection node={nodes[0]} />}
     </Panel>
   )
 }
@@ -256,36 +301,44 @@ function hexOf(v: string): string {
 
 // ---- minimal layout primitives -------------------------------------------
 
-function Panel({ children }: { children: React.ReactNode }) {
+function Panel({ children, onCollapse }: { children: React.ReactNode; onCollapse: () => void }) {
   return (
-    <div
-      style={{
-        position: 'absolute',
-        top: 8,
-        right: 8,
-        bottom: 8,
-        width: 260,
-        background: 'rgba(16,19,26,0.92)',
-        color: '#cfe',
-        font: '12px system-ui, sans-serif',
-        padding: 12,
-        borderRadius: 6,
-        border: '1px solid #2a3142',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        overflowY: 'auto',
-        zIndex: 5,
-      }}
-    >
-      {children}
+    <div style={shellStyle('right')}>
+      <button
+        onClick={onCollapse}
+        title="Collapse panel"
+        style={toggleColumnStyle('right')}
+      >
+        ›
+      </button>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          overflowY: 'auto',
+        }}
+      >
+        {children}
+      </div>
     </div>
   )
 }
 
 function Title({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontWeight: 600, fontSize: 13, color: '#fff', borderBottom: '1px solid #2a3142', paddingBottom: 6 }}>
+    <div
+      style={{
+        fontWeight: 600,
+        fontSize: 13,
+        color: '#fff',
+        borderBottom: '1px solid #2a3142',
+        paddingBottom: 6,
+      }}
+    >
       {children}
     </div>
   )
@@ -331,4 +384,58 @@ const buttonStyle: React.CSSProperties = {
   padding: '4px 6px',
   font: '11px system-ui, sans-serif',
   cursor: 'pointer',
+}
+
+function MpdSection({ node }: { node: ModelNode }) {
+  const dims = node.mpdDimensions ?? []
+  const state = useOmniStore.getState()
+  const handleAdd = () => {
+    useOmniStore.getState().addMpdDimension(node.id)
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      <span style={{ fontSize: 11, color: '#7a8aa0' }}>MPD dimensions</span>
+      {dims.length === 0 ? (
+        <span style={{ fontSize: 11, color: '#576278' }}>None — add a dimension to enable the dial.</span>
+      ) : (
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {dims.map((id) => {
+            const m = state.models.get(id)
+            const isCurrent = id === state.model.id
+            return (
+              <li key={id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={m?.name ?? id}
+                  disabled={!m}
+                  onChange={(e) => {
+                    const target = useOmniStore.getState().models.get(id)
+                    if (!target) return
+                    useOmniStore.setState((s) => {
+                      const models = new Map(s.models)
+                      const updated = { ...target, name: e.target.value }
+                      models.set(id, updated)
+                      const isActive = s.model.id === id
+                      return {
+                        models,
+                        model: isActive ? updated : s.model,
+                        rev: s.rev + 1,
+                      }
+                    })
+                  }}
+                  style={{
+                    ...inputStyle,
+                    flex: 1,
+                    fontWeight: isCurrent ? 600 : 400,
+                    borderColor: isCurrent ? '#4aa3ff' : '#384055',
+                  }}
+                />
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      <button onClick={handleAdd} style={buttonStyle}>+ Add MPD dimension</button>
+    </div>
+  )
 }

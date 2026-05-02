@@ -12,8 +12,10 @@ import { create } from 'zustand'
 import { applyPatch, type Patch, UndoStack } from './undo'
 import {
   DEFAULT_EDGE,
+  DEFAULT_GRID,
   DEFAULT_NODE,
   type Connection,
+  type GridSettings,
   type Model,
   type ModelNode,
 } from './types'
@@ -102,10 +104,22 @@ interface Actions {
   redo(): void
   /** Replace the entire model (e.g. project load, bench spawn). Clears undo. */
   loadModel(model: Model): void
+  /** Update diagram-level grid settings (NOT undoable; UI-state). */
+  setGrid(patch: Partial<GridSettings>): void
   /** Register a model in the project registry without activating it. Returns the id. */
   registerModel(model: Model): string
   /** Replace the active model from the registry. Does NOT clear undo (use `loadModel` for project loads). */
   setActiveModel(id: string): void
+
+  /**
+   * Add a new MPD dimension to a node. Creates an alternate model whose
+   * only node is a twin of the source (same id, geometry, and shared
+   * `mpdDimensions` array so we can dial back). Registers it and pushes
+   * its id onto the source node's `mpdDimensions` (creating the array
+   * with the current model id as canonical entry on first call). Returns
+   * the new dimension's model id, or null on failure. NOT undoable.
+   */
+  addMpdDimension(nodeId: string, label?: string): string | null
 
   // RMM zoom (hot-path; NOT undoable per specification.md §4.7).
   /** Step the zoom snapshot in/out by one notch. Performs handoff/return at the boundaries. */
@@ -316,6 +330,18 @@ export const useOmniStore = create<Store>((set, get) => ({
     })
   },
 
+  setGrid(patch) {
+    set((s) => {
+      const cur = s.model.grid ?? DEFAULT_GRID
+      const grid: GridSettings = { ...cur, ...patch }
+      if (grid.sizePercent <= 0) grid.sizePercent = DEFAULT_GRID.sizePercent
+      const model: Model = { ...s.model, grid }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
+    })
+  },
+
   registerModel(model) {
     set((s) => {
       const models = new Map(s.models)
@@ -328,12 +354,66 @@ export const useOmniStore = create<Store>((set, get) => ({
   setActiveModel(id) {
     const next = get().models.get(id)
     if (!next) return
-    set((s) => ({
-      model: next,
-      selectedIds: new Set(),
-      rev: s.rev + 1,
-      selRev: s.selRev + 1,
-    }))
+    set((s) => {
+      // Preserve selection ids that exist in the target model (MPD twins).
+      const keep = new Set<string>()
+      for (const sid of s.selectedIds) {
+        if (next.nodes.has(sid)) keep.add(sid)
+      }
+      const selectionChanged = keep.size !== s.selectedIds.size
+      return {
+        model: next,
+        selectedIds: keep,
+        rev: s.rev + 1,
+        selRev: selectionChanged ? s.selRev + 1 : s.selRev,
+      }
+    })
+  },
+
+  addMpdDimension(nodeId, label) {
+    const s = get()
+    const source = s.model.nodes.get(nodeId)
+    if (!source) return null
+    // Ensure the source has an mpdDimensions array containing the current
+    // model id as its canonical entry.
+    let dims: string[] = source.mpdDimensions ? [...source.mpdDimensions] : [s.model.id]
+    if (!dims.includes(s.model.id)) dims = [s.model.id, ...dims]
+    const newId = `mpd_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`
+    dims.push(newId)
+    // Twin node: same id and geometry, but its own (shared) dims array.
+    const twin: ModelNode = { ...source, mpdDimensions: dims }
+    const newModel: Model = {
+      id: newId,
+      name: label ?? `${source.label || source.id} · dim ${dims.length - 1}`,
+      nodes: new Map([[twin.id, twin]]),
+      edges: new Map(),
+    }
+    set((cur) => {
+      // Update the source node in place + propagate dims to all existing
+      // twins in already-registered dimensions so dial-back stays consistent.
+      const models = new Map(cur.models)
+      for (const dimId of dims) {
+        if (dimId === newId) continue
+        const m = models.get(dimId)
+        if (!m) continue
+        const twinInM = m.nodes.get(nodeId)
+        if (!twinInM) continue
+        const updatedTwin: ModelNode = { ...twinInM, mpdDimensions: dims }
+        m.nodes.set(nodeId, updatedTwin)
+      }
+      // Update the live source node in place (Map identity preserved).
+      const live = cur.model.nodes.get(nodeId)
+      if (live) {
+        ;(live as { mpdDimensions?: string[] }).mpdDimensions = dims
+      }
+      models.set(newModel.id, newModel)
+      return {
+        model: { ...cur.model },
+        models,
+        rev: cur.rev + 1,
+      }
+    })
+    return newId
   },
 
   rmmZoomStep(direction, step) {

@@ -39,6 +39,12 @@ export interface ModelNode {
   membraneColor: string
   /** Optional child-model id for RMM zoom. */
   childModelId?: string
+  /**
+   * MPD dimensions for this node — alternate child-model ids the user can
+   * dial through. The first entry is treated as the "default" / canonical
+   * child (`childModelId`). Optional; absent means the node has no MPD.
+   */
+  mpdDimensions?: string[]
   /** Cosmetic-only tail/trail tip (in scene-percent of node size). */
   tip?: CosmeticTip
   /** Forward-compat slot for fields owned by later stages. */
@@ -59,11 +65,28 @@ export interface Connection {
   extra?: Record<string, unknown>
 }
 
+export interface GridSettings {
+  /** When true, the grid lines are drawn over the canvas. */
+  enabled: boolean
+  /** When true, drag and drop snap to grid intersections. */
+  snap: boolean
+  /** Grid spacing in scene-percent units. Always > 0. */
+  sizePercent: number
+}
+
+export const DEFAULT_GRID: GridSettings = {
+  enabled: false,
+  snap: false,
+  sizePercent: 4,
+}
+
 export interface Model {
   id: string
   name: string
   nodes: Map<string, ModelNode>
   edges: Map<string, Connection>
+  /** Diagram-level grid + snap configuration. */
+  grid?: GridSettings
   /** Forward-compat slot. */
   extra?: Record<string, unknown>
 }

@@ -27,7 +27,7 @@ export function FpsOverlay({ renderer }: Props) {
       ref={ref}
       style={{
         position: 'absolute',
-        top: 8,
+        bottom: 8,
         left: 8,
         padding: '4px 8px',
         font: '12px ui-monospace, Menlo, monospace',

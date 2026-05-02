@@ -16,7 +16,7 @@
  */
 
 import { Graphics } from 'pixi.js'
-import { clientToScene, DEFAULT_GRID_SNAP } from '../scene/sceneConstants'
+import { clientToScene } from '../scene/sceneConstants'
 import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 
@@ -54,9 +54,15 @@ export class PointerController {
   private active: ActiveDrag | null = null
   private lastClickAt = 0
   private lastClickPos = { x: 0, y: 0 }
-  private snap: number
   private readonly host: HTMLElement
   private readonly renderer: SceneRenderer
+
+  /** Effective snap step (scene-percent). 0 = snapping off. */
+  private get snapStep(): number {
+    const grid = useOmniStore.getState().model.grid
+    if (!grid || !grid.snap) return 0
+    return Math.max(0, grid.sizePercent)
+  }
 
   constructor(
     host: HTMLElement,
@@ -65,7 +71,7 @@ export class PointerController {
   ) {
     this.host = host
     this.renderer = renderer
-    this.snap = options.snap ?? DEFAULT_GRID_SNAP
+    void options
     host.addEventListener('pointerdown', this.onPointerDown)
     host.addEventListener('pointermove', this.onPointerMove)
     host.addEventListener('pointerup', this.onPointerUp)
@@ -236,8 +242,11 @@ export class PointerController {
       const sceneNow = this.toScene(e)
       const hoverId = this.renderer.pickNode(sceneNow.x, sceneNow.y)
       a.hoverTargetId = hoverId && hoverId !== a.nodeId ? hoverId : null
-      // Visual feedback for the draft connection is intentionally minimal at
-      // stage 1; full ghost rendering arrives with edge anchoring in stage 3.
+      const rect = this.host.getBoundingClientRect()
+      this.renderer.setConnectGhost(a.nodeId, {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      })
       return
     }
   }
@@ -274,7 +283,7 @@ export class PointerController {
         const anchor = a.dragBaselines[0]
         const cur = store.model.nodes.get(anchor.id)
         if (cur) {
-          const snapped = snapToGrid(cur.x, cur.y, this.snap)
+          const snapped = snapToGrid(cur.x, cur.y, this.snapStep)
           const sx = snapped.x - cur.x
           const sy = snapped.y - cur.y
           if (sx !== 0 || sy !== 0) {
@@ -309,6 +318,7 @@ export class PointerController {
     }
 
     if (a.kind === 'connect' && a.nodeId) {
+      this.renderer.setConnectGhost(null, null)
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
       if (targetId && targetId !== a.nodeId) {
@@ -329,7 +339,7 @@ export class PointerController {
     this.lastClickPos = { x: e.clientX, y: e.clientY }
 
     if (isDouble) {
-      const snapped = snapToGrid(scene.x, scene.y, this.snap)
+      const snapped = snapToGrid(scene.x, scene.y, this.snapStep)
       const id = useOmniStore.getState().addNode({
         x: snapped.x,
         y: snapped.y,

@@ -56,7 +56,7 @@ export class WheelController {
       return
     }
 
-    const cam = this.renderer.getCamera()
+    const cam = this.renderer.getRawCamera()
     const factor = direction === 'in' ? ZOOM_PER_NOTCH : 1 / ZOOM_PER_NOTCH
     const nextScale = clamp(cam.freeScale * factor, FREE_ZOOM_MIN, FREE_ZOOM_MAX)
     if (nextScale === cam.freeScale) return

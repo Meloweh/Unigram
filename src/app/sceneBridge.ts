@@ -27,23 +27,19 @@ export function bindStoreToRenderer(renderer: SceneRenderer): () => void {
     const edgesChanged = s.model.edges !== lastEdges
     if (nodesChanged || edgesChanged) {
       // Map identity swapped (loadModel, or external mutation) — full sync.
-      renderer.setModel({ nodes: s.model.nodes, edges: s.model.edges })
+      renderer.setModel({ nodes: s.model.nodes, edges: s.model.edges, grid: s.model.grid })
       lastNodes = s.model.nodes
       lastEdges = s.model.edges
     } else {
       // Same Maps, just mutated in place. Renderer's quadtree is already
       // current for drag-bypass commits; for add/remove transactions the
       // renderer will catch up on the next setModel call. Re-cull only.
-      renderer.syncIncremental(s.model.nodes, s.model.edges)
+      renderer.syncIncremental(s.model.nodes, s.model.edges, s.model.grid)
     }
   }
   const pushCamera = (s: Store) => {
-    // RMM cameraScale composes multiplicatively with the user's free-zoom.
-    renderer.setCamera({
-      panX: s.camera.panX,
-      panY: s.camera.panY,
-      freeScale: s.camera.freeScale * s.zoom.cameraScale,
-    })
+    // Renderer composes RMM cameraScale internally; bridge writes RAW camera.
+    renderer.setCamera(s.camera)
   }
   const pushRmm = (s: Store) => {
     renderer.setRmm(s.zoom, s.focusedNodeId)
@@ -71,8 +67,8 @@ export function bindStoreToRenderer(renderer: SceneRenderer): () => void {
     if (s.zoomRev !== lastZoomRev) {
       lastZoomRev = s.zoomRev
       pushRmm(s)
-      // RMM cameraScale changed — push camera too (composes).
-      pushCamera(s)
+      // RMM cameraScale changed — the renderer recomposes internally; nothing
+      // else to push.
     }
     if (s.camera !== lastCam) {
       lastCam = s.camera

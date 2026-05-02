@@ -9,7 +9,7 @@
  * canvas itself is a single div whose children are managed by Pixi.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { bindStoreToRenderer } from './sceneBridge'
 import { PointerController } from '../viewport/PointerController'
@@ -19,7 +19,11 @@ import { useOmniStore } from '../model/store'
 import { spawnGrid, spawnNested } from '../bench/spawnGrid'
 import { runScenario, listScenarios, type BenchResult } from '../bench/harness'
 import { FpsOverlay } from './FpsOverlay'
+import { LeftSidebar, DRAG_MIME_SHAPE } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
+import { MpdDial } from '../mpd/MpdDial'
+import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
+import type { NodeShape } from '../model/types'
 
 export function OmnigramApp() {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -68,10 +72,39 @@ export function OmnigramApp() {
           inset: 0,
           touchAction: 'none',
         }}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(DRAG_MIME_SHAPE)) {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+          }
+        }}
+        onDrop={(e) => {
+          const shape = e.dataTransfer.getData(DRAG_MIME_SHAPE) as NodeShape | ''
+          if (!shape || !renderer) return
+          e.preventDefault()
+          const rect = e.currentTarget.getBoundingClientRect()
+          const cam = renderer.getCamera()
+          const vp = renderer.getViewport()
+          const { x, y } = clientToScene(
+            e.clientX - rect.left,
+            e.clientY - rect.top,
+            cam,
+            vp,
+          )
+          const store = useOmniStore.getState()
+          const grid = store.model.grid
+          const step = grid?.snap ? Math.max(0, grid.sizePercent) : 0
+          const sx = step > 0 ? Math.round(x / step) * step : x
+          const sy = step > 0 ? Math.round(y / step) * step : y
+          const id = store.addNode({ x: sx, y: sy, shape, label: '' })
+          store.select(id)
+        }}
       />
       <FpsOverlay renderer={renderer} />
       <Toolbar renderer={renderer} />
+      <LeftSidebar />
       <RightSidebar />
+      <MpdDialOverlay renderer={renderer} />
     </div>
   )
 }
@@ -96,7 +129,7 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
       style={{
         position: 'absolute',
         top: 8,
-        left: 8,
+        left: 264,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'flex-start',
@@ -158,6 +191,66 @@ function Toolbar({ renderer }: { renderer: SceneRenderer | null }) {
           {`${bench.scenario}  frames=${bench.frames}  p50=${bench.fpsP50}  p95=${bench.fpsP95}  min=${bench.fpsMin}  max=${bench.fpsMax}`}
         </div>
       )}
+    </div>
+  )
+}
+
+function MpdDialOverlay({ renderer }: { renderer: SceneRenderer | null }) {
+  // Re-render on rev/selection changes.
+  useSyncExternalStore(
+    (cb) => useOmniStore.subscribe(cb),
+    () => useOmniStore.getState().rev * 65537 + useOmniStore.getState().selRev,
+    () => 0,
+  )
+  const state = useOmniStore.getState()
+  if (!renderer) return null
+  // Dial appears only when exactly one node is selected and that node has
+  // ≥2 MPD dimensions to choose from.
+  if (state.selectedIds.size !== 1) return null
+  const sourceId = state.selectedIds.values().next().value as string
+  const sourceNode = state.model.nodes.get(sourceId)
+  const dims = sourceNode?.mpdDimensions
+  if (!sourceNode || !dims || dims.length < 2) return null
+  const options = dims
+    .map((id) => {
+      const m = state.models.get(id)
+      return m ? { id, label: m.name } : null
+    })
+    .filter((x): x is { id: string; label: string } => x !== null)
+  if (options.length < 2) return null
+  const activeIndex = Math.max(0, options.findIndex((o) => o.id === state.model.id))
+
+  const handleSelect = (idx: number, direction: 'left' | 'right') => {
+    const target = options[idx].id
+    if (target === state.model.id) return
+    const targetModel = state.models.get(target)
+    if (!targetModel) return
+    const oldNode = state.model.nodes.get(sourceId)
+    const twin = targetModel.nodes.get(sourceId)
+    if (!oldNode || !twin) return
+    // Camera adjust so the twin lands at the source's prior screen position.
+    const dx = ((oldNode.x - twin.x) / 100) * SCENE_W
+    const dy = ((oldNode.y - twin.y) / 100) * SCENE_H
+
+    renderer.beginMpdCurtain()
+    const store = useOmniStore.getState()
+    store.setActiveModel(target)
+    const cam = store.camera
+    store.setCamera({ panX: cam.panX + dx, panY: cam.panY + dy })
+    renderer.playMpdCurtain(direction, 500)
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        bottom: 16,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 12,
+      }}
+    >
+      <MpdDial options={options} activeIndex={activeIndex} onSelect={handleSelect} />
     </div>
   )
 }

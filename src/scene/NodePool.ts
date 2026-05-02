@@ -24,8 +24,13 @@ interface PooledNode {
   lod: Lod
 }
 
+/** Fraction of node interior available for label text after shape inset. */
+const TEXT_INSET = 0.82
+/** Extra scene-percent padding around the text bounding box. */
+const TEXT_PAD_PCT = 1.0
+
 const dirtyKeyOf = (n: ModelNode, lod: Lod): string =>
-  `${lod}|${n.shape}|${n.w}|${n.h}|${n.cellColor}|${n.membraneColor}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}`
+  `${lod}|${n.shape}|${n.w}|${n.h}|${n.cellColor}|${n.membraneColor}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}`
 
 const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' ? n.label : '')
 
@@ -57,10 +62,14 @@ function setLabel(t: Text, n: ModelNode, lod: Lod): void {
   t.visible = text.length > 0
 }
 
+export type NodeFitCallback = (id: string, w: number, h: number) => void
+
 export class NodePool {
   private active = new Map<string, PooledNode>()
   private free: PooledNode[] = []
   private readonly layer: Container
+  /** Optional hook the renderer registers to grow the node + quadtree entry. */
+  onNodeFit?: NodeFitCallback
 
   constructor(layer: Container) {
     this.layer = layer
@@ -99,6 +108,18 @@ export class NodePool {
       setLabel(pn.label, n, lod)
       pn.dirtyKey = key
       pn.lod = lod
+      // Auto-grow the node to fit its label. Only grows; never shrinks (so
+      // a user-resized node sticks). The renderer hook updates the model +
+      // quadtree on our behalf.
+      if (lod === 'full' && this.onNodeFit && pn.label.visible) {
+        const labelWPx = pn.label.width
+        const labelHPx = pn.label.height
+        const requiredW = (labelWPx / TEXT_INSET / SCENE_W) * 100 + TEXT_PAD_PCT
+        const requiredH = (labelHPx / TEXT_INSET / SCENE_H) * 100 + TEXT_PAD_PCT
+        if (requiredW > n.w + 0.01 || requiredH > n.h + 0.01) {
+          this.onNodeFit(n.id, Math.max(n.w, requiredW), Math.max(n.h, requiredH))
+        }
+      }
     } else {
       // Label text can change while shape stays stable.
       setLabel(pn.label, n, lod)
