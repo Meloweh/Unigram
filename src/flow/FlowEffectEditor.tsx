@@ -23,6 +23,8 @@ const KINDS: FlowEffectKind[] = [
   'cloud-levitate',
   'bubble-levitate',
   'repeater',
+  'camera',
+  'text-generator',
 ]
 
 const NODE_W = 140
@@ -40,6 +42,8 @@ const KIND_COLORS: Record<FlowEffectKind, string> = {
   'cloud-levitate': '#4f5d8a',
   'bubble-levitate': '#7a5b3a',
   repeater: '#5b3a7a',
+  camera: '#3a6b5e',
+  'text-generator': '#7a4a8a',
 }
 
 const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
@@ -54,6 +58,8 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   'cloud-levitate': ['ampX', 'ampY', 'freq', 'ms'],
   'bubble-levitate': ['ampY', 'scaleAmp', 'freq', 'ms'],
   repeater: ['times'],
+  camera: ['panX', 'panY', 'zoom', 'ms', 'permanent'],
+  'text-generator': ['charsPerSec', 'loop', 'endHoldMs', 'ms'],
 }
 
 const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
@@ -68,6 +74,8 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   'cloud-levitate': { ampX: 0.6, ampY: 0.4, freq: 0.6, ms: 4000 },
   'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, freq: 1, ms: 3000 },
   repeater: { times: 1 },
+  camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
+  'text-generator': { charsPerSec: 24, loop: 0, endHoldMs: 1000, ms: 1500 },
 }
 
 /**
@@ -126,7 +134,7 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingFromId, setPendingFromId] = useState<string | null>(null)
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
-  const dragState = useRef<{ id: string; offX: number; offY: number } | null>(null)
+  const dragState = useRef<{ id: string; offX: number; offY: number; pointerId: number; capturedOn: Element | null } | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
 
   // ESC closes.
@@ -212,8 +220,12 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
   }, [pendingFromId])
 
   const onSvgPointerUp = () => {
-    if (dragState.current) {
-      ;(svgRef.current as Element | null)?.releasePointerCapture?.(0)
+    const d = dragState.current
+    if (d) {
+      // Release capture on the *exact* element it was set on, with the real
+      // pointer id. Hardcoding either yields a no-op and leaks the capture
+      // to the node group, breaking subsequent drags ("drag but no drop").
+      try { d.capturedOn?.releasePointerCapture?.(d.pointerId) } catch { /* ignore */ }
       dragState.current = null
     }
   }
@@ -223,8 +235,15 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
     e.stopPropagation()
     setSelectedId(n.id)
     const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-    dragState.current = { id: n.id, offX: pt.x - n.x, offY: pt.y - n.y }
-    ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
+    const target = e.currentTarget as Element
+    dragState.current = {
+      id: n.id,
+      offX: pt.x - n.x,
+      offY: pt.y - n.y,
+      pointerId: e.pointerId,
+      capturedOn: target,
+    }
+    target.setPointerCapture(e.pointerId)
   }
 
   const beginEdge = (e: React.PointerEvent, from: string) => {

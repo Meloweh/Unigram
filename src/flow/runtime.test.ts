@@ -265,6 +265,160 @@ describe('FlowRuntime — extended kinds', () => {
   })
 })
 
+describe('FlowRuntime — camera', () => {
+  it('camera task contributes additive pan + scale to the camera channel', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([
+        { id: 'c', kind: 'camera', params: { panX: 10, panY: -4, zoom: 2, ms: 100 } },
+      ]),
+      0,
+    )
+    rt.tick(50) // halfway → linear interp
+    const cam = rt.getCameraOverride()!
+    expect(cam.dPanX).toBeCloseTo(5, 3)
+    expect(cam.dPanY).toBeCloseTo(-2, 3)
+    expect(cam.scaleMul).toBeCloseTo(1.5, 3) // 1 + (2-1)*0.5
+    // Camera tasks contribute nothing to per-node overrides.
+    expect(rt.getOverride('n1')).toBeUndefined()
+  })
+
+  it('camera contribution clears when the run ends without permanent flag', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([
+        { id: 'c', kind: 'camera', params: { panX: 8, ms: 100 } },
+      ]),
+      0,
+    )
+    rt.tick(50)
+    expect(rt.getCameraOverride()?.dPanX).toBeCloseTo(4, 3)
+    rt.tick(200) // past end; non-permanent → run drained, override cleared
+    expect(rt.getCameraOverride()).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
+  })
+
+  it('camera with permanent flag holds the final pan after the task ends', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'c', kind: 'camera', params: { panX: 6, zoom: 1.5, ms: 100, permanent: 1 } },
+          { id: 'w', kind: 'wait', params: { ms: 500 } },
+        ],
+        [{ from: 'c', to: 'w' }],
+      ),
+      0,
+    )
+    rt.tick(200) // camera done; wait still running → held should be exposed
+    const cam = rt.getCameraOverride()!
+    expect(cam.dPanX).toBeCloseTo(6, 3)
+    expect(cam.scaleMul).toBeCloseTo(1.5, 3)
+  })
+})
+
+describe('FlowRuntime — text-generator side-effect', () => {
+  it('fires onTextGen exactly once when the task activates', () => {
+    const rt = new FlowRuntime()
+    const calls: { id: string; params: Record<string, number> }[] = []
+    rt.onTextGen = (id, params) => calls.push({ id, params })
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'tg', kind: 'text-generator', params: { ms: 200, charsPerSec: 30 } }], []),
+      0,
+    )
+    rt.tick(50)
+    rt.tick(100)
+    rt.tick(150)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].id).toBe('n1')
+    expect(calls[0].params.charsPerSec).toBe(30)
+  })
+
+  it('fires onTextGenStop on natural completion', () => {
+    const rt = new FlowRuntime()
+    const stops: string[] = []
+    rt.onTextGen = () => {}
+    rt.onTextGenStop = (id) => stops.push(id)
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'tg', kind: 'text-generator', params: { ms: 100 } }], []),
+      0,
+    )
+    rt.tick(50)
+    expect(stops).toHaveLength(0)
+    rt.tick(150) // past task end → drains
+    expect(stops).toEqual(['n1'])
+  })
+
+  it('fires onTextGenStop on cancel mid-run', () => {
+    const rt = new FlowRuntime()
+    const stops: string[] = []
+    rt.onTextGen = () => {}
+    rt.onTextGenStop = (id) => stops.push(id)
+    const runId = rt.start(
+      'n1',
+      mkEffect([{ id: 'tg', kind: 'text-generator', params: { ms: 1000 } }], []),
+      0,
+    )!
+    rt.tick(50) // start fires here
+    rt.cancel(runId)
+    expect(stops).toEqual(['n1'])
+  })
+})
+
+describe('FlowRuntime — soak', () => {
+  it('looped run does not leak overrides over 5000 ticks', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      {
+        id: 'eff',
+        label: 'eff',
+        alwaysPlay: true,
+        graph: {
+          nodes: [
+            { id: 'a', kind: 'move', x: 0, y: 0, params: { dx: 1, dy: 0, ms: 100 } },
+          ],
+          edges: [],
+        },
+      },
+      0,
+    )
+    for (let t = 0; t < 5000; t += 16) rt.tick(t)
+    expect(rt.hasActiveRuns).toBe(true)
+    const ov = rt.getOverride('n1')!
+    // Override stays bounded — the contribution at any frame depends only on
+    // the local elapsed within the *current* cycle, not the total runtime.
+    expect(Math.abs(ov.dx ?? 0)).toBeLessThanOrEqual(1)
+  })
+
+  it('cancelling a run drops its overrides on the next tick', () => {
+    const rt = new FlowRuntime()
+    const id = rt.start(
+      'n1',
+      {
+        id: 'eff',
+        label: 'eff',
+        graph: {
+          nodes: [{ id: 'a', kind: 'move', x: 0, y: 0, params: { dx: 5, dy: 0, ms: 1000 } }],
+          edges: [],
+        },
+      },
+      0,
+    )!
+    rt.tick(500)
+    expect(rt.getOverride('n1')?.dx).toBeCloseTo(2.5, 1)
+    rt.cancel(id)
+    rt.tick(600)
+    expect(rt.getOverride('n1')).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
+  })
+})
+
 describe('mergeOverride', () => {
   it('adds offsets and multiplies scale/alpha/tint', () => {
     const m = mergeOverride(

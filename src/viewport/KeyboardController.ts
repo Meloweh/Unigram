@@ -33,10 +33,13 @@ export class KeyboardController {
       return
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      const sel = useOmniStore.getState().selectedIds
-      if (sel.size === 0) return
+      const s = useOmniStore.getState()
+      const nodeSel = s.selectedIds
+      const edgeSel = s.selectedEdgeIds
+      if (nodeSel.size === 0 && edgeSel.size === 0) return
       e.preventDefault()
-      useOmniStore.getState().removeNodes([...sel])
+      if (nodeSel.size > 0) s.removeNodes([...nodeSel])
+      if (edgeSel.size > 0) s.removeEdges([...edgeSel])
       return
     }
     if (e.key === 'Escape') {

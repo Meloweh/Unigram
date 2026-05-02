@@ -94,6 +94,27 @@ export class SceneRenderer {
   readonly flow = new FlowRuntime()
   /** Per (nodeId,effectId) key → currently active always-play runId. */
   private alwaysPlayRuns = new Map<string, string>()
+  /**
+   * Active runs spawned by the global Play action (one-shot effects). Keyed
+   * by runId for O(1) cancellation. Cleared by `stopFlow()` and pruned in
+   * `isFlowPlaying`.
+   */
+  private playRuns = new Set<string>()
+  /**
+   * Wire-cascade animation channel: per `kind:'flow'` edge id, when its
+   * progressive stroke-reveal began and how long it lasts. Drawn on top of
+   * the static edge by `drawFlowOverlay()` and pruned once expired. Empty
+   * when Play is idle.
+   */
+  private playWires = new Map<string, { startMs: number; durMs: number }>()
+  /**
+   * Active-node cascade highlight channel: per visited node id, when its
+   * pulse ring began and how long it lasts. Drawn around the node body by
+   * `drawFlowOverlay()` and pruned once expired.
+   */
+  private playActiveNodes = new Map<string, { startMs: number; durMs: number }>()
+  /** Overlay Graphics for the wire reveal + active-node halo. */
+  private flowOverlayGfx!: Graphics
   readonly textGen = new TextGenRunner()
 
   /** MPD curtain: sprite painted with a snapshot of the previous scene. */
@@ -166,6 +187,9 @@ export class SceneRenderer {
     this.overlayLayer.eventMode = 'none'
     this.boxSelectGfx = new Graphics()
     this.overlayLayer.addChild(this.boxSelectGfx)
+    this.flowOverlayGfx = new Graphics()
+    this.flowOverlayGfx.eventMode = 'none'
+    this.overlayLayer.addChild(this.flowOverlayGfx)
     this.world.addChild(this.gridLayer)
     this.world.addChild(this.edgesLayer)
     this.world.addChild(this.nodesLayer)
@@ -205,6 +229,27 @@ export class SceneRenderer {
     this.viewport = { width: app.screen.width, height: app.screen.height }
     this.particleLayer.setViewport(this.viewport.width, this.viewport.height)
     this.applyCameraTransform()
+    // Bridge text-generator side-effects from the FlowRuntime to the local
+    // TextGenRunner so the `'text-generator'` flow effect kind drives the
+    // same reveal pipeline that the legacy stand-alone control used.
+    this.flow.onTextGen = (targetId, params) => {
+      const node = this.model.nodes.get(targetId)
+      if (!node) return
+      const config: TextGenConfig = {
+        text: node.label ?? '',
+        charsPerSec: Math.max(1, params.charsPerSec ?? 24),
+        loop: (params.loop ?? 0) !== 0,
+        endHoldMs: Math.max(0, params.endHoldMs ?? 0),
+      }
+      this.textGen.start(node, config, performance.now())
+      this.dirty = true
+    }
+    this.flow.onTextGenStop = (targetId) => {
+      const node = this.model.nodes.get(targetId)
+      if (!node) return
+      this.textGen.stop(node)
+      this.dirty = true
+    }
     app.ticker.add(this.onTick)
   }
 
@@ -299,6 +344,99 @@ export class SceneRenderer {
   /** Start a flow effect against a target node. Returns a runId (or null). */
   playFlowEffect(targetNodeId: string, effect: FlowEffect): string | null {
     return this.flow.start(targetNodeId, effect, performance.now())
+  }
+
+  /**
+   * Global Play: walk the diagram from `rootNodeId` along `kind:'flow'`
+   * connections (BFS), triggering each visited node's *one-shot* effects
+   * (those with `alwaysPlay !== true`). Always-play loops are left alone
+   * since they are already running. Returns the number of runs started.
+   *
+   * Each downstream node's effects are delayed by `BFS depth * stagger`
+   * (default 200 ms) so the cascade matches the legacy visual pacing.
+   */
+  playFlowFromNode(rootNodeId: string, staggerMs = 200): number {
+    const root = this.model.nodes.get(rootNodeId)
+    if (!root) return 0
+    // Build flow-only adjacency from the current edge map (kind === 'flow').
+    // Track edge ids as well so the wire-reveal animation can be keyed off
+    // the actual connection that was traversed.
+    const adj = new Map<string, { to: string; edgeId: string }[]>()
+    for (const e of this.model.edges.values()) {
+      if (e.kind !== 'flow') continue
+      let list = adj.get(e.from)
+      if (!list) { list = []; adj.set(e.from, list) }
+      list.push({ to: e.to, edgeId: e.id })
+    }
+    const visited = new Set<string>([rootNodeId])
+    const queue: { id: string; depth: number }[] = [{ id: rootNodeId, depth: 0 }]
+    let started = 0
+    const now = performance.now()
+    // Wire reveal duration ports the legacy default (600 ms per hop).
+    const WIRE_MS = 600
+    // Node highlight duration: at least one stagger, plus a tail so the
+    // ring lingers visibly after the next hop departs.
+    const NODE_HALO_MS = Math.max(staggerMs * 1.5, 500)
+    while (queue.length > 0) {
+      const { id, depth } = queue.shift()!
+      const node = this.model.nodes.get(id)
+      if (!node) continue
+      const arriveAt = now + depth * staggerMs
+      // Light up the node itself even if it has no attached effects, so the
+      // cascade is visible end-to-end.
+      this.playActiveNodes.set(id, { startMs: arriveAt, durMs: NODE_HALO_MS })
+      for (const eff of node.flowEffects ?? []) {
+        if (eff.alwaysPlay) continue
+        // Stagger by wrapping the effect in a delayed run start. The runtime
+        // doesn't expose a start-delay parameter, so we model it here by
+        // shifting `startedAt` forward via a clock offset.
+        const runId = this.flow.start(id, eff, now - depth * staggerMs)
+        if (runId) { this.playRuns.add(runId); started++ }
+      }
+      for (const next of adj.get(id) ?? []) {
+        // Schedule the wire reveal even if the downstream node was already
+        // visited from another path — the wire still belongs to the cascade
+        // and should animate.
+        this.playWires.set(next.edgeId, { startMs: arriveAt, durMs: WIRE_MS })
+        if (visited.has(next.to)) continue
+        visited.add(next.to)
+        queue.push({ id: next.to, depth: depth + 1 })
+      }
+    }
+    // Force a redraw next tick so the overlay appears even when no effects
+    // attached produced any node-override changes.
+    this.dirty = true
+    return started
+  }
+
+  /** Cancel every run started by `playFlowFromNode` and clear the cascade. */
+  stopFlow(): void {
+    for (const id of this.playRuns) this.flow.cancel(id)
+    this.playRuns.clear()
+    this.playWires.clear()
+    this.playActiveNodes.clear()
+    this.flowOverlayGfx?.clear()
+    this.dirty = true
+  }
+
+  /**
+   * True while at least one Play-initiated run, wire reveal, or node halo
+   * is still active. Always-play loops are excluded so the toolbar Stop
+   * button only toggles cascade state.
+   */
+  get isFlowPlaying(): boolean {
+    // Prune drained runs/wires/halos so the next read reflects reality.
+    for (const id of [...this.playRuns]) {
+      if (!this.flow.isActive(id)) this.playRuns.delete(id)
+    }
+    const now = performance.now()
+    for (const [id, w] of this.playWires) {
+      if (now > w.startMs + w.durMs) this.playWires.delete(id)
+    }
+    for (const [id, h] of this.playActiveNodes) {
+      if (now > h.startMs + h.durMs) this.playActiveNodes.delete(id)
+    }
+    return this.playRuns.size > 0 || this.playWires.size > 0 || this.playActiveNodes.size > 0
   }
 
   /** Begin a text-generator on `nodeId`. Restores original label on stop. */
@@ -480,7 +618,20 @@ export class SceneRenderer {
     // The runtime writes overrides; nodePool.update reads them in the draw pass.
     if (this.flow.hasActiveRuns) {
       this.flow.tick(performance.now())
+      // Camera-effect overrides: re-apply the world transform with the
+      // runtime's additive camera deltas before the draw so picking and
+      // visible-AABB queries stay consistent.
+      this.applyCameraTransform()
       this.cullAndDraw()
+    }
+    // Flow Play cascade overlay: wire reveal + active-node halo. Independent
+    // of the FlowRuntime — these are pure visual indicators driven by the
+    // BFS schedule baked into `playWires` / `playActiveNodes`.
+    if (this.playWires.size > 0 || this.playActiveNodes.size > 0) {
+      this.drawFlowOverlay(performance.now())
+    } else if (this.flowOverlayGfx && (this.flowOverlayGfx as { geometry?: unknown }).geometry) {
+      // Ensure the overlay is cleared once the cascade ends.
+      this.flowOverlayGfx.clear()
     }
     // Text-generator: progressively reveals labels in-place. When characters
     // advance we mark dirty and redraw so the new label is baked into Pixi.
@@ -517,13 +668,19 @@ export class SceneRenderer {
 
   private applyCameraTransform(): void {
     if (!this.app) return
-    // Effective scale composes user free-zoom with RMM cameraScale.
-    this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale
+    // Pull any active flow camera override (additive deltas on user camera).
+    const camOv = this.flow.getCameraOverride()
+    const dPanX = camOv?.dPanX ?? 0
+    const dPanY = camOv?.dPanY ?? 0
+    const camScaleMul = camOv?.scaleMul ?? 1
+    // Effective scale composes user free-zoom with RMM cameraScale and any
+    // flow camera scale override.
+    this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale * camScaleMul
     // Scene coords are signed percent around (0,0) = viewport center.
     // World children draw at scene-pixel positions (scene% / 100 * SCENE_W).
     this.world.scale.set(this.effectiveScale)
-    this.world.x = this.viewport.width / 2 + this.camera.panX * this.effectiveScale
-    this.world.y = this.viewport.height / 2 + this.camera.panY * this.effectiveScale
+    this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX) * this.effectiveScale
+    this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY) * this.effectiveScale
   }
 
   /**
@@ -765,6 +922,89 @@ export class SceneRenderer {
     this.connectGhostSource = sourceId
     this.connectGhostCursor = cursor
     this.dirty = true
+  }
+
+  /**
+   * Draw the Play cascade overlay: a brighter pulse that progressively
+   * reveals each `kind:'flow'` wire as the cascade traverses it, plus a
+   * pulsing halo ring around each visited node. Ports the legacy
+   * `useFlowEngine.startFlowAnimation` visual feedback, but driven by
+   * pre-baked schedule maps instead of a per-frame DAG walker. Coordinates
+   * are scene pixels (overlayLayer is parented under `world`).
+   */
+  private drawFlowOverlay(now: number): void {
+    const g = this.flowOverlayGfx
+    g.clear()
+    // Wire reveals
+    for (const [edgeId, w] of [...this.playWires]) {
+      const t = (now - w.startMs) / w.durMs
+      if (t <= 0) continue
+      if (t >= 1) {
+        // Hold a fully-revealed flash for a beat after completion, then drop.
+        if (now > w.startMs + w.durMs + 250) {
+          this.playWires.delete(edgeId)
+          continue
+        }
+      }
+      const e = this.model.edges.get(edgeId)
+      if (!e) { this.playWires.delete(edgeId); continue }
+      const from = this.model.nodes.get(e.from)
+      const to = this.model.nodes.get(e.to)
+      if (!from || !to) { this.playWires.delete(edgeId); continue }
+      const fxC = (from.x / 100) * SCENE_W
+      const fyC = (from.y / 100) * SCENE_H
+      const txC = (to.x / 100) * SCENE_W
+      const tyC = (to.y / 100) * SCENE_H
+      const dx = txC - fxC
+      const dy = tyC - fyC
+      if (Math.hypot(dx, dy) < 1) continue
+      const fHw = ((from.w / 100) * SCENE_W) / 2
+      const fHh = ((from.h / 100) * SCENE_H) / 2
+      const tHw = ((to.w / 100) * SCENE_W) / 2
+      const tHh = ((to.h / 100) * SCENE_H) / 2
+      const fEdge = shapeEdgeIntersect(from.shape, fHw, fHh, dx, dy)
+      const tEdge = shapeEdgeIntersect(to.shape, tHw, tHh, -dx, -dy)
+      const fx = fxC + fEdge.x
+      const fy = fyC + fEdge.y
+      const tx = txC + tEdge.x
+      const ty = tyC + tEdge.y
+      const k = Math.min(1, Math.max(0, t))
+      const hx = fx + (tx - fx) * k
+      const hy = fy + (ty - fy) * k
+      const baseStrokePx = Math.max(2, (e.width / 100) * SCENE_W * 1.4)
+      const wPx = baseStrokePx + 4
+      // Bright orange leader stroke that grows to full length, plus a
+      // soft glow underneath for legibility on dark backgrounds.
+      g.moveTo(fx, fy).lineTo(hx, hy)
+      g.stroke({ color: 0xffd58a, width: wPx + 4, alpha: 0.25 })
+      g.moveTo(fx, fy).lineTo(hx, hy)
+      g.stroke({ color: 0xffaa1f, width: wPx, alpha: 0.95 })
+    }
+    // Active node halos
+    for (const [nodeId, h] of [...this.playActiveNodes]) {
+      const t = (now - h.startMs) / h.durMs
+      if (t <= 0) continue
+      if (t >= 1) {
+        this.playActiveNodes.delete(nodeId)
+        continue
+      }
+      const n = this.model.nodes.get(nodeId)
+      if (!n) { this.playActiveNodes.delete(nodeId); continue }
+      const cx = (n.x / 100) * SCENE_W
+      const cy = (n.y / 100) * SCENE_H
+      const hw = ((n.w / 100) * SCENE_W) / 2
+      const hh = ((n.h / 100) * SCENE_H) / 2
+      // Pulse: ramp in fast, decay slow. Ring expands ~10% over its life.
+      const pulse = t < 0.2 ? t / 0.2 : 1 - (t - 0.2) / 0.8
+      const alpha = 0.7 * Math.max(0, pulse)
+      const grow = 1 + 0.10 * t
+      const rx = hw * grow + 6
+      const ry = hh * grow + 6
+      g.ellipse(cx, cy, rx, ry)
+      g.stroke({ color: 0xffaa1f, width: 4, alpha })
+      g.ellipse(cx, cy, rx + 6, ry + 6)
+      g.stroke({ color: 0xffd58a, width: 2, alpha: alpha * 0.5 })
+    }
   }
 
   private drawConnectGhost(): void {

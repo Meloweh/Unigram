@@ -72,7 +72,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
         title="Expand inspector"
         style={collapsedStripStyle('right')}
       >
-        <span style={{ font: 'bold 14px system-ui, sans-serif', color: '#cfe' }}>‹</span>
+        <span style={{ font: 'bold 14px system-ui, sans-serif', color: 'var(--ug-text)' }}>‹</span>
       </button>
     )
   }
@@ -104,9 +104,9 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
                     style={{
                       ...buttonStyle,
                       flex: 1,
-                      background: kind === k ? '#2b6cb0' : '#1a2030',
-                      borderColor: kind === k ? '#4aa3ff' : '#384055',
-                      color: kind === k ? '#fff' : '#cfe',
+                      background: kind === k ? 'var(--ug-primary)' : 'var(--ug-surface-raised)',
+                      borderColor: kind === k ? 'var(--ug-primary-light)' : 'var(--ug-border)',
+                      color: kind === k ? 'var(--ug-text-on-primary)' : 'var(--ug-text)',
                     }}
                   >
                     {k === 'default' ? 'Default' : 'Flow'}
@@ -121,7 +121,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
                 onChange={(e) =>
                   useOmniStore.getState().updateEdge(eid, { color: e.target.value })
                 }
-                style={{ width: '100%', height: 26, padding: 0, border: '1px solid #2a3a52' }}
+                style={{ width: '100%', height: 26, padding: 0, border: '1px solid var(--ug-border)' }}
               />
             </Field>
             <Field label="Width %">
@@ -213,7 +213,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
           />
         </Field>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={{ fontSize: 11, color: '#7a8aa0' }}>Grid</span>
+          <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Grid</span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <input
               type="checkbox"
@@ -272,9 +272,9 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
                 onClick={() => updateAll({ shape: s })}
                 style={{
                   ...buttonStyle,
-                  background: active ? '#2b6cb0' : '#1a2030',
-                  color: active ? '#fff' : '#cfe',
-                  borderColor: active ? '#4aa3ff' : '#384055',
+                  background: active ? 'var(--ug-primary)' : 'var(--ug-surface-raised)',
+                  color: active ? 'var(--ug-text-on-primary)' : 'var(--ug-text)',
+                  borderColor: active ? 'var(--ug-primary-light)' : 'var(--ug-border)',
                 }}
                 title={SHAPE_LABEL[s]}
               >
@@ -338,7 +338,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
 
       <button
         onClick={() => useOmniStore.getState().removeNodes(nodes.map((n) => n.id))}
-        style={{ ...buttonStyle, background: '#5a1f1f', borderColor: '#a04040', marginTop: 8 }}
+        style={{ ...buttonStyle, background: 'var(--ug-danger-bg)', color: 'var(--ug-danger)', borderColor: 'var(--ug-danger-border)', marginTop: 8 }}
       >
         Delete {isMulti ? `${nodes.length} nodes` : 'node'}
       </button>
@@ -347,7 +347,6 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
 
       {!isMulti && <MpdSection node={nodes[0]} />}
       {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
-      {!isMulti && renderer && <TextGenSection node={nodes[0]} renderer={renderer} />}
     </Panel>
   )
 }
@@ -378,7 +377,7 @@ function sharedField<T>(nodes: ModelNode[], pick: (n: ModelNode) => T): T | stri
         type="color"
         value={hexOf(v)}
         onChange={(e) => onChange(e.target.value)}
-        style={{ width: 32, height: 24, padding: 0, border: '1px solid #384055', background: 'transparent' }}
+        style={{ width: 32, height: 24, padding: 0, border: '1px solid var(--ug-border)', background: 'transparent' }}
       />
       <input
         type="text"
@@ -463,8 +462,8 @@ function Title({ children }: { children: React.ReactNode }) {
       style={{
         fontWeight: 600,
         fontSize: 13,
-        color: '#fff',
-        borderBottom: '1px solid #2a3142',
+        color: 'var(--ug-text-heading)',
+        borderBottom: '1px solid var(--ug-border-light)',
         paddingBottom: 6,
       }}
     >
@@ -476,7 +475,7 @@ function Title({ children }: { children: React.ReactNode }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>{label}</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>{label}</span>
       {children}
     </label>
   )
@@ -487,11 +486,11 @@ function Row({ children }: { children: React.ReactNode }) {
 }
 
 function Mixed() {
-  return <span style={{ fontSize: 10, color: '#7a8aa0' }}>(mixed across selection)</span>
+  return <span style={{ fontSize: 10, color: 'var(--ug-text-muted)' }}>(mixed across selection)</span>
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 11, color: '#7a8aa0', fontStyle: 'italic' }}>{children}</div>
+  return <div style={{ fontSize: 11, color: 'var(--ug-text-muted)', fontStyle: 'italic' }}>{children}</div>
 }
 
 /**
@@ -516,7 +515,7 @@ function CosmeticsControls() {
   const bgType = bg?.type ?? 'solid'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Theme</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Theme</span>
       <select
         value={themeMode}
         onChange={(e) => setMode(e.target.value as ThemeMode)}
@@ -534,7 +533,7 @@ function CosmeticsControls() {
         </optgroup>
       </select>
 
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Background</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Background</span>
       <select
         value={bgType}
         onChange={(e) => {
@@ -593,7 +592,7 @@ function CosmeticsControls() {
       )}
       <button onClick={() => setBg(undefined)} style={buttonStyle}>Clear background</button>
 
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Particles</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Particles</span>
       <select
         value={particle}
         onChange={(e) => setParticle(e.target.value)}
@@ -609,9 +608,9 @@ function CosmeticsControls() {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: '#0e131c',
-  color: '#e0eaf5',
-  border: '1px solid #2a3142',
+  background: 'var(--ug-surface)',
+  color: 'var(--ug-text)',
+  border: '1px solid var(--ug-border)',
   borderRadius: 3,
   padding: '4px 6px',
   font: 'inherit',
@@ -620,9 +619,9 @@ const inputStyle: React.CSSProperties = {
 }
 
 const buttonStyle: React.CSSProperties = {
-  background: '#1a2030',
-  color: '#cfe',
-  border: '1px solid #384055',
+  background: 'var(--ug-surface-raised)',
+  color: 'var(--ug-text)',
+  border: '1px solid var(--ug-border)',
   borderRadius: 3,
   padding: '4px 6px',
   font: '11px system-ui, sans-serif',
@@ -631,9 +630,9 @@ const buttonStyle: React.CSSProperties = {
 
 const dangerButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  background: '#3a1a20',
-  color: '#fcc',
-  border: '1px solid #6e2a36',
+  background: 'var(--ug-danger-bg)',
+  color: 'var(--ug-danger)',
+  border: '1px solid var(--ug-danger-border)',
 }
 
 function normaliseHex(c: string): string {
@@ -670,7 +669,7 @@ function BehaviourFlags({
   const cameraTracked = allHave((n) => n.cameraTracked)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Behaviour</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Behaviour</span>
       <Checkbox
         label="Locked (skip drag & untangle)"
         checked={locked}
@@ -700,7 +699,7 @@ function Checkbox({
   onChange: (v: boolean) => void
 }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#cfe', cursor: 'pointer' }}>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ug-text)', cursor: 'pointer' }}>
       <input
         type="checkbox"
         checked={checked}
@@ -739,7 +738,7 @@ function CosmeticTipControls({
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Tip / tail</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Tip / tail</span>
       <Row>
         <Field label="Angle°">
           <NumberField
@@ -772,7 +771,7 @@ function MpdSection({ node }: { node: ModelNode }) {
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>MPD dimensions</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>MPD dimensions</span>
       {dims.length === 0 ? (
         <span style={{ fontSize: 11, color: '#576278' }}>None — add a dimension to enable the dial.</span>
       ) : (
@@ -898,10 +897,15 @@ function FlowEffectsSection({
     if (!preset) return
     renderer.playFlowEffect(node.id, preset.effect)
   }
-  const attach = () => {
+  const attachLoop = () => {
     const preset = FLOW_PRESETS.find((p) => p.id === selected)
     if (!preset) return
     attachEffect(node.id, { ...preset.effect, alwaysPlay: true }, node.flowEffects)
+  }
+  const attachOneShot = () => {
+    const preset = FLOW_PRESETS.find((p) => p.id === selected)
+    if (!preset) return
+    attachEffect(node.id, { ...preset.effect, alwaysPlay: false }, node.flowEffects)
   }
   const detach = (effectId: string) => {
     const existing = node.flowEffects ?? []
@@ -916,7 +920,13 @@ function FlowEffectsSection({
       onPreview={(eff) => renderer.playFlowEffect(node.id, eff)}
       onSave={(eff) => {
         const existing = node.flowEffects ?? []
-        const withId = { ...eff, id: eff.id || `eff_${Date.now().toString(36)}`, alwaysPlay: true }
+        // Preserve the original alwaysPlay flag so editing a one-shot effect
+        // doesn't accidentally promote it to a loop (legacy parity).
+        const withId = {
+          ...eff,
+          id: eff.id || `eff_${Date.now().toString(36)}`,
+          alwaysPlay: editing?.alwaysPlay ?? false,
+        }
         // Replace by id if it already exists.
         const next = existing.some((x) => x.id === withId.id)
           ? existing.map((x) => (x.id === withId.id ? withId : x))
@@ -927,10 +937,12 @@ function FlowEffectsSection({
       onClose={() => setEditing(null)}
     />
   ) : null
-  const attached = (node.flowEffects ?? []).filter((e) => e.alwaysPlay)
+  const all = node.flowEffects ?? []
+  const loops = all.filter((e) => e.alwaysPlay)
+  const oneShots = all.filter((e) => !e.alwaysPlay)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Flow effects</span>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Flow effects</span>
       <select
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
@@ -943,11 +955,22 @@ function FlowEffectsSection({
         ))}
       </select>
       <Row>
-        <button onClick={play} style={buttonStyle}>
-          ▶ Play once
+        <button onClick={play} style={buttonStyle} title="Play this preset once on this node">
+          ▶ Preview
         </button>
-        <button onClick={attach} style={buttonStyle}>
-          ∞ Attach loop
+        <button
+          onClick={attachOneShot}
+          style={buttonStyle}
+          title="Attach as one-shot — runs when global Play is pressed"
+        >
+          + One-shot
+        </button>
+        <button
+          onClick={attachLoop}
+          style={buttonStyle}
+          title="Attach as always-play loop — runs continuously"
+        >
+          ∞ Loop
         </button>
       </Row>
       <button
@@ -956,33 +979,71 @@ function FlowEffectsSection({
       >
         + New custom effect
       </button>
-      {attached.length > 0 && (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {attached.map((e) => (
-            <li
-              key={e.id}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: '#bcd' }}
-            >
-              <span>∞ {e.label}</span>
-              <span>
-                <button
-                  onClick={() => editExisting(e)}
-                  style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
-                  title="Edit effect"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() => detach(e.id)}
-                  style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
-                  title="Remove looped effect"
-                >
-                  ✕
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
+      {oneShots.length > 0 && (
+        <>
+          <span style={{ fontSize: 10, color: 'var(--ug-text-muted)', marginTop: 4 }}>
+            One-shots (Play)
+          </span>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {oneShots.map((e) => (
+              <li
+                key={e.id}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}
+              >
+                <span>▷ {e.label}</span>
+                <span>
+                  <button
+                    onClick={() => editExisting(e)}
+                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
+                    title="Edit effect"
+                  >
+                    ✎
+                  </button>
+                  <button
+                    onClick={() => detach(e.id)}
+                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
+                    title="Remove effect"
+                  >
+                    ✕
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {loops.length > 0 && (
+        <>
+          <span style={{ fontSize: 10, color: 'var(--ug-text-muted)', marginTop: 4 }}>
+            Always playing
+          </span>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {loops.map((e) => (
+              <li
+                key={e.id}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}
+              >
+                <span>∞ {e.label}</span>
+                <span>
+                  <button
+                    onClick={() => editExisting(e)}
+                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
+                    title="Edit effect"
+                  >
+                    ✎
+                  </button>
+                  <button
+                    onClick={() => detach(e.id)}
+                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
+                    title="Remove looped effect"
+                  >
+                    ✕
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       {editor}
     </div>
@@ -1004,77 +1065,6 @@ function attachEffect(
     .updateNode(nodeId, { flowEffects: [...(existing ?? []), attached] })
 }
 
-function TextGenSection({
-  node,
-  renderer,
-}: {
-  node: ModelNode
-  renderer: import('../scene/SceneRenderer').SceneRenderer
-}) {
-  const [text, setText] = useState<string>('Hello, world!')
-  const [cps, setCps] = useState<number>(24)
-  const [sound, setSound] = useState<import('../audio/textGenSounds').TextGenSoundPreset>('typewriter')
-  const [loop, setLoop] = useState<boolean>(false)
-  const [running, setRunning] = useState<boolean>(false)
-  const start = () => {
-    renderer.startTextGen(node.id, { text, charsPerSec: cps, sound, loop, endHoldMs: 1500 })
-    setRunning(true)
-  }
-  const stop = () => {
-    renderer.stopTextGen(node.id)
-    setRunning(false)
-  }
-  // Sound preset choices loaded lazily so SSR/test paths don't touch the
-  // audio module unless this section actually mounts.
-  const SOUNDS: { id: import('../audio/textGenSounds').TextGenSoundPreset; label: string }[] = [
-    { id: 'none', label: 'None' },
-    { id: 'undertale', label: 'Undertale' },
-    { id: 'inscryption', label: 'Inscryption' },
-    { id: 'pokemon', label: 'Pokémon' },
-    { id: 'typewriter', label: 'Typewriter' },
-    { id: 'terminal', label: 'Terminal' },
-  ]
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: '#7a8aa0' }}>Text generator</span>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={2}
-        style={{ ...inputStyle, resize: 'vertical', minHeight: 32, fontFamily: 'inherit' }}
-      />
-      <Row>
-        <Field label="cps">
-          <NumberField value={cps} min={1} max={120} step={1} onChange={setCps} />
-        </Field>
-        <Field label="loop">
-          <input
-            type="checkbox"
-            checked={loop}
-            onChange={(e) => setLoop(e.target.checked)}
-            style={{ accentColor: '#5da' }}
-          />
-        </Field>
-      </Row>
-      <select
-        value={sound}
-        onChange={(e) => setSound(e.target.value as import('../audio/textGenSounds').TextGenSoundPreset)}
-        style={inputStyle}
-      >
-        {SOUNDS.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.label}
-          </option>
-        ))}
-      </select>
-      <Row>
-        <button onClick={start} style={buttonStyle} disabled={running}>
-          ▶ Type
-        </button>
-        <button onClick={stop} style={buttonStyle} disabled={!running}>
-          ⏹ Stop
-        </button>
-      </Row>
-    </div>
-  )
-}
+// (TextGenSection removed — text-generator is exposed as a Flow Effect kind
+// only, matching legacy Unigram behaviour. See `src/flow/types.ts` for the
+// `'text-generator'` effect kind and the FlowEffectEditor for the editor UI.)

@@ -27,6 +27,8 @@ export type FlowEffectKind =
   | 'cloud-levitate'
   | 'bubble-levitate'
   | 'repeater'
+  | 'camera'
+  | 'text-generator'
 
 export interface EffectNode {
   id: string
@@ -49,6 +51,17 @@ export interface EffectNode {
    *  - repeater:         { times }                    (when reached, rewinds the run;
    *                                                    times<0 means infinite, otherwise
    *                                                    decrements until exhausted. 0 contribution.)
+   *  - camera:           { panX?, panY?, zoom?, ms,    (drives the renderer's camera as a
+   *                        permanent? }                 transient additive override; panX/panY in
+   *                                                    scene-percent deltas, zoom multiplicative.
+   *                                                    permanent≠0 holds final values until the run
+   *                                                    cancels. Does NOT mutate the store.)
+   *  - text-generator:   { charsPerSec?, sound?, loop?,(progressive label reveal on the target
+   *                        endHoldMs? }                 node. Resolves text from the node's label.
+   *                                                    `sound` is the index into TEXT_GEN_SOUND_PRESETS;
+   *                                                    -1 = none. Bridged to TextGenRunner via the
+   *                                                    runtime's `onTextGen` callback so the renderer
+   *                                                    owns the actual reveal state.)
    */
   params: Record<string, number>
 }
@@ -105,4 +118,28 @@ function tintCombine(a: number, b: number): number {
   const g = Math.round((ag * bg) / 255)
   const bl = Math.round((ab * bb) / 255)
   return (r << 16) | (g << 8) | bl
+}
+
+/**
+ * Per-frame camera adjustment from active `camera` flow tasks. Composed
+ * additively on top of the user camera by `SceneRenderer.applyCameraTransform`.
+ * Kept separate from `NodeOverride` because it's global, not per-target.
+ */
+export interface CameraOverride {
+  /** Extra pan in scene-percent units, additive on top of `camera.panX`. */
+  dPanX?: number
+  dPanY?: number
+  /** Multiplicative zoom on top of `camera.freeScale`. 1 = no change. */
+  scaleMul?: number
+}
+
+export function mergeCameraOverride(
+  a: CameraOverride,
+  b: CameraOverride,
+): CameraOverride {
+  return {
+    dPanX: (a.dPanX ?? 0) + (b.dPanX ?? 0),
+    dPanY: (a.dPanY ?? 0) + (b.dPanY ?? 0),
+    scaleMul: (a.scaleMul ?? 1) * (b.scaleMul ?? 1),
+  }
 }

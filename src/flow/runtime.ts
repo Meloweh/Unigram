@@ -17,11 +17,12 @@
  */
 
 import type {
+  CameraOverride,
   EffectNode,
   FlowEffect,
   NodeOverride,
 } from './types'
-import { mergeOverride } from './types'
+import { mergeCameraOverride, mergeOverride } from './types'
 
 interface Task {
   id: string
@@ -36,6 +37,11 @@ interface Task {
   scheduled: boolean
   /** ms when the task completed (− means not yet). */
   endedAt: number
+  /**
+   * For side-effect kinds (e.g. `text-generator`), set true once the runtime
+   * fired the start callback so it isn't re-triggered each frame.
+   */
+  sideEffectFired?: boolean
 }
 
 interface Run {
@@ -51,6 +57,8 @@ interface Run {
   loop: boolean
   /** Cumulative override held past task end for `permanent`-flagged tasks. */
   held: NodeOverride | null
+  /** Held camera contribution (e.g. permanent `camera` task). */
+  cameraHeld: CameraOverride | null
   /**
    * Per-task remaining repeats from `repeater` nodes. When > 0, completing
    * the run rewinds and decrements; 0 means done; -1 means infinite.
@@ -64,6 +72,18 @@ export class FlowRuntime {
   private runs = new Map<string, Run>()
   /** Aggregated per-target-node override for *this* tick. */
   private overrides = new Map<string, NodeOverride>()
+  /** Aggregated camera override for *this* tick (null when none). */
+  private cameraOverride: CameraOverride | null = null
+
+  /**
+   * Side-effect bridge for kinds that touch external state the renderer
+   * owns (currently only `text-generator`, which delegates to the
+   * `TextGenRunner`). Optional — when unset, side-effect tasks no-op.
+   * `start` fires once per task when scheduled; `stop` fires on cancel,
+   * task end, or run drain.
+   */
+  onTextGen: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onTextGenStop: ((targetNodeId: string) => void) | null = null
 
   /** Returns the run id, or null if the graph was empty / cyclic. */
   start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
@@ -126,6 +146,7 @@ export class FlowRuntime {
       dependents,
       loop: effect.alwaysPlay === true,
       held: null,
+      cameraHeld: null,
       repeatLeft,
     })
     return runId
@@ -133,6 +154,8 @@ export class FlowRuntime {
 
   /** Stop a run immediately. Overrides for its target are cleared next tick. */
   cancel(runId: string): void {
+    const run = this.runs.get(runId)
+    if (run) this.fireSideEffectStops(run)
     this.runs.delete(runId)
   }
 
@@ -151,6 +174,7 @@ export class FlowRuntime {
    */
   tick(now: number): void {
     this.overrides.clear()
+    this.cameraOverride = null
     for (const [id, run] of [...this.runs]) {
       // A looped run may complete and rewind multiple times within a single
       // tick (e.g. unfocused tab catching up). Cap the rewinds to keep this
@@ -173,6 +197,11 @@ export class FlowRuntime {
               run.targetNodeId,
               cur ? mergeOverride(cur, run.held) : run.held,
             )
+          }
+          if (run.cameraHeld) {
+            this.cameraOverride = this.cameraOverride
+              ? mergeCameraOverride(this.cameraOverride, run.cameraHeld)
+              : run.cameraHeld
           }
           this.runs.delete(id)
           break
@@ -204,6 +233,11 @@ export class FlowRuntime {
   /** Get aggregated override for a target node, or undefined if none. */
   getOverride(targetNodeId: string): NodeOverride | undefined {
     return this.overrides.get(targetNodeId)
+  }
+
+  /** Aggregated camera override across all active runs (or undefined). */
+  getCameraOverride(): CameraOverride | undefined {
+    return this.cameraOverride ?? undefined
   }
 
   // ---- internals --------------------------------------------------------
@@ -242,20 +276,37 @@ export class FlowRuntime {
     //    into `run.held` and merged each subsequent tick (cancellation still
     //    drops everything since the run leaves the runtime).
     let merged: NodeOverride | null = run.held
+    let cameraMerged: CameraOverride | null = run.cameraHeld
     for (const t of run.tasks.values()) {
       if (!t.scheduled) continue
       const taskEnd = t.startAt + t.durationMs
       if (elapsed >= taskEnd) {
         if (t.endedAt < 0) {
           t.endedAt = taskEnd
+          // Side-effect tasks: fire stop on completion.
+          if (t.node.kind === 'text-generator' && t.sideEffectFired) {
+            this.onTextGenStop?.(run.targetNodeId)
+          }
           // Capture final value for permanent-flagged kinds.
           if ((t.node.params.permanent ?? 0) !== 0) {
-            const finalContrib = contribution(t.node, 1, t.durationMs)
-            if (finalContrib) {
-              run.held = run.held
-                ? mergeOverride(run.held, finalContrib)
-                : finalContrib
-              merged = merged ? mergeOverride(merged, finalContrib) : finalContrib
+            if (t.node.kind === 'camera') {
+              const finalCam = cameraContribution(t.node, 1)
+              if (finalCam) {
+                run.cameraHeld = run.cameraHeld
+                  ? mergeCameraOverride(run.cameraHeld, finalCam)
+                  : finalCam
+                cameraMerged = cameraMerged
+                  ? mergeCameraOverride(cameraMerged, finalCam)
+                  : finalCam
+              }
+            } else {
+              const finalContrib = contribution(t.node, 1, t.durationMs)
+              if (finalContrib) {
+                run.held = run.held
+                  ? mergeOverride(run.held, finalContrib)
+                  : finalContrib
+                merged = merged ? mergeOverride(merged, finalContrib) : finalContrib
+              }
             }
           }
         }
@@ -264,8 +315,19 @@ export class FlowRuntime {
       if (elapsed < t.startAt) continue
       const localElapsed = elapsed - t.startAt
       const ratio = t.durationMs > 0 ? localElapsed / t.durationMs : 1
-      const contrib = contribution(t.node, ratio, localElapsed)
-      if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
+      if (t.node.kind === 'camera') {
+        const cam = cameraContribution(t.node, ratio)
+        if (cam) cameraMerged = cameraMerged ? mergeCameraOverride(cameraMerged, cam) : cam
+      } else if (t.node.kind === 'text-generator') {
+        // Side-effect: fire start exactly once when the task becomes active.
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          this.onTextGen?.(run.targetNodeId, t.node.params)
+        }
+      } else {
+        const contrib = contribution(t.node, ratio, localElapsed)
+        if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
+      }
     }
     if (merged) {
       const cur = this.overrides.get(run.targetNodeId)
@@ -274,11 +336,36 @@ export class FlowRuntime {
         cur ? mergeOverride(cur, merged) : merged,
       )
     }
+    if (cameraMerged) {
+      this.cameraOverride = this.cameraOverride
+        ? mergeCameraOverride(this.cameraOverride, cameraMerged)
+        : cameraMerged
+    }
+  }
+
+  /**
+   * Fire `onTextGenStop` for every text-generator task in the run that
+   * had previously fired its start side-effect. Idempotent — safe to call
+   * on cancel even when no side effects ran.
+   */
+  private fireSideEffectStops(run: Run): void {
+    if (!this.onTextGenStop) return
+    for (const t of run.tasks.values()) {
+      if (t.node.kind === 'text-generator' && t.sideEffectFired && t.endedAt < 0) {
+        this.onTextGenStop(run.targetNodeId)
+      }
+    }
   }
 }
 
 function durationOf(n: EffectNode): number {
   if (n.kind === 'wait') return Math.max(0, n.params.ms ?? 0)
+  if (n.kind === 'text-generator') {
+    // Side-effect tasks need a duration so the runtime can fire `onTextGenStop`
+    // on completion. Default 1.5 s is enough for short labels at 24 cps;
+    // editor exposes `ms` for longer text.
+    return Math.max(0, n.params.ms ?? 1500)
+  }
   return Math.max(0, n.params.ms ?? 0)
 }
 
@@ -374,7 +461,34 @@ function contribution(
       // Pure scheduling node — no per-frame contribution. Repeat semantics
       // are applied by `tick()` when the run drains.
       return null
+    case 'camera':
+      // Camera contributions live in a separate channel; this switch only
+      // handles per-node overrides. The runtime branches before calling.
+      return null
+    case 'text-generator':
+      // Side-effect kind: bridged via `onTextGen` / `onTextGenStop`. No
+      // per-frame override contribution.
+      return null
   }
+}
+
+/**
+ * Per-frame additive camera contribution from a `camera` task. `ratio` 0–1.
+ * Targets are interpreted as deltas relative to the user camera:
+ *   panX/panY: scene-percent deltas, linearly interpolated 0 \u2192 target.
+ *   zoom:     multiplicative scale factor (default 1 = no change),
+ *             interpolated as 1 \u2192 zoom.
+ */
+function cameraContribution(n: EffectNode, ratio: number): CameraOverride | null {
+  if (n.kind !== 'camera') return null
+  const targetPanX = n.params.panX ?? 0
+  const targetPanY = n.params.panY ?? 0
+  const targetZoom = n.params.zoom ?? 1
+  const dPanX = targetPanX * ratio
+  const dPanY = targetPanY * ratio
+  const scaleMul = 1 + (targetZoom - 1) * ratio
+  if (dPanX === 0 && dPanY === 0 && scaleMul === 1) return null
+  return { dPanX, dPanY, scaleMul }
 }
 
 function lerp(a: number, b: number, t: number): number {

@@ -15,6 +15,7 @@ import {
   DEFAULT_GRID,
   DEFAULT_NODE,
   type Connection,
+  type ConnectionKind,
   type GridSettings,
   type Model,
   type ModelNode,
@@ -73,6 +74,12 @@ export interface OmniState {
   zoomStack: ZoomStackFrame[]
   /** Node whose label is being edited inline (null when not editing). */
   editingNodeId: string | null
+  /**
+   * Sticky kind for new connections drawn via right-drag in the canvas.
+   * Mirrors the legacy LeftSidebar `Connection Types` radio. NOT undoable
+   * (UI preference). Default `'default'`.
+   */
+  defaultConnectionKind: ConnectionKind
 }
 
 interface Actions {
@@ -90,6 +97,9 @@ interface Actions {
 
   /** Begin / end inline label editing for a node (NOT undoable; UI state). */
   setEditingNode(id: string | null): void
+
+  /** Sticky kind applied to connections drawn via the canvas (NOT undoable). */
+  setDefaultConnectionKind(kind: ConnectionKind): void
 
   // Entity authoring (each is one undoable transaction).
   addNode(partial: Partial<ModelNode> & Pick<ModelNode, 'x' | 'y'>): string
@@ -167,6 +177,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   focusedNodeId: null,
   zoomStack: [],
   editingNodeId: null,
+  defaultConnectionKind: 'default',
 
   setCamera(c) {
     set((s) => ({ camera: { ...s.camera, ...c } }))
@@ -417,6 +428,10 @@ export const useOmniStore = create<Store>((set, get) => ({
       models.set(model.id, model)
       return { model, models, rev: s.rev + 1 }
     })
+  },
+
+  setDefaultConnectionKind(kind) {
+    set({ defaultConnectionKind: kind })
   },
 
   setCosmetics(patch) {

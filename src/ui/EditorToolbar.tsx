@@ -1,23 +1,42 @@
 /**
  * EditorToolbar — chrome row mounted at the top of the canvas.
  *
- * Owns Undo / Redo / Delete and the Save / Load / Record cluster. Buttons
- * disable themselves contextually (no undo stack, no selection, recording
- * already in flight) so the chrome accurately mirrors the available actions
- * — same contract as legacy `src/old/ui/EditorToolbar.tsx`.
+ * Owns Undo / Redo / Delete / Play / Stop and the Save / Load / Record
+ * cluster. Buttons disable themselves contextually (no undo stack, no
+ * selection, no flow running, recording already in flight) so the chrome
+ * accurately mirrors the available actions — same contract as legacy
+ * `src/old/ui/EditorToolbar.tsx`.
  *
- * Untangle and Play/Stop are deferred until the corresponding subsystems
- * land (auto-untangle worker → not yet ported, flow play/stop → already
- * accessible via the per-node flow controls in `RightSidebar`).
+ * Untangle is deferred until the auto-untangle worker is ported.
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useOmniStore } from '../model/store'
 import { exportBundle, importBundle } from '../model/projectBundle'
+import { importLegacyBundle, type LegacyFetcher } from '../model/legacyImport'
 import type { SceneRenderer } from '../scene/SceneRenderer'
 
 interface EditorToolbarProps {
   renderer: SceneRenderer | null
+}
+
+/**
+ * Resolve the implicit Play root: first selected node, else the first node
+ * with no incoming `kind:'flow'` edge (the natural cascade source), else
+ * the first node in the model. Returns null only when the model is empty.
+ */
+function resolvePlayRoot(s: ReturnType<typeof useOmniStore.getState>): string | null {
+  if (s.selectedIds.size > 0) return [...s.selectedIds][0]
+  const nodes = s.model.nodes
+  if (nodes.size === 0) return null
+  const incomingFlow = new Set<string>()
+  for (const e of s.model.edges.values()) {
+    if (e.kind === 'flow') incomingFlow.add(e.to)
+  }
+  for (const id of nodes.keys()) {
+    if (!incomingFlow.has(id)) return id
+  }
+  return [...nodes.keys()][0]
 }
 
 export function EditorToolbar({ renderer }: EditorToolbarProps) {
@@ -34,6 +53,25 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
   const canUndo = s.undoStack.canUndo()
   const canRedo = s.undoStack.canRedo()
   const hasSelection = s.selectedIds.size > 0 || s.selectedEdgeIds.size > 0
+  // Play root: prefer the first selected node; otherwise auto-pick the
+  // first node with no *incoming* flow edge (cascade source); falling back
+  // to the first node in the model. Matches legacy "Play from root" UX.
+  const playRootId = resolvePlayRoot(s)
+  // Re-render every animation frame while a flow is playing so the Stop
+  // button auto-disables when the runs drain. `isFlowPlaying` is a derived
+  // boolean read from the renderer (not the store), so we poll cheaply.
+  const [, setPulse] = useState(0)
+  useEffect(() => {
+    if (!renderer) return
+    let raf = 0
+    const tick = () => {
+      setPulse((p) => (p + 1) & 0xffff)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [renderer])
+  const isPlaying = renderer?.isFlowPlaying ?? false
 
   const onDelete = () => {
     const cur = useOmniStore.getState()
@@ -67,6 +105,29 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
         ✕ Delete
       </ToolbarButton>
       <Separator />
+      {isPlaying ? (
+        <ToolbarButton
+          onClick={() => renderer?.stopFlow()}
+          disabled={!renderer}
+          title="Stop flow playback"
+          danger
+        >
+          ⏹ Stop
+        </ToolbarButton>
+      ) : (
+        <ToolbarButton
+          onClick={() => playRootId && renderer?.playFlowFromNode(playRootId)}
+          disabled={!renderer || !playRootId}
+          title={
+            playRootId
+              ? 'Play flow cascade (from selection if any, else from a flow root)'
+              : 'Add at least one node to play'
+          }
+        >
+          ▶ Play
+        </ToolbarButton>
+      )}
+      <Separator />
       <SaveLoadButtons />
       <Separator />
       <RecordingButtons renderer={renderer} />
@@ -97,9 +158,9 @@ function ToolbarButton({
         ...buttonStyle,
         opacity: disabled ? 0.5 : 1,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        background: danger ? '#3a1a20' : '#1a2030',
-        color: danger ? '#fcc' : '#cfe',
-        borderColor: danger ? '#6e2a36' : '#384055',
+        background: danger ? 'var(--ug-danger-bg)' : 'var(--ug-surface-raised)',
+        color: danger ? 'var(--ug-danger)' : 'var(--ug-text)',
+        borderColor: danger ? 'var(--ug-danger-border)' : 'var(--ug-border)',
       }}
     >
       {children}
@@ -114,7 +175,7 @@ function Separator() {
       style={{
         width: 1,
         alignSelf: 'stretch',
-        background: '#2a3142',
+        background: 'var(--ug-border-light)',
         margin: '0 2px',
       }}
     />
@@ -139,25 +200,65 @@ function SaveLoadButtons() {
     e.target.value = ''
     if (!file) return
     try {
+      // Heuristic: legacy v0 model files are plain JSON and are loaded via
+      // the multi-file walker. New bundles are zips (`.unigram` / `.zip`).
+      const isJson = /\.json$/i.test(file.name) || file.type === 'application/json'
+      if (isJson) {
+        // Build a synthetic fetcher that resolves sibling files via the same
+        // directory as the picked file. The user must pick the *root* JSON;
+        // referenced JSONs are loaded as same-directory blobs.
+        const text = await file.text()
+        const siblings = new Map<string, string>([[`/${file.name}`, text]])
+        const fetcher: LegacyFetcher = async (url) => {
+          const t = siblings.get(url)
+          if (t) return JSON.parse(t)
+          // Fall back to network (e.g. when loading the demo from `public/`).
+          const r = await fetch(url)
+          if (!r.ok) throw new Error(`Cannot resolve ${url}`)
+          return r.json()
+        }
+        const snap = await importLegacyBundle(`/${file.name}`, fetcher)
+        useOmniStore.getState().loadProject(snap)
+        return
+      }
       const snap = await importBundle(file)
       useOmniStore.getState().loadProject(snap)
     } catch (err) {
-      console.error('Failed to load bundle:', err)
-      alert(`Failed to load bundle: ${(err as Error).message}`)
+      console.error('Failed to load:', err)
+      alert(`Failed to load: ${(err as Error).message}`)
     }
   }
+  // Ctrl/Cmd+S → Save, Ctrl/Cmd+O → Load. Suppressed when typing in a form
+  // field so editor inputs keep their normal behaviour.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      const ctrl = e.ctrlKey || e.metaKey
+      if (!ctrl) return
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault()
+        void onSave()
+      } else if (e.key === 'o' || e.key === 'O') {
+        e.preventDefault()
+        onPick()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   return (
     <>
-      <ToolbarButton onClick={onSave} title="Save project as .unigram">
+      <ToolbarButton onClick={onSave} title="Save project as .unigram (Ctrl+S)">
         💾 Save
       </ToolbarButton>
-      <ToolbarButton onClick={onPick} title="Load .unigram bundle">
+      <ToolbarButton onClick={onPick} title="Load .unigram bundle (Ctrl+O)">
         📂 Load
       </ToolbarButton>
       <input
         ref={fileRef}
         type="file"
-        accept=".unigram,.zip,application/zip"
+        accept=".unigram,.zip,application/zip,.json,application/json"
         style={{ display: 'none' }}
         onChange={onFile}
       />
@@ -254,16 +355,16 @@ const barStyle: React.CSSProperties = {
   alignItems: 'stretch',
   gap: 4,
   padding: 4,
-  background: 'rgba(15, 18, 26, 0.85)',
-  border: '1px solid #2a3142',
+  background: 'var(--ug-glass)',
+  border: '1px solid var(--ug-border)',
   borderRadius: 6,
-  boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+  boxShadow: '0 2px 8px var(--ug-shadow)',
   backdropFilter: 'blur(6px)',
   zIndex: 10,
 }
 
 const buttonStyle: React.CSSProperties = {
-  border: '1px solid #384055',
+  border: '1px solid var(--ug-border)',
   borderRadius: 3,
   padding: '4px 10px',
   font: '12px system-ui, sans-serif',

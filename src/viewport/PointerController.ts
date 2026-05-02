@@ -345,7 +345,8 @@ export class PointerController {
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
       if (targetId && targetId !== a.nodeId) {
-        useOmniStore.getState().addEdge(a.nodeId, targetId)
+        const kind = useOmniStore.getState().defaultConnectionKind
+        useOmniStore.getState().addEdge(a.nodeId, targetId, { kind })
       }
       a.ghost?.destroy()
       return

@@ -8,6 +8,7 @@ beforeEach(() => {
     selectedIds: new Set(),
     rev: 0,
     selRev: 0,
+    defaultConnectionKind: 'default',
   })
   useOmniStore.getState().undoStack.clear()
 })
@@ -98,5 +99,21 @@ describe('store', () => {
     expect(useOmniStore.getState().rev).toBe(r0 + 1)
     useOmniStore.getState().addNode({ x: 1, y: 1 })
     expect(useOmniStore.getState().rev).toBe(r0 + 2)
+  })
+
+  it('defaultConnectionKind starts at "default" and round-trips through setter', () => {
+    expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
+    useOmniStore.getState().setDefaultConnectionKind('flow')
+    expect(useOmniStore.getState().defaultConnectionKind).toBe('flow')
+    useOmniStore.getState().setDefaultConnectionKind('default')
+    expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
+  })
+
+  it('addEdge respects partial.kind so callers can author flow edges', () => {
+    const a = useOmniStore.getState().addNode({ x: 0, y: 0 })
+    const b = useOmniStore.getState().addNode({ x: 50, y: 50 })
+    const id = useOmniStore.getState().addEdge(a, b, { kind: 'flow' })!
+    const e = useOmniStore.getState().model.edges.get(id)!
+    expect(e.kind).toBe('flow')
   })
 })
