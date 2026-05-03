@@ -53,6 +53,9 @@ export interface PointerControllerOptions {
 
 export class PointerController {
   private active: ActiveDrag | null = null
+  private readonly dragMovesScratch: Array<{ id: string; x: number; y: number }> = []
+  private pendingNodeDrag: { baselines: Array<{ id: string; x: number; y: number }>; dx: number; dy: number } | null = null
+  private nodeDragRaf = 0
   private lastClickAt = 0
   private lastClickPos = { x: 0, y: 0 }
   private lastNodeClickId: string | null = null
@@ -88,6 +91,9 @@ export class PointerController {
     this.host.removeEventListener('pointerup', this.onPointerUp)
     this.host.removeEventListener('pointercancel', this.onPointerUp)
     this.host.removeEventListener('contextmenu', this.onContextMenu)
+    if (this.nodeDragRaf) cancelAnimationFrame(this.nodeDragRaf)
+    this.nodeDragRaf = 0
+    this.pendingNodeDrag = null
   }
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -243,11 +249,14 @@ export class PointerController {
       const sceneStart = a.startScene
       const dx = sceneNow.x - sceneStart.x
       const dy = sceneNow.y - sceneStart.y
-      // Renderer-direct write for every dragged node. Mutates the live
-      // ModelNode and quadtree; commit is one transaction on pointerup.
-      for (let i = 0; i < a.dragBaselines.length; i++) {
-        const b = a.dragBaselines[i]
-        this.renderer.moveNodeDirect(b.id, b.x + dx, b.y + dy)
+      // Pointer events can arrive faster than Pixi renders. Coalesce large
+      // multi-selection drags to one renderer write per animation frame.
+      this.pendingNodeDrag = { baselines: a.dragBaselines, dx, dy }
+      if (!this.nodeDragRaf) {
+        this.nodeDragRaf = requestAnimationFrame(() => {
+          this.nodeDragRaf = 0
+          this.flushNodeDrag()
+        })
       }
       return
     }
@@ -280,6 +289,7 @@ export class PointerController {
   private onPointerUp = (e: PointerEvent): void => {
     const a = this.active
     if (!a || e.pointerId !== a.pointerId) return
+    this.flushNodeDrag()
     this.active = null
     try {
       this.host.releasePointerCapture(e.pointerId)
@@ -315,14 +325,18 @@ export class PointerController {
           const sx = snapped.x - cur.x
           const sy = snapped.y - cur.y
           if (sx !== 0 || sy !== 0) {
+            const moves = this.dragMovesScratch
+            moves.length = 0
             for (let i = 0; i < a.dragBaselines.length; i++) {
               const b = a.dragBaselines[i]
               const live = store.model.nodes.get(b.id)
               if (!live) continue
-              this.renderer.moveNodeDirect(b.id, live.x + sx, live.y + sy)
+              moves.push({ id: b.id, x: live.x + sx, y: live.y + sy })
             }
+            this.renderer.moveNodesDirect(moves, { updateIndex: false })
           }
         }
+        this.renderer.reindexNodes(a.dragBaselines.map((b) => b.id))
         store.commitDrag(a.dragBaselines)
       } else if (a.nodeId) {
         // Click on node — detect double-click → enter inline label edit.
@@ -370,6 +384,19 @@ export class PointerController {
       a.ghost?.destroy()
       return
     }
+  }
+
+  private flushNodeDrag(): void {
+    const pending = this.pendingNodeDrag
+    if (!pending) return
+    this.pendingNodeDrag = null
+    const moves = this.dragMovesScratch
+    moves.length = 0
+    for (let i = 0; i < pending.baselines.length; i++) {
+      const b = pending.baselines[i]
+      moves.push({ id: b.id, x: b.x + pending.dx, y: b.y + pending.dy })
+    }
+    this.renderer.moveNodesDirect(moves, { updateIndex: false })
   }
 
   private handleEmptyClick(e: PointerEvent, scene: { x: number; y: number }): void {

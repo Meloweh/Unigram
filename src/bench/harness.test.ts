@@ -14,6 +14,8 @@ describe('bench harness', () => {
     expect(names).toContain('rmm-zoom')
     // Stage 5 effects acceptance — ≥60 FPS @ 500 nodes with effects.
     expect(names).toContain('effects-500')
+    // Large-selection drag regression: 2k nodes, 300 selected.
+    expect(names).toContain('multi-drag-2k')
   })
 
   it('every scenario name is unique', () => {

@@ -50,6 +50,7 @@ export interface SceneRendererStats {
 }
 
 const CULL_PADDING = 5 // scene percent
+const DETAILED_SELECTION_LIMIT = 80
 
 export class SceneRenderer {
   private app: Application | null = null
@@ -554,6 +555,40 @@ export class SceneRenderer {
     ;(node as { x: number; y: number }).x = x
     ;(node as { x: number; y: number }).y = y
     this.quadtree.update(id, nodeAabb(node))
+    this.dirty = true
+  }
+
+  /**
+   * Batched hot-path drag write. During pointermove the caller can defer
+   * quadtree updates because hit-testing/culling do not need a perfectly
+   * current index until the gesture ends. This avoids hundreds of quadtree
+   * updates per pointer event for large multi-selections.
+   */
+  moveNodesDirect(
+    moves: ReadonlyArray<{ id: string; x: number; y: number }>,
+    opts: { updateIndex?: boolean } = {},
+  ): void {
+    const updateIndex = opts.updateIndex ?? true
+    let changed = false
+    for (let i = 0; i < moves.length; i++) {
+      const move = moves[i]
+      const node = this.model.nodes.get(move.id) as ModelNode | undefined
+      if (!node) continue
+      if (node.x === move.x && node.y === move.y) continue
+      ;(node as { x: number; y: number }).x = move.x
+      ;(node as { x: number; y: number }).y = move.y
+      if (updateIndex) this.quadtree.update(move.id, nodeAabb(node))
+      changed = true
+    }
+    if (changed) this.dirty = true
+  }
+
+  /** Bring the spatial index back in sync after deferred bulk dragging. */
+  reindexNodes(ids: Iterable<string>): void {
+    for (const id of ids) {
+      const node = this.model.nodes.get(id)
+      if (node) this.quadtree.update(id, nodeAabb(node))
+    }
     this.dirty = true
   }
 
@@ -1295,7 +1330,65 @@ export class SceneRenderer {
     let used = 0
     const HALO_COLOR = 0xffb000
     const RING_COLOR = 0x2478bd
-    for (const id of this.selectedIds) {
+    if (this.selectedIds.size > DETAILED_SELECTION_LIMIT) {
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const id of this.selectedIds) {
+        if (!this.prevVisibleNodes.has(id)) continue
+        const node = this.model.nodes.get(id)
+        if (!node) continue
+        const visual = this.visualNode(node)
+        const wPx = (visual.w / 100) * SCENE_W
+        const hPx = (visual.h / 100) * SCENE_H
+        const xPx = (visual.x / 100) * SCENE_W
+        const yPx = (visual.y / 100) * SCENE_H
+        minX = Math.min(minX, xPx - wPx / 2)
+        minY = Math.min(minY, yPx - hPx / 2)
+        maxX = Math.max(maxX, xPx + wPx / 2)
+        maxY = Math.max(maxY, yPx + hPx / 2)
+      }
+      if (Number.isFinite(minX)) {
+        let outer = this.selectionAuraOuterPool[0]
+        if (!outer) {
+          outer = new Graphics(); outer.eventMode = 'none'
+          this.selectionAuraOuter.addChild(outer)
+          this.selectionAuraOuterPool.push(outer)
+        }
+        let inner = this.selectionAuraInnerPool[0]
+        if (!inner) {
+          inner = new Graphics(); inner.eventMode = 'none'
+          this.selectionAuraInner.addChild(inner)
+          this.selectionAuraInnerPool.push(inner)
+        }
+        let ring = this.selectionAuraRingPool[0]
+        if (!ring) {
+          ring = new Graphics(); ring.eventMode = 'none'
+          this.selectionAuraRing.addChild(ring)
+          this.selectionAuraRingPool.push(ring)
+        }
+        const padOuter = 18
+        const padInner = 9
+        const rx = Math.min(28, Math.max(12, (maxY - minY) * 0.16))
+        outer.visible = true
+        outer.x = 0; outer.y = 0
+        outer.clear()
+        outer.roundRect(minX - padOuter, minY - padOuter, maxX - minX + padOuter * 2, maxY - minY + padOuter * 2, rx + padOuter)
+        outer.fill({ color: HALO_COLOR, alpha: 0.18 })
+        inner.visible = true
+        inner.x = 0; inner.y = 0
+        inner.clear()
+        inner.roundRect(minX - padInner, minY - padInner, maxX - minX + padInner * 2, maxY - minY + padInner * 2, rx + padInner)
+        inner.fill({ color: HALO_COLOR, alpha: 0.22 })
+        ring.visible = true
+        ring.x = 0; ring.y = 0
+        ring.clear()
+        ring.roundRect(minX - 4, minY - 4, maxX - minX + 8, maxY - minY + 8, rx + 4)
+        ring.stroke({ color: RING_COLOR, width: 2.2, alignment: 0.5, alpha: 0.9 })
+        used = 1
+      }
+    } else for (const id of this.selectedIds) {
       if (!this.prevVisibleNodes.has(id)) continue
       const node = this.model.nodes.get(id)
       if (!node) continue

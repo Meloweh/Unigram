@@ -184,6 +184,49 @@ const SCENARIOS: Record<string, ScenarioDef> = {
       useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
     },
   ),
+  /**
+   * Multi-drag stress: 2000 nodes, 300 selected, dragged in a circle.
+   * Mirrors the manual regression case where pointermove previously updated
+   * hundreds of nodes + detailed selection halos on every event/frame.
+   */
+  'multi-drag-2k': defineScenario(
+    (r, t) => {
+      const bench = r as unknown as {
+        __multiDragBase?: Array<{ id: string; x: number; y: number }>
+        __multiDragMoves?: Array<{ id: string; x: number; y: number }>
+      }
+      const base = bench.__multiDragBase ?? []
+      const moves = bench.__multiDragMoves ?? []
+      moves.length = 0
+      const dx = Math.cos(t * 0.003) * 3
+      const dy = Math.sin(t * 0.003) * 3
+      for (let i = 0; i < base.length; i++) {
+        const b = base[i]
+        moves.push({ id: b.id, x: b.x + dx, y: b.y + dy })
+      }
+      r.moveNodesDirect(moves, { updateIndex: false })
+    },
+    (r) => {
+      const model = spawnGrid({ count: 2000, spacingPercent: 2.8 })
+      const store = useOmniStore.getState()
+      store.loadModel(model)
+      const ids = [...model.nodes.keys()].slice(0, 300)
+      store.selectMany(ids)
+      ;(r as unknown as { __multiDragBase?: Array<{ id: string; x: number; y: number }>; __multiDragMoves?: Array<{ id: string; x: number; y: number }> }).__multiDragBase = ids
+        .map((id) => model.nodes.get(id))
+        .filter((n): n is NonNullable<typeof n> => !!n)
+        .map((n) => ({ id: n.id, x: n.x, y: n.y }))
+      ;(r as unknown as { __multiDragMoves?: Array<{ id: string; x: number; y: number }> }).__multiDragMoves = []
+    },
+    (r) => {
+      const ids = [...useOmniStore.getState().selectedIds]
+      r.reindexNodes(ids)
+      useOmniStore.getState().clearSelection()
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+      delete (r as unknown as { __multiDragBase?: unknown }).__multiDragBase
+      delete (r as unknown as { __multiDragMoves?: unknown }).__multiDragMoves
+    },
+  ),
 }
 
 function defaultBenchParams(kind: string): Record<string, number> {
