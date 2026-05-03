@@ -34,6 +34,7 @@ import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import type { FlowEffect } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
+import { cosmeticAabbPadPercent, cosmeticTip } from './cosmeticGeometry'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -1267,6 +1268,9 @@ export class SceneRenderer {
     // Choose LOD from the *effective* on-screen scale.
     const effective = this.camera.freeScale
     const lod: Lod = effective >= LOD_FULL ? 'full' : effective >= LOD_SIMPLE ? 'simple' : 'dot'
+    const totalNodes = this.model.nodes.size
+    const allNodesVisible = totalNodes > 0 && this.visibleIds.length >= totalNodes
+    const showNodeLabels = lod === 'full' || !allNodesVisible
 
     // Acquire newly visible / update existing nodes.
     const flowActive = this.flow.hasActiveRuns
@@ -1282,7 +1286,7 @@ export class SceneRenderer {
           ? { ...override, alphaMul: 0 }
           : { alphaMul: 0 }
       }
-      this.nodePool.acquire(n, lod, override)
+      this.nodePool.acquire(n, lod, override, showNodeLabels)
     }
     // Release nodes that fell out of view.
     for (const id of this.prevVisibleNodes) {
@@ -1416,24 +1420,25 @@ export class SceneRenderer {
       const xPx = (visual.x / 100) * SCENE_W
       const yPx = (visual.y / 100) * SCENE_H
       const tip = node.tip
-        ? { x: (node.tip.x / 100) * SCENE_W, y: (node.tip.y / 100) * SCENE_H }
+        ? { x: (node.tip.x / 100) * wPx, y: (node.tip.y / 100) * hPx }
         : undefined
+      const resolvedTip = cosmeticTip(node)
       outer.visible = true
       outer.x = xPx; outer.y = yPx
       outer.clear()
-      drawNodeShapePath(outer, visual.shape, wPx + 22, hPx + 22, tip)
+      drawNodeShapePath(outer, visual.shape, wPx + 22, hPx + 22, tip, resolvedTip.angle, resolvedTip.length)
       outer.fill({ color: HALO_COLOR, alpha: 0.32 })
       inner.visible = true
       inner.x = xPx; inner.y = yPx
       inner.clear()
-      drawNodeShapePath(inner, visual.shape, wPx + 12, hPx + 12, tip)
+      drawNodeShapePath(inner, visual.shape, wPx + 12, hPx + 12, tip, resolvedTip.angle, resolvedTip.length)
       inner.fill({ color: HALO_COLOR, alpha: 0.42 })
       ring.visible = true
       ring.x = xPx; ring.y = yPx
       ring.clear()
       // Crisp blue membrane frame. The amber wave is below the node only,
       // so it never paints an inner orange membrane over the node face.
-      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
       ring.stroke({ color: RING_COLOR, width: 2.4, alignment: 1, alpha: 0.98 })
       used++
     }
@@ -1677,8 +1682,9 @@ export class SceneRenderer {
       const wPx = (visual.w / 100) * SCENE_W
       const hPx = (visual.h / 100) * SCENE_H
       const tip = n.tip
-        ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
+        ? { x: (n.tip.x / 100) * wPx, y: (n.tip.y / 100) * hPx }
         : undefined
+      const resolvedTip = cosmeticTip(n)
       // Pulse: ramp in fast, decay slow.
       const pulse = t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85
       const alpha = Math.max(0, pulse)
@@ -1702,13 +1708,13 @@ export class SceneRenderer {
       ring.visible = true
       ring.x = cx; ring.y = cy
       ring.clear()
-      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
       ring.stroke({ color: 0xffaa1f, width: 11, alignment: 1, alpha: alpha * 0.08 })
-      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
       ring.stroke({ color: 0xffaa1f, width: 6, alignment: 1, alpha: alpha * 0.22 })
-      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
       ring.stroke({ color: 0xffaa1f, width: 3, alignment: 1, alpha: alpha * 0.42 })
-      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
       ring.stroke({ color: 0xffd58a, width: 1.5, alignment: 1, alpha: alpha * 0.28 })
       auraUsed++
     }
@@ -1881,6 +1887,8 @@ export class SceneRenderer {
         stroke: n.membraneColor,
         strokeWidth: 2,
         tip: n.tip,
+        tipAngle: cosmeticTip(n).angle,
+        tipLength: cosmeticTip(n).length,
       })
       g.restore()
     }
@@ -2154,11 +2162,12 @@ interface EphemeralSpawnGroup {
 }
 
 function nodeAabb(n: ModelNode) {
+  const pad = cosmeticAabbPadPercent(n)
   return {
-    minX: n.x - n.w / 2,
-    minY: n.y - n.h / 2,
-    maxX: n.x + n.w / 2,
-    maxY: n.y + n.h / 2,
+    minX: n.x - n.w / 2 - pad.x,
+    minY: n.y - n.h / 2 - pad.y,
+    maxX: n.x + n.w / 2 + pad.x,
+    maxY: n.y + n.h / 2 + pad.y,
   }
 }
 

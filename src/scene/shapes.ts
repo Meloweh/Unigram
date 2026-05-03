@@ -14,6 +14,12 @@
  */
 
 import type { FillGradient, Graphics } from 'pixi.js'
+import {
+  chatBubblePathPoints,
+  cosmeticTip,
+  DEFAULT_COSMETIC_TIP_LENGTH,
+  thinkingCloudTrail,
+} from './cosmeticGeometry'
 
 export type StandardShape =
   | 'rectangle'
@@ -40,6 +46,8 @@ export interface DrawOptions {
   strokeWidth: number
   /** Cosmetic-only: tip offset from node centre, in pixels. */
   tip?: { x: number; y: number }
+  tipAngle?: number
+  tipLength?: number
 }
 
 /**
@@ -57,6 +65,8 @@ export function drawNodeShapePath(
   w: number,
   h: number,
   tip?: { x: number; y: number },
+  tipAngle?: number,
+  tipLength?: number,
 ): void {
   switch (shape) {
     case 'rectangle':
@@ -102,29 +112,11 @@ export function drawNodeShapePath(
       g.poly([0, -h / 2, w / 2, h / 2, -w / 2, h / 2])
       break
     case 'chat-bubble': {
-      const r = Math.min(w, h) * 0.22
-      g.roundRect(-w / 2, -h / 2, w, h, r)
-      const t = tip ?? { x: -w * 0.45, y: h * 0.85 }
-      const baseX = Math.max(-w / 2 + r, Math.min(w / 2 - r, t.x * 0.35))
-      const baseY = h / 2
-      const halfBase = Math.max(h * 0.06, 4)
-      g.poly([baseX - halfBase, baseY, baseX + halfBase, baseY, t.x, t.y])
+      drawChatBubblePath(g, w, h, tip, tipAngle, tipLength)
       break
     }
     case 'thinking-cloud': {
-      const rx = w / 2
-      const ry = h / 2
-      const lobes: Array<[number, number, number]> = [
-        [-rx * 0.55, ry * 0.05, ry * 0.85],
-        [-rx * 0.15, -ry * 0.35, ry * 0.95],
-        [rx * 0.30, -ry * 0.30, ry * 0.85],
-        [rx * 0.55, ry * 0.10, ry * 0.75],
-        [rx * 0.05, ry * 0.40, ry * 0.85],
-      ]
-      for (const [x, y, r] of lobes) g.circle(x, y, r)
-      const t = tip ?? { x: -w * 0.55, y: h * 0.95 }
-      g.circle(t.x * 0.55, t.y * 0.55, ry * 0.32)
-      g.circle(t.x * 0.85, t.y * 0.85, ry * 0.18)
+      drawThinkingCloudPath(g, w, h, tip, tipAngle, tipLength)
       break
     }
   }
@@ -238,43 +230,81 @@ function drawTriangle(g: Graphics, o: DrawOptions): void {
 // ---- cosmetic ------------------------------------------------------------
 
 function drawChatBubble(g: Graphics, o: DrawOptions): void {
-  // Rounded-rect body with a small triangular tail pointing at `tip`.
-  const r = Math.min(o.w, o.h) * 0.22
-  g.roundRect(-o.w / 2, -o.h / 2, o.w, o.h, r)
-  applyFillStroke(g, o)
-  const tip = o.tip ?? { x: -o.w * 0.45, y: o.h * 0.85 }
-  // Tail anchored on the bottom-left edge; widens by ~12% of node height.
-  const baseX = Math.max(-o.w / 2 + r, Math.min(o.w / 2 - r, tip.x * 0.35))
-  const baseY = o.h / 2
-  const halfBase = Math.max(o.h * 0.06, 4)
-  g.poly([baseX - halfBase, baseY, baseX + halfBase, baseY, tip.x, tip.y])
+  drawChatBubblePath(g, o.w, o.h, o.tip, o.tipAngle, o.tipLength)
   applyFillStroke(g, o)
 }
 
 function drawThinkingCloud(g: Graphics, o: DrawOptions): void {
-  // Compose a cloud from 5 overlapping circles, plus 2 trail bubbles toward `tip`.
-  const cx = 0
-  const cy = 0
-  const rx = o.w / 2
-  const ry = o.h / 2
+  drawThinkingCloudPath(g, o.w, o.h, o.tip, o.tipAngle, o.tipLength)
+  applyFillStroke(g, o)
+}
+
+function drawChatBubblePath(
+  g: Graphics,
+  w: number,
+  h: number,
+  fallbackTip?: { x: number; y: number },
+  tipAngle?: number,
+  tipLength?: number,
+): void {
+  const fallback = fallbackTip ? cosmeticTip({ tip: fallbackTip }) : null
+  const resolvedAngle = tipAngle ?? fallback?.angle
+  const resolvedLength = tipLength ?? fallback?.length ?? DEFAULT_COSMETIC_TIP_LENGTH
+  const p = chatBubblePathPoints(w, h, resolvedAngle ?? Math.PI * 0.75, resolvedLength)
+  const left = -w / 2
+  const right = w / 2
+  const top = -h / 2
+  const bottom = h / 2
+  const lb = Math.max(left + p.r, p.baseX - p.tipW)
+  const rb = Math.min(right - p.r, p.baseX + p.tipW)
+
+  g.moveTo(left + p.r, top)
+  if (!p.isBottom) {
+    g.lineTo(lb, top)
+    g.lineTo(p.apexX, p.apexY)
+    g.lineTo(rb, top)
+  }
+  g.lineTo(right - p.r, top)
+  g.quadraticCurveTo(right, top, right, top + p.r)
+  g.lineTo(right, bottom - p.r)
+  g.quadraticCurveTo(right, bottom, right - p.r, bottom)
+  if (p.isBottom) {
+    g.lineTo(rb, bottom)
+    g.lineTo(p.apexX, p.apexY)
+    g.lineTo(lb, bottom)
+  }
+  g.lineTo(left + p.r, bottom)
+  g.quadraticCurveTo(left, bottom, left, bottom - p.r)
+  g.lineTo(left, top + p.r)
+  g.quadraticCurveTo(left, top, left + p.r, top)
+  g.closePath()
+}
+
+function drawThinkingCloudPath(
+  g: Graphics,
+  w: number,
+  h: number,
+  fallbackTip?: { x: number; y: number },
+  tipAngle?: number,
+  tipLength?: number,
+): void {
+  const rx = w / 2
+  const ry = h / 2
   const lobes: Array<[number, number, number]> = [
-    [cx - rx * 0.55, cy + ry * 0.05, ry * 0.85],
-    [cx - rx * 0.15, cy - ry * 0.35, ry * 0.95],
-    [cx + rx * 0.30, cy - ry * 0.30, ry * 0.85],
-    [cx + rx * 0.55, cy + ry * 0.10, ry * 0.75],
-    [cx + rx * 0.05, cy + ry * 0.40, ry * 0.85],
+    [-rx * 0.44, ry * 0.02, ry * 0.42],
+    [-rx * 0.24, -ry * 0.32, ry * 0.38],
+    [rx * 0.04, -ry * 0.42, ry * 0.44],
+    [rx * 0.33, -ry * 0.28, ry * 0.39],
+    [rx * 0.47, ry * 0.06, ry * 0.36],
+    [rx * 0.24, ry * 0.32, ry * 0.42],
+    [-rx * 0.12, ry * 0.39, ry * 0.40],
+    [-rx * 0.42, ry * 0.25, ry * 0.36],
   ]
   for (const [x, y, r] of lobes) g.circle(x, y, r)
-  applyFillStroke(g, o)
-
-  const tip = o.tip ?? { x: -o.w * 0.55, y: o.h * 0.95 }
-  // Two diminishing trail bubbles between the cloud edge and the tip.
-  const trail: Array<[number, number, number]> = [
-    [tip.x * 0.55, tip.y * 0.55, ry * 0.32],
-    [tip.x * 0.85, tip.y * 0.85, ry * 0.18],
-  ]
-  for (const [x, y, r] of trail) g.circle(x, y, r)
-  applyFillStroke(g, o)
+  const fallback = fallbackTip ? cosmeticTip({ tip: fallbackTip }) : null
+  const angle = tipAngle ?? fallback?.angle ?? Math.PI * 0.75
+  const length = tipLength ?? fallback?.length ?? DEFAULT_COSMETIC_TIP_LENGTH
+  for (const c of thinkingCloudTrail(w, h, angle, length)) g.circle(c.cx, c.cy, c.r)
 }
 
 // ---- narrow-phase hit-test ----------------------------------------------
@@ -339,9 +369,10 @@ export function pointInShape(
       return pointInPolygon(px, py, [0, -h / 2, w / 2, h / 2, -w / 2, h / 2])
     case 'chat-bubble':
     case 'thinking-cloud':
-      // Cosmetic shapes use the bounding rect for hit purposes — the visual
-      // overhang into the tip area should still register as a click.
-      return ax <= w / 2 && ay <= h / 2
+      // Cosmetic tails/trails can overhang the body. Keep hit-testing
+      // forgiving around that overhang until the renderer passes exact tip
+      // geometry into the narrow phase.
+      return ax <= w / 2 + w * 0.35 && ay <= h / 2 + h * 0.5
   }
 }
 

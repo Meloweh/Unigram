@@ -185,6 +185,27 @@ const SCENARIOS: Record<string, ScenarioDef> = {
     },
   ),
   /**
+   * Cosmetic mixed scene: 1000 nodes cycling through standard + cosmetic
+   * shapes while panning/zooming. Protects the richer bubble/cloud geometry
+   * from quietly eroding the 60 FPS target.
+   */
+  'cosmetic-mixed-1k': defineScenario(
+    (r, t) => {
+      const s = 0.85 + Math.sin(t * 0.0017) * 0.25
+      r.setCamera({
+        panX: Math.cos(t * 0.0011) * 22,
+        panY: Math.sin(t * 0.0013) * 18,
+        freeScale: s,
+      })
+    },
+    () => {
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1000, spacingPercent: 4, mixedShapes: true }))
+    },
+    () => {
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+    },
+  ),
+  /**
    * Multi-drag stress: 2000 nodes, 300 selected, dragged in a circle.
    * Mirrors the manual regression case where pointermove previously updated
    * hundreds of nodes + detailed selection halos on every event/frame.

@@ -89,6 +89,8 @@ export interface EffectEdge {
 export interface FlowEffect {
   id: string
   label: string
+  /** Built-in effect owned by a semantic node type; editor should preserve it. */
+  locked?: boolean
   /** When true, the engine plays this effect on diagram load. */
   alwaysPlay?: boolean
   graph: {

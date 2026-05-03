@@ -10,6 +10,7 @@
  */
 
 import type { NodeShape } from '../model/types'
+import { chatBubblePathPoints, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, thinkingCloudTrail } from '../scene/cosmeticGeometry'
 
 const SIZE = 80
 const PAD = 6
@@ -82,30 +83,52 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: NodeShape): void {
       polyPath(ctx, [[cx, PAD], [SIZE - PAD, SIZE - PAD], [PAD, SIZE - PAD]])
       break
     case 'chat-bubble': {
-      const r = Math.min(w, h) * 0.22
-      ctx.roundRect(PAD, PAD, w, h * 0.78, r)
-      ctx.fill()
-      ctx.stroke()
-      ctx.beginPath()
-      polyPath(ctx, [
-        [cx - 6, PAD + h * 0.78],
-        [cx + 6, PAD + h * 0.78],
-        [PAD + 4, SIZE - PAD],
-      ])
+      const bodyH = h * 0.72
+      const p = chatBubblePathPoints(w, bodyH, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH * 0.8)
+      const left = PAD
+      const right = PAD + w
+      const top = PAD + 4
+      const bottom = top + bodyH
+      const baseX = cx + p.baseX
+      const lb = Math.max(left + p.r, baseX - p.tipW)
+      const rb = Math.min(right - p.r, baseX + p.tipW)
+      ctx.moveTo(left + p.r, top)
+      ctx.lineTo(right - p.r, top)
+      ctx.quadraticCurveTo(right, top, right, top + p.r)
+      ctx.lineTo(right, bottom - p.r)
+      ctx.quadraticCurveTo(right, bottom, right - p.r, bottom)
+      ctx.lineTo(rb, bottom)
+      ctx.lineTo(cx + p.apexX, top + bodyH / 2 + p.apexY)
+      ctx.lineTo(lb, bottom)
+      ctx.lineTo(left + p.r, bottom)
+      ctx.quadraticCurveTo(left, bottom, left, bottom - p.r)
+      ctx.lineTo(left, top + p.r)
+      ctx.quadraticCurveTo(left, top, left + p.r, top)
+      ctx.closePath()
       break
     }
     case 'thinking-cloud': {
-      const ry = h / 2
+      const cloudW = w * 0.9
+      const cloudH = h * 0.64
+      const rx = cloudW / 2
+      const ry = cloudH / 2
       const lobes: Array<[number, number, number]> = [
-        [cx - w * 0.27, cy + ry * 0.05, ry * 0.42],
-        [cx - w * 0.07, cy - ry * 0.20, ry * 0.46],
-        [cx + w * 0.15, cy - ry * 0.18, ry * 0.40],
-        [cx + w * 0.27, cy + ry * 0.10, ry * 0.36],
-        [cx + w * 0.02, cy + ry * 0.30, ry * 0.42],
+        [cx - rx * 0.44, cy + ry * 0.02, ry * 0.42],
+        [cx - rx * 0.24, cy - ry * 0.32, ry * 0.38],
+        [cx + rx * 0.04, cy - ry * 0.42, ry * 0.44],
+        [cx + rx * 0.33, cy - ry * 0.28, ry * 0.39],
+        [cx + rx * 0.47, cy + ry * 0.06, ry * 0.36],
+        [cx + rx * 0.24, cy + ry * 0.32, ry * 0.42],
+        [cx - rx * 0.12, cy + ry * 0.39, ry * 0.40],
+        [cx - rx * 0.42, cy + ry * 0.25, ry * 0.36],
       ]
       for (const [x, y, r] of lobes) {
         ctx.moveTo(x + r, y)
         ctx.arc(x, y, r, 0, Math.PI * 2)
+      }
+      for (const c of thinkingCloudTrail(cloudW, cloudH, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH * 0.8)) {
+        ctx.moveTo(cx + c.cx + c.r, cy + c.cy)
+        ctx.arc(cx + c.cx, cy + c.cy, c.r, 0, Math.PI * 2)
       }
       break
     }

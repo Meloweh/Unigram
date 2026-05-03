@@ -4,6 +4,7 @@
  */
 
 import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type Model, type ModelNode, type NodeShape } from '../model/types'
+import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
 
 export interface SpawnGridOptions {
   count?: number
@@ -43,13 +44,14 @@ export function spawnGrid(opts: SpawnGridOptions = {}): Model {
       const id = `n${i}`
       const x = (c - (cols - 1) / 2) * spacing
       const y = (r - (rows - 1) / 2) * spacing
+      const shape = mixed ? ALL_SHAPES[i % ALL_SHAPES.length] : DEFAULT_NODE.shape
       const node: ModelNode = {
         ...DEFAULT_NODE,
+        ...(isCosmeticShape(shape) ? cosmeticNodeDefaults(shape) : { shape }),
         id,
         x,
         y,
         label: `n${i}`,
-        shape: mixed ? ALL_SHAPES[i % ALL_SHAPES.length] : DEFAULT_NODE.shape,
       }
       nodes.set(id, node)
       ids.push(id)
@@ -123,6 +125,7 @@ export function spawnNested(): { root: Model; children: Model[] } {
   // A few cosmetic peripheral nodes without children.
   for (let i = 0; i < 3; i++) {
     const id = `note-${i}`
+    const cosmetic = cosmeticNodeDefaults('chat-bubble')
     nodes.set(id, {
       ...DEFAULT_NODE,
       id,
@@ -131,7 +134,10 @@ export function spawnNested(): { root: Model; children: Model[] } {
       w: 8,
       h: 5,
       label: `note ${i}`,
-      shape: 'chat-bubble',
+      shape: cosmetic.shape,
+      cosmeticType: cosmetic.cosmeticType,
+      tipAngle: cosmetic.tipAngle,
+      tipLength: cosmetic.tipLength,
       cellColor: '#fffbf0',
       membraneColor: '#a07a30',
     })

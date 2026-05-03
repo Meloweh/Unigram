@@ -48,9 +48,10 @@ describe('pointInShape — triangle', () => {
 })
 
 describe('pointInShape — cosmetic', () => {
-  it('chat-bubble + thinking-cloud accept the bounding rect', () => {
+  it('chat-bubble + thinking-cloud accept body and nearby overhang', () => {
     expect(pointInShape('chat-bubble', 4, 2, 10, 5)).toBe(true)
     expect(pointInShape('thinking-cloud', -3, -2, 10, 5)).toBe(true)
-    expect(pointInShape('chat-bubble', 6, 0, 10, 5)).toBe(false)
+    expect(pointInShape('chat-bubble', 6, 0, 10, 5)).toBe(true)
+    expect(pointInShape('chat-bubble', 10, 0, 10, 5)).toBe(false)
   })
 })

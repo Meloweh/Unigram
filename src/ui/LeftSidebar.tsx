@@ -12,6 +12,8 @@ import { useState } from 'react'
 import { useOmniStore } from '../model/store'
 import type { ConnectionKind, NodeShape } from '../model/types'
 import { createShapeDragPreview } from './dragPreview'
+import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
+import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
 
 /** dataTransfer MIME used by the palette → canvas drop. */
 export const DRAG_MIME_SHAPE = 'application/omnigram-shape'
@@ -72,7 +74,14 @@ export function LeftSidebar() {
 
   const spawn = (shape: NodeShape) => {
     const store = useOmniStore.getState()
-    const id = store.addNode({ x: 50, y: 50, shape, label: '' })
+    const id = store.addNode({
+      x: 50,
+      y: 50,
+      label: '',
+      ...(isCosmeticShape(shape)
+        ? { ...cosmeticNodeDefaults(shape), flowEffects: [defaultCosmeticEffect(shape)] }
+        : { shape }),
+    })
     store.select(id)
   }
 

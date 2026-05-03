@@ -42,6 +42,22 @@ describe('NodePool lazy visual subtrees', () => {
     expect(container.children).toHaveLength(2)
   })
 
+  it('can keep labels visible when shapes drop to simple LOD', () => {
+    pool.acquire(node(), 'simple', undefined, true)
+
+    const container = layer.children[0] as Container
+    const label = container.children[1]
+    expect(label.visible).toBe(true)
+  })
+
+  it('hides labels in simple LOD once the renderer disables them', () => {
+    pool.acquire(node(), 'simple', undefined, false)
+
+    const container = layer.children[0] as Container
+    const label = container.children[1]
+    expect(label.visible).toBe(false)
+  })
+
   it('creates media preview children only for media nodes', () => {
     pool.acquire(node(), 'full')
     const container = layer.children[0] as Container

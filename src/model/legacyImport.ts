@@ -17,11 +17,14 @@
 
 import type {
   Connection,
+  CosmeticType,
   Model,
   ModelNode,
   Project,
 } from './types'
 import { DEFAULT_EDGE, DEFAULT_NODE } from './types'
+import { SCENE_H, SCENE_W } from '../scene/sceneConstants'
+import { DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH } from '../scene/cosmeticGeometry'
 
 interface LegacyNode {
   id: string
@@ -31,6 +34,9 @@ interface LegacyNode {
   childModel?: string
   mpdModels?: string[]
   shape?: ModelNode['shape']
+  cosmeticType?: CosmeticType
+  tipAngle?: number
+  tipLength?: number
   cellColor?: string
   membraneColor?: string
   nodeWidth?: number
@@ -142,16 +148,19 @@ function translate(
     const mpdDimensions = ln.mpdModels
       ?.map(refToId)
       .filter((x): x is string => typeof x === 'string')
+    const cosmeticType = ln.cosmeticType
+    const shape = cosmeticType ?? ln.shape ?? DEFAULT_NODE.shape
     const node: ModelNode = {
       id: ln.id,
       label: ln.label ?? '',
       x: ln.x,
       y: ln.y,
-      w: ln.nodeWidth ?? DEFAULT_NODE.w,
-      h: ln.nodeHeight ?? DEFAULT_NODE.h,
-      shape: ln.shape ?? DEFAULT_NODE.shape,
+      w: ln.nodeWidth != null ? (ln.nodeWidth / SCENE_W) * 100 : DEFAULT_NODE.w,
+      h: ln.nodeHeight != null ? (ln.nodeHeight / SCENE_H) * 100 : DEFAULT_NODE.h,
+      shape,
       cellColor: ln.cellColor ?? DEFAULT_NODE.cellColor,
       membraneColor: ln.membraneColor ?? DEFAULT_NODE.membraneColor,
+      ...(cosmeticType ? { cosmeticType, tipAngle: ln.tipAngle ?? DEFAULT_COSMETIC_TIP_ANGLE, tipLength: ln.tipLength ?? DEFAULT_COSMETIC_TIP_LENGTH } : {}),
       ...(childModelId ? { childModelId } : {}),
       ...(mpdDimensions && mpdDimensions.length > 0 ? { mpdDimensions } : {}),
       ...(ln.locked ? { locked: true } : {}),

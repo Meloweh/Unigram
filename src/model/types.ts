@@ -17,6 +17,8 @@ export type NodeShape =
   | 'chat-bubble'
   | 'thinking-cloud'
 
+export type CosmeticType = 'chat-bubble' | 'thinking-cloud'
+
 /** Pixel-space tip offset relative to node centre (cosmetic shapes only). */
 export interface CosmeticTip {
   x: number
@@ -33,6 +35,8 @@ export interface ModelNode {
   h: number
   label: string
   shape: NodeShape
+  /** Semantic cosmetic node kind. Kept in sync with cosmetic `shape` values. */
+  cosmeticType?: CosmeticType
   /** Fill color (any CSS color or `#rrggbb`). */
   cellColor: string
   /** Border / membrane color. */
@@ -45,8 +49,12 @@ export interface ModelNode {
    * child (`childModelId`). Optional; absent means the node has no MPD.
    */
   mpdDimensions?: string[]
-  /** Cosmetic-only tail/trail tip (in scene-percent of node size). */
+  /** Cosmetic-only tail/trail tip (legacy fallback, percentage of node size). */
   tip?: CosmeticTip
+  /** Cosmetic-only tail/trail direction, in radians from node centre. */
+  tipAngle?: number
+  /** Cosmetic-only tail/trail extension length in virtual scene pixels. */
+  tipLength?: number
   /** Stage 5 flow effects attached to this node (override-based, render-only). */
   flowEffects?: import('../flow/types').FlowEffect[]
   /** When true, drag and untangle skip this node. */

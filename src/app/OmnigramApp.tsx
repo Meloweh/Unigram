@@ -30,6 +30,8 @@ import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { ModelNode, NodeShape } from '../model/types'
 import { DEFAULT_NODE } from '../model/types'
+import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
+import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
 
 export function OmnigramApp() {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -196,15 +198,23 @@ export function OmnigramApp() {
           const mediaRaw = e.dataTransfer.getData(DRAG_MIME_MEDIA)
           const mediaType =
             mediaRaw === '' ? undefined : (mediaRaw as NonNullable<import('../model/types').ModelNode['mediaType']>)
-          const size = mediaType ? defaultMediaSize(mediaType) : { w: DEFAULT_NODE.w, h: DEFAULT_NODE.h }
-          const pos = place(size.w, size.h)
           const nodeShape: NodeShape = shape || DEFAULT_NODE.shape
+          const cosmeticShape = isCosmeticShape(nodeShape) ? nodeShape : null
+          const cosmeticDefaults = cosmeticShape ? cosmeticNodeDefaults(cosmeticShape) : null
+          const size = mediaType
+            ? defaultMediaSize(mediaType)
+            : cosmeticDefaults
+              ? { w: cosmeticDefaults.w, h: cosmeticDefaults.h }
+              : { w: DEFAULT_NODE.w, h: DEFAULT_NODE.h }
+          const pos = place(size.w, size.h)
           const id = store.addNode({
             x: pos.x,
             y: pos.y,
             w: size.w,
             h: size.h,
-            shape: nodeShape,
+            ...(cosmeticDefaults
+              ? { ...cosmeticDefaults, flowEffects: [defaultCosmeticEffect(cosmeticShape!)] }
+              : { shape: nodeShape }),
             label: mediaType === 'markdown' ? 'Markdown' : mediaType === 'math' ? 'Math' : '',
             ...(mediaType ? {
               mediaType,

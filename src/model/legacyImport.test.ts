@@ -28,6 +28,17 @@ const FILES: Record<string, unknown> = {
         contentCollapsed: false,
         contentFontSize: 1.25,
       },
+      {
+        id: 'n4',
+        label: 'Thought',
+        x: 45,
+        y: 45,
+        cosmeticType: 'thinking-cloud',
+        tipAngle: 1.2,
+        tipLength: 32,
+        nodeWidth: 180,
+        nodeHeight: 100,
+      },
     ],
     connections: [
       { from: 'n1', to: 'n2', strokeColor: '#ff0000', strokeWidth: 0.3, label: 'rel' },
@@ -95,6 +106,17 @@ describe('importLegacyBundle', () => {
     expect(n3.contentSource).toBe('# Notes')
     expect(n3.contentCollapsed).toBe(false)
     expect(n3.contentFontSize).toBe(1.25)
+  })
+
+  it('preserves legacy cosmetic fields and translates pixel size', async () => {
+    const snap = await importLegacyBundle('/models/root.json', fetcher)
+    const n4 = snap.models.get('root')!.nodes.get('n4')!
+    expect(n4.cosmeticType).toBe('thinking-cloud')
+    expect(n4.shape).toBe('thinking-cloud')
+    expect(n4.tipAngle).toBe(1.2)
+    expect(n4.tipLength).toBe(32)
+    expect(n4.w).toBeCloseTo(9.375)
+    expect(n4.h).toBeCloseTo(9.259)
   })
 
   it('rejects malformed files', async () => {

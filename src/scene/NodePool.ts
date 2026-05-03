@@ -12,6 +12,7 @@ import { SCENE_W, SCENE_H } from './sceneConstants'
 import { DEFAULT_NODE, type ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 import { drawNodeShape } from './shapes'
+import { cosmeticTip } from './cosmeticGeometry'
 import {
   NODE_FONT_FAMILY,
   NODE_FONT_SIZE,
@@ -109,10 +110,10 @@ const TEXT_INSET = 0.82
 /** Extra scene-percent padding around the text bounding box. */
 const TEXT_PAD_PCT = 1.0
 
-const dirtyKeyOf = (n: ModelNode, lod: Lod, theme: ThemeColors | null): string =>
-  `${lod}|${n.shape}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
+const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
+  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
-const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' && !n.mediaType ? n.label : '')
+const labelKeyOf = (n: ModelNode, showLabel: boolean): string => (showLabel && !n.mediaType ? n.label : '')
 
 function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | null): void {
   g.clear()
@@ -126,8 +127,9 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | nul
   const wPx = (n.w / 100) * SCENE_W
   const hPx = (n.h / 100) * SCENE_H
   const tip = n.tip
-    ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
+    ? { x: (n.tip.x / 100) * wPx, y: (n.tip.y / 100) * hPx }
     : undefined
+  const resolvedTip = cosmeticTip(n)
   // `simple` LOD draws a flat fill (cheap); `full` uses the cached gradient
   // for the legacy 145° cell→darker look.
   const fill = lod === 'simple' ? cell : nodeFillGradient(cell)
@@ -138,6 +140,8 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | nul
     stroke: membrane,
     strokeWidth: NODE_STROKE_WIDTH,
     tip,
+    tipAngle: resolvedTip.angle,
+    tipLength: resolvedTip.length,
   })
 }
 
@@ -145,8 +149,8 @@ function drawBreakShape(g: Graphics, n: ModelNode, theme: ThemeColors | null): v
   drawShape(g, n, 'full', theme)
 }
 
-function setLabel(t: Text, n: ModelNode, lod: Lod): void {
-  const text = labelKeyOf(n, lod)
+function setLabel(t: Text, n: ModelNode, showLabel: boolean): void {
+  const text = labelKeyOf(n, showLabel)
   if (t.text !== text) t.text = text
   t.visible = text.length > 0
 }
@@ -319,7 +323,7 @@ export class NodePool {
   }
 
   /** Make a node visible; create or recycle a container as needed. */
-  acquire(n: ModelNode, lod: Lod, override?: NodeOverride): void {
+  acquire(n: ModelNode, lod: Lod, override?: NodeOverride, showLabel = lod === 'full'): void {
     let pn = this.active.get(n.id)
     if (!pn) {
       pn = this.free.pop() ?? this.createNew()
@@ -327,11 +331,11 @@ export class NodePool {
       pn.dirtyKey = '' // force redraw
       this.active.set(n.id, pn)
     }
-    this.update(n, lod, override)
+    this.update(n, lod, override, showLabel)
   }
 
   /** Update an already-visible node. No-op if nothing visual changed. */
-  update(n: ModelNode, lod: Lod, override?: NodeOverride): void {
+  update(n: ModelNode, lod: Lod, override?: NodeOverride, showLabel = lod === 'full'): void {
     const pn = this.active.get(n.id)
     if (!pn) return
     const baseX = (n.x / 100) * SCENE_W
@@ -351,11 +355,11 @@ export class NodePool {
       if (pn.container.alpha !== 1) pn.container.alpha = 1
       if (pn.container.tint !== 0xffffff) pn.container.tint = 0xffffff
     }
-    const key = dirtyKeyOf(n, lod, this.theme)
+    const key = dirtyKeyOf(n, lod, showLabel, this.theme)
     if (key !== pn.dirtyKey) {
       drawShape(pn.shape, n, lod, this.theme)
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, lod)
+      setLabel(pn.label, n, showLabel)
       pn.dirtyKey = key
       pn.lod = lod
       // Auto-grow the node to fit its label. Only grows; never shrinks (so
@@ -380,7 +384,7 @@ export class NodePool {
     } else {
       // Label text can change while shape stays stable.
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, lod)
+      setLabel(pn.label, n, showLabel)
     }
     this.syncBreakApart(pn, n, breaking)
   }
@@ -475,7 +479,7 @@ export class NodePool {
       if (!pn.wasBreakingApart) return
       pn.wasBreakingApart = false
       pn.shape.visible = true
-      pn.label.visible = labelKeyOf(n, pn.lod).length > 0
+      pn.label.visible = pn.label.text.length > 0
       if (pn.media) {
         pn.media.bg.visible = pn.mediaPreviewActive
         pn.media.sprite.visible = pn.mediaPreviewActive && !!(n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc)
@@ -496,7 +500,7 @@ export class NodePool {
     }
     split.container.visible = true
 
-    const staticKey = dirtyKeyOf(n, 'full', this.theme)
+    const staticKey = dirtyKeyOf(n, 'full', true, this.theme)
     if (staticKey !== pn.breakDirtyKey) {
       drawBreakShape(split.aShape, n, this.theme)
       drawBreakShape(split.bShape, n, this.theme)

@@ -18,6 +18,7 @@ import { ALL_THEME_OPTIONS } from '../theme/themes'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
 import { PARTICLE_PRESETS } from '../theme/particles'
 import type { BackgroundType, ThemeMode } from '../theme/types'
+import { cosmeticNodeDefaults, cosmeticTip, isCosmeticShape } from '../scene/cosmeticGeometry'
 
 const ALL_SHAPES: NodeShape[] = [
   'rectangle',
@@ -300,7 +301,12 @@ function renderInner(
       <Field label="Node shape">
         <select
           value={shape === MIXED ? '' : (shape as NodeShape)}
-          onChange={(e) => updateAll({ shape: e.target.value as NodeShape })}
+          onChange={(e) => {
+            const nextShape = e.target.value as NodeShape
+            updateAll(isCosmeticShape(nextShape)
+              ? cosmeticNodeDefaults(nextShape)
+              : { shape: nextShape, cosmeticType: undefined, tip: undefined, tipAngle: undefined, tipLength: undefined })
+          }}
           style={inputStyle}
         >
           {shape === MIXED && <option value="">(mixed)</option>}
@@ -759,15 +765,13 @@ function CosmeticTipControls({
   updateAll: (patch: Partial<ModelNode>) => void
 }) {
   const first = nodes[0]
-  const tip = first.tip ?? { x: -45, y: 60 }
-  const len = Math.hypot(tip.x, tip.y)
+  const tip = cosmeticTip(first)
+  const len = tip.length
   // 0° = right, sweep clockwise (screen-y is down).
-  const angDeg = (Math.atan2(tip.y, tip.x) * 180) / Math.PI
+  const angDeg = (tip.angle * 180) / Math.PI
   const setPolar = (deg: number, length: number) => {
     const rad = (deg * Math.PI) / 180
-    const x = Math.round(Math.cos(rad) * length * 10) / 10
-    const y = Math.round(Math.sin(rad) * length * 10) / 10
-    updateAll({ tip: { x, y } })
+    updateAll({ tipAngle: rad, tipLength: Math.round(length * 10) / 10, tip: undefined })
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
