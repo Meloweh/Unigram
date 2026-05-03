@@ -32,6 +32,8 @@ const ALL_SHAPES: NodeShape[] = [
   'chat-bubble',
   'thinking-cloud',
 ]
+const STANDARD_SHAPES: NodeShape[] = ALL_SHAPES.filter((s) => !isCosmeticShape(s))
+const COSMETIC_SHAPES: NodeShape[] = ['chat-bubble', 'thinking-cloud']
 
 const SHAPE_LABEL: Record<NodeShape, string> = {
   rectangle: 'Rectangle',
@@ -284,6 +286,7 @@ function renderInner(
 
   const isMulti = nodes.length > 1
   const shape = sharedField(nodes, (n) => n.shape)
+  const cosmeticType = sharedField(nodes, (n) => n.cosmeticType ?? (isCosmeticShape(n.shape) ? n.shape : undefined))
   const cellColor = sharedField(nodes, (n) => n.cellColor)
   const membraneColor = sharedField(nodes, (n) => n.membraneColor)
   const label = sharedField(nodes, (n) => n.label)
@@ -300,21 +303,34 @@ function renderInner(
 
       <Field label="Node shape">
         <select
-          value={shape === MIXED ? '' : (shape as NodeShape)}
+          value={shape === MIXED || isCosmeticShape(shape as NodeShape) ? '' : (shape as NodeShape)}
           onChange={(e) => {
             const nextShape = e.target.value as NodeShape
-            updateAll(isCosmeticShape(nextShape)
-              ? cosmeticNodeDefaults(nextShape)
-              : { shape: nextShape, cosmeticType: undefined, tip: undefined, tipAngle: undefined, tipLength: undefined })
+            updateAll({ shape: nextShape, cosmeticType: undefined, tip: undefined, tipAngle: undefined, tipLength: undefined })
           }}
           style={inputStyle}
         >
           {shape === MIXED && <option value="">(mixed)</option>}
-          {ALL_SHAPES.map((s) => (
+          {shape !== MIXED && isCosmeticShape(shape as NodeShape) && <option value="">Cosmetic</option>}
+          {STANDARD_SHAPES.map((s) => (
             <option key={s} value={s}>{SHAPE_LABEL[s]}</option>
           ))}
         </select>
       </Field>
+
+      {(cosmeticType !== undefined && cosmeticType !== MIXED) && (
+        <Field label="Cosmetic type">
+          <select
+            value={cosmeticType as NodeShape}
+            onChange={(e) => updateAll(cosmeticNodeDefaults(e.target.value as 'chat-bubble' | 'thinking-cloud'))}
+            style={inputStyle}
+          >
+            {COSMETIC_SHAPES.map((s) => (
+              <option key={s} value={s}>{SHAPE_LABEL[s]}</option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {!isMulti && <MediaSection node={nodes[0]} />}
 

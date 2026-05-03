@@ -34,7 +34,7 @@ import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import type { FlowEffect } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
-import { cosmeticAabbPadPercent, cosmeticTip } from './cosmeticGeometry'
+import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -65,6 +65,7 @@ export class SceneRenderer {
   private selectionLayer!: Container
   /** Box-select rectangle (single Graphics). */
   private boxSelectGfx!: Graphics
+  private cosmeticTipHandleGfx!: Graphics
   private nodePool!: NodePool
   private edgePool!: EdgePool
   private quadtree = new Quadtree()
@@ -276,6 +277,10 @@ export class SceneRenderer {
     this.overlayLayer.eventMode = 'none'
     this.boxSelectGfx = new Graphics()
     this.overlayLayer.addChild(this.boxSelectGfx)
+    this.cosmeticTipHandleGfx = new Graphics()
+    this.cosmeticTipHandleGfx.eventMode = 'none'
+    this.cosmeticTipHandleGfx.visible = false
+    this.selectionLayer.addChild(this.cosmeticTipHandleGfx)
     // Flow halo glow lives on its own below-nodes layer so the warm bleed
     // never overpaints node bodies. Wire core + beads + crisp ring stay on
     // `flowOverlayGfx` above the nodes for legibility.
@@ -582,6 +587,22 @@ export class SceneRenderer {
       changed = true
     }
     if (changed) this.dirty = true
+  }
+
+  moveCosmeticTipDirect(id: string, sceneX: number, sceneY: number): void {
+    const node = this.model.nodes.get(id) as ModelNode | undefined
+    const type = node ? cosmeticTypeOf(node) : undefined
+    if (!node || !type) return
+    const wPx = (node.w / 100) * SCENE_W
+    const hPx = (node.h / 100) * SCENE_H
+    const localX = ((sceneX - node.x) / 100) * SCENE_W
+    const localY = ((sceneY - node.y) / 100) * SCENE_H
+    const next = cosmeticTipFromLocalPoint(type, wPx, hPx, localX, localY)
+    ;(node as { tipAngle?: number; tipLength?: number; tip?: undefined }).tipAngle = next.angle
+    ;(node as { tipAngle?: number; tipLength?: number; tip?: undefined }).tipLength = next.length
+    ;(node as { tip?: undefined }).tip = undefined
+    this.quadtree.update(id, nodeAabb(node))
+    this.dirty = true
   }
 
   /** Bring the spatial index back in sync after deferred bulk dragging. */
@@ -959,6 +980,26 @@ export class SceneRenderer {
       if (pointInShape(n.shape, localX, localY, n.w, n.h)) best = id
     }
     return best
+  }
+
+  pickCosmeticTipHandle(sceneX: number, sceneY: number): string | null {
+    if (this.selectedIds.size !== 1) return null
+    const id = this.selectedIds.values().next().value as string | undefined
+    if (!id || !this.prevVisibleNodes.has(id)) return null
+    const node = this.model.nodes.get(id)
+    const type = node ? cosmeticTypeOf(node) : undefined
+    if (!node || !type) return null
+    const visual = this.visualNode(node)
+    const wPx = (visual.w / 100) * SCENE_W
+    const hPx = (visual.h / 100) * SCENE_H
+    const tip = cosmeticTip(node)
+    const handle = cosmeticTipHandleLocalPx(type, wPx, hPx, tip.angle, tip.length)
+    const hx = (visual.x / 100) * SCENE_W + handle.x
+    const hy = (visual.y / 100) * SCENE_H + handle.y
+    const px = (sceneX / 100) * SCENE_W
+    const py = (sceneY / 100) * SCENE_H
+    const distScreen = Math.hypot(px - hx, py - hy) * Math.max(0.01, this.effectiveScale)
+    return distScreen <= 12 ? id : null
   }
 
   /**
@@ -1451,6 +1492,7 @@ export class SceneRenderer {
     for (let i = used; i < this.selectionAuraRingPool.length; i++) {
       this.selectionAuraRingPool[i].visible = false
     }
+    this.drawCosmeticTipHandle()
     // Edge selection overlay (separate pool — kept distinct so the aura
     // layer doesn't blur thin edge highlights into illegibility).
     let edgeUsed = 0
@@ -1498,6 +1540,41 @@ export class SceneRenderer {
     this.drawRmm()
     this.drawConnectGhost()
     this.drawGrid()
+  }
+
+  private drawCosmeticTipHandle(): void {
+    const g = this.cosmeticTipHandleGfx
+    if (!g || this.selectedIds.size !== 1) {
+      if (g) g.visible = false
+      return
+    }
+    const id = this.selectedIds.values().next().value as string | undefined
+    if (!id || !this.prevVisibleNodes.has(id)) {
+      g.visible = false
+      return
+    }
+    const node = this.model.nodes.get(id)
+    const type = node ? cosmeticTypeOf(node) : undefined
+    if (!node || !type) {
+      g.visible = false
+      return
+    }
+    const visual = this.visualNode(node)
+    const wPx = (visual.w / 100) * SCENE_W
+    const hPx = (visual.h / 100) * SCENE_H
+    const tip = cosmeticTip(node)
+    const handle = cosmeticTipHandleLocalPx(type, wPx, hPx, tip.angle, tip.length)
+    const cx = (visual.x / 100) * SCENE_W
+    const cy = (visual.y / 100) * SCENE_H
+    const r = 7 / Math.max(0.2, this.effectiveScale)
+    const lineW = 1.5 / Math.max(0.2, this.effectiveScale)
+    g.visible = true
+    g.clear()
+    g.moveTo(cx, cy).lineTo(cx + handle.x, cy + handle.y)
+    g.stroke({ color: 0x0e4f8f, width: lineW, alpha: 0.35 })
+    g.circle(cx + handle.x, cy + handle.y, r + lineW)
+    g.fill({ color: 0xffffff, alpha: 0.95 })
+    g.stroke({ color: 0x0e4f8f, width: lineW * 1.7, alpha: 0.9 })
   }
 
   private drawGrid(): void {

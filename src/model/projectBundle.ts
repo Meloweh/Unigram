@@ -17,6 +17,7 @@ import JSZip from 'jszip'
 import type { Connection, GridSettings, Model, ModelNode } from './types'
 import type { ModelCosmetics } from '../theme/types'
 import { getMediaBlob, storeMediaBlob } from '../media/mediaStore'
+import { DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, isCosmeticShape } from '../scene/cosmeticGeometry'
 
 interface ModelFile {
   id?: string
@@ -77,7 +78,7 @@ export async function importBundle(blob: Blob): Promise<ProjectSnapshot> {
   const models = new Map<string, Model>()
   for (const [id, mf] of Object.entries(file.models)) {
     const nodes: ModelNode[] = []
-    for (const node of mf.nodes) nodes.push(await hydrateNodeMedia(node, zip))
+    for (const node of mf.nodes) nodes.push(migrateCosmeticNode(await hydrateNodeMedia(node, zip)))
     const modelId = mf.id || id
     const model: Model = {
       id: modelId,
@@ -103,6 +104,17 @@ function resolveRootModelId(rootModelId: string, models: Map<string, Model>): st
   const first = models.keys().next().value as string | undefined
   if (first) return first
   throw new Error(`Bundle rootModelId "${rootModelId}" not present in models`)
+}
+
+function migrateCosmeticNode(node: ModelNode): ModelNode {
+  if (!isCosmeticShape(node.shape)) return node
+  if (node.cosmeticType && node.tipAngle != null && node.tipLength != null) return node
+  return {
+    ...node,
+    cosmeticType: node.cosmeticType ?? node.shape,
+    tipAngle: node.tipAngle ?? DEFAULT_COSMETIC_TIP_ANGLE,
+    tipLength: node.tipLength ?? DEFAULT_COSMETIC_TIP_LENGTH,
+  }
 }
 
 async function serializeNodeMedia(node: ModelNode, zip: JSZip): Promise<ModelNode> {

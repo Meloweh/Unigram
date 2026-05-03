@@ -22,7 +22,7 @@ import { useOmniStore } from '../model/store'
 import { DEFAULT_NODE } from '../model/types'
 
 interface ActiveDrag {
-  kind: 'pan' | 'node' | 'connect' | 'box'
+  kind: 'pan' | 'node' | 'connect' | 'box' | 'tip'
   pointerId: number
   startClient: { x: number; y: number }
   startScene: { x: number; y: number }
@@ -41,6 +41,7 @@ interface ActiveDrag {
   /** Snapshot of selection at gesture start (for additive box-select). */
   baseSelection?: ReadonlySet<string>
   totalMoved?: number
+  tipBaseline?: { id: string; tipAngle?: number; tipLength?: number; tip?: import('../model/types').ModelNode['tip'] }
 }
 
 const CLICK_THRESHOLD_PX = 4
@@ -113,10 +114,26 @@ export class PointerController {
   private onPointerDown = (e: PointerEvent): void => {
     if (this.active) return
     const scene = this.toScene(e)
+    const tipHitId = e.button === 0 ? this.renderer.pickCosmeticTipHandle(scene.x, scene.y) : null
     const hitId = this.renderer.pickNode(scene.x, scene.y)
     const isRight = e.button === 2
     const shift = e.shiftKey
     this.host.setPointerCapture(e.pointerId)
+
+    if (tipHitId) {
+      const node = useOmniStore.getState().model.nodes.get(tipHitId)
+      if (!node || node.locked) return
+      this.active = {
+        kind: 'tip',
+        pointerId: e.pointerId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startScene: scene,
+        nodeId: tipHitId,
+        tipBaseline: { id: tipHitId, tipAngle: node.tipAngle, tipLength: node.tipLength, tip: node.tip },
+        totalMoved: 0,
+      }
+      return
+    }
 
     if (isRight && hitId) {
       // Begin connection draft.
@@ -273,6 +290,12 @@ export class PointerController {
       return
     }
 
+    if (a.kind === 'tip' && a.nodeId) {
+      const sceneNow = this.toScene(e)
+      this.renderer.moveCosmeticTipDirect(a.nodeId, sceneNow.x, sceneNow.y)
+      return
+    }
+
     if (a.kind === 'connect' && a.nodeId) {
       const sceneNow = this.toScene(e)
       const hoverId = this.renderer.pickNode(sceneNow.x, sceneNow.y)
@@ -370,6 +393,11 @@ export class PointerController {
       const next = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
       for (let i = 0; i < hits.length; i++) next.add(hits[i])
       useOmniStore.getState().selectMany(next)
+      return
+    }
+
+    if (a.kind === 'tip' && a.tipBaseline) {
+      useOmniStore.getState().commitCosmeticTip(a.tipBaseline)
       return
     }
 

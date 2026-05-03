@@ -17,6 +17,8 @@ import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 import { spawnGrid, spawnNested } from './spawnGrid'
 import type { FlowEffect } from '../flow/types'
+import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
+import { isCosmeticShape } from '../scene/cosmeticGeometry'
 
 export interface BenchResult {
   scenario: string
@@ -200,6 +202,32 @@ const SCENARIOS: Record<string, ScenarioDef> = {
     },
     () => {
       useOmniStore.getState().loadModel(spawnGrid({ count: 1000, spacingPercent: 4, mixedShapes: true }))
+    },
+    () => {
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+    },
+  ),
+  /**
+   * Animated cosmetic scene: 1000 mixed nodes with default always-play
+   * bubble/cloud effects attached. Isolates the continuous animation cost
+   * introduced by Unigram-parity cosmetic nodes.
+   */
+  'cosmetic-animated-1k': defineScenario(
+    (r, t) => {
+      const s = 0.9 + Math.sin(t * 0.0013) * 0.18
+      r.setCamera({
+        panX: Math.cos(t * 0.0009) * 18,
+        panY: Math.sin(t * 0.0011) * 14,
+        freeScale: s,
+      })
+    },
+    () => {
+      const model = spawnGrid({ count: 1000, spacingPercent: 4, mixedShapes: true })
+      for (const node of model.nodes.values()) {
+        if (!isCosmeticShape(node.shape)) continue
+        node.flowEffects = [defaultCosmeticEffect(node.shape)]
+      }
+      useOmniStore.getState().loadModel(model)
     },
     () => {
       useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))

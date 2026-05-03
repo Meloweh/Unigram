@@ -160,6 +160,39 @@ describe('projectBundle round-trip', () => {
     expect(r.cosmetics?.particleEffect).toBe('fireflies')
   })
 
+  it('migrates old cosmetic shape-only nodes on import', async () => {
+    const root = mkModel('root', 'Old Cosmetic')
+    root.nodes.set('cloud', {
+      id: 'cloud',
+      x: 20,
+      y: 20,
+      w: 9,
+      h: 9,
+      label: 'idea',
+      shape: 'thinking-cloud',
+      cellColor: '#fff',
+      membraneColor: '#000',
+    })
+    const zip = new JSZip()
+    zip.file('project.json', JSON.stringify({
+      version: 1,
+      rootModelId: 'root',
+      models: {
+        root: {
+          id: root.id,
+          name: root.name,
+          nodes: [...root.nodes.values()],
+          edges: [...root.edges.values()],
+        },
+      },
+    }))
+    const restored = await importBundle(await zip.generateAsync({ type: 'blob' }))
+    const cloud = restored.models.get('root')!.nodes.get('cloud')!
+    expect(cloud.cosmeticType).toBe('thinking-cloud')
+    expect(cloud.tipAngle).toBeCloseTo(Math.PI * 0.75)
+    expect(cloud.tipLength).toBe(20)
+  })
+
   it('round-trips stored media blobs and first-class content fields', async () => {
     clearMediaStore()
     const imageUrl = await storeMediaBlob(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }))

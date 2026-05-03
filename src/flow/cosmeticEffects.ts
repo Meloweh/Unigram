@@ -10,7 +10,7 @@ export function defaultCosmeticEffect(type: CosmeticType): FlowEffect {
       alwaysPlay: true,
       graph: {
         nodes: [
-          { id: 'cosmetic-root', kind: 'cloud-levitate', params: { ampX: 0.35, ampY: 0.75, rotAmp: 1.5, ms: 4000 }, x: 300, y: 120 },
+          { id: 'cosmetic-root', kind: 'cloud-levitate', params: { ampX: 0.1667, ampY: 0.7407, rotAmp: 1.5, speed: 0.8, ms: 25000 }, x: 300, y: 120 },
         ],
         edges: [],
       },
@@ -23,7 +23,7 @@ export function defaultCosmeticEffect(type: CosmeticType): FlowEffect {
     alwaysPlay: true,
     graph: {
       nodes: [
-        { id: 'cosmetic-root', kind: 'bubble-levitate', params: { ampX: 0.54, ampY: 0.9, scaleAmp: 0.03, scalePulse: 1, ms: 4000 }, x: 300, y: 120 },
+        { id: 'cosmetic-root', kind: 'bubble-levitate', params: { ampX: 0.3125, ampY: 0.9259, scaleAmp: 0.03, scalePulse: 1, speed: 0.5, ms: 10000 }, x: 300, y: 120 },
       ],
       edges: [],
     },

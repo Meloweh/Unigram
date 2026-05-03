@@ -3,8 +3,11 @@ import {
   chatBubblePathPoints,
   cosmeticNodeDefaults,
   cosmeticTip,
+  cosmeticTipFromLocalPoint,
+  cosmeticTipHandleLocalPx,
   DEFAULT_COSMETIC_TIP_ANGLE,
   DEFAULT_COSMETIC_TIP_LENGTH,
+  thinkingCloudOutlinePoints,
   thinkingCloudTrail,
 } from './cosmeticGeometry'
 
@@ -34,5 +37,28 @@ describe('cosmetic geometry', () => {
     const trail = thinkingCloudTrail(180, 100, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH)
     expect(trail).toHaveLength(3)
     expect(trail.map((c) => c.r)).toEqual([8, 6, 4])
+  })
+
+  it('samples the legacy arc-puff cloud outline instead of an oval', () => {
+    const outline = thinkingCloudOutlinePoints(180, 100)
+    expect(outline.length).toBeGreaterThan(50)
+    const xs = outline.map(([x]) => x)
+    const ys = outline.map(([, y]) => y)
+    expect(Math.min(...xs)).toBeLessThan(-80)
+    expect(Math.max(...xs)).toBeGreaterThan(80)
+    expect(Math.min(...ys)).toBeLessThan(-45)
+    expect(Math.max(...ys)).toBeGreaterThan(45)
+  })
+
+  it('round-trips cosmetic tip handle positions through drag conversion', () => {
+    const bubble = cosmeticTipHandleLocalPx('chat-bubble', 180, 100, Math.PI * 0.75, 24)
+    const nextBubble = cosmeticTipFromLocalPoint('chat-bubble', 180, 100, bubble.x, bubble.y)
+    expect(nextBubble.angle).toBeCloseTo(Math.PI * 0.75, 2)
+    expect(nextBubble.length).toBeGreaterThan(20)
+
+    const cloud = cosmeticTipHandleLocalPx('thinking-cloud', 180, 100, Math.PI * 0.75, 24)
+    const nextCloud = cosmeticTipFromLocalPoint('thinking-cloud', 180, 100, cloud.x, cloud.y)
+    expect(nextCloud.angle).toBeCloseTo(Math.PI * 0.75, 2)
+    expect(nextCloud.length).toBeCloseTo(24, 0)
   })
 })

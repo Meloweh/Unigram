@@ -10,7 +10,7 @@
  */
 
 import type { NodeShape } from '../model/types'
-import { chatBubblePathPoints, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, thinkingCloudTrail } from '../scene/cosmeticGeometry'
+import { chatBubblePathPoints, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, thinkingCloudOutlinePoints, thinkingCloudTrail } from '../scene/cosmeticGeometry'
 
 const SIZE = 80
 const PAD = 6
@@ -110,26 +110,9 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: NodeShape): void {
     case 'thinking-cloud': {
       const cloudW = w * 0.9
       const cloudH = h * 0.64
-      const rx = cloudW / 2
-      const ry = cloudH / 2
-      const pts: Array<[number, number]> = [
-        [cx - rx * 0.18, cy - ry * 0.55],
-        [cx + rx * 0.15, cy - ry * 0.58],
-        [cx + rx * 0.45, cy - ry * 0.34],
-        [cx + rx * 0.61, cy - ry * 0.04],
-        [cx + rx * 0.48, cy + ry * 0.30],
-        [cx + rx * 0.18, cy + ry * 0.52],
-        [cx - rx * 0.18, cy + ry * 0.50],
-        [cx - rx * 0.50, cy + ry * 0.32],
-        [cx - rx * 0.62, cy + ry * 0.02],
-        [cx - rx * 0.48, cy - ry * 0.30],
-      ]
-      ctx.moveTo(pts[0][0], pts[0][1])
-      for (let i = 0; i < pts.length; i++) {
-        const cur = pts[i]
-        const next = pts[(i + 1) % pts.length]
-        ctx.quadraticCurveTo(cur[0], cur[1], (cur[0] + next[0]) / 2, (cur[1] + next[1]) / 2)
-      }
+      const pts = thinkingCloudOutlinePoints(cloudW, cloudH)
+      ctx.moveTo(cx + pts[0][0], cy + pts[0][1])
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(cx + pts[i][0], cy + pts[i][1])
       ctx.closePath()
       for (const c of thinkingCloudTrail(cloudW, cloudH, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH * 0.8)) {
         ctx.moveTo(cx + c.cx + c.r, cy + c.cy)

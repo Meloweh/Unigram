@@ -56,9 +56,10 @@ export interface EffectNode {
    *  - float:            { amp, ms, freq? }           (sinusoidal vertical hover; default freq 1 Hz)
    *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
    *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
-  *  - cloud-levitate:   { ampX, ampY, rotAmp?, ms }  (closed-loop X/Y drift + sway)
-   *  - bubble-levitate:  { ampX?, ampY, scaleAmp, ms, scalePulse? }
-    *                                                    (vertical sin + optional scale pulse)
+  *  - cloud-levitate:   { ampX, ampY, rotAmp?, speed?, ms }
+   *                                                    (prototype-style X/Y drift + sway)
+   *  - bubble-levitate:  { ampX?, ampY, scaleAmp, speed?, ms, scalePulse? }
+    *                                                    (prototype-style X/Y drift + scale pulse)
    *  - repeater:         { times }                    (when reached, rewinds the run;
    *                                                    times<0 means infinite, otherwise
    *                                                    decrements until exhausted. 0 contribution.)

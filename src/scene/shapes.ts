@@ -18,6 +18,7 @@ import {
   chatBubblePathPoints,
   cosmeticTip,
   DEFAULT_COSMETIC_TIP_LENGTH,
+  thinkingCloudOutlinePoints,
   thinkingCloudTrail,
 } from './cosmeticGeometry'
 
@@ -288,28 +289,9 @@ function drawThinkingCloudPath(
   tipAngle?: number,
   tipLength?: number,
 ): void {
-  const rx = w / 2
-  const ry = h / 2
-  const pts: Array<[number, number]> = [
-    [-rx * 0.18, -ry * 0.55],
-    [rx * 0.15, -ry * 0.58],
-    [rx * 0.45, -ry * 0.34],
-    [rx * 0.61, -ry * 0.04],
-    [rx * 0.48, ry * 0.30],
-    [rx * 0.18, ry * 0.52],
-    [-rx * 0.18, ry * 0.50],
-    [-rx * 0.50, ry * 0.32],
-    [-rx * 0.62, ry * 0.02],
-    [-rx * 0.48, -ry * 0.30],
-  ]
+  const pts = thinkingCloudOutlinePoints(w, h)
   g.moveTo(pts[0][0], pts[0][1])
-  for (let i = 0; i < pts.length; i++) {
-    const cur = pts[i]
-    const next = pts[(i + 1) % pts.length]
-    const midX = (cur[0] + next[0]) / 2
-    const midY = (cur[1] + next[1]) / 2
-    g.quadraticCurveTo(cur[0], cur[1], midX, midY)
-  }
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1])
   g.closePath()
   const fallback = fallbackTip ? cosmeticTip({ tip: fallbackTip }) : null
   const angle = tipAngle ?? fallback?.angle ?? Math.PI * 0.75
@@ -378,11 +360,19 @@ export function pointInShape(
     case 'triangle':
       return pointInPolygon(px, py, [0, -h / 2, w / 2, h / 2, -w / 2, h / 2])
     case 'chat-bubble':
-    case 'thinking-cloud':
       // Cosmetic tails/trails can overhang the body. Keep hit-testing
       // forgiving around that overhang until the renderer passes exact tip
       // geometry into the narrow phase.
       return ax <= w / 2 + w * 0.35 && ay <= h / 2 + h * 0.5
+    case 'thinking-cloud': {
+      const outline = thinkingCloudOutlinePoints(w, h, 3)
+      const pts: number[] = []
+      for (let i = 0; i < outline.length; i++) pts.push(outline[i][0], outline[i][1])
+      if (pointInPolygon(px, py, pts)) return true
+      const a = w / 2 + Math.min(1, w * 0.08)
+      const b = h / 2 + Math.min(1, h * 0.12)
+      return (px * px) / (a * a) + (py * py) / (b * b) <= 1
+    }
   }
 }
 

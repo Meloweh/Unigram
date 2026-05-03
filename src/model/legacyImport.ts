@@ -37,6 +37,9 @@ interface LegacyNode {
   cosmeticType?: CosmeticType
   tipAngle?: number
   tipLength?: number
+  tipDirection?: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
+  tipAnchor?: number
+  membraneVisible?: boolean
   cellColor?: string
   membraneColor?: string
   nodeWidth?: number
@@ -150,6 +153,7 @@ function translate(
       .filter((x): x is string => typeof x === 'string')
     const cosmeticType = ln.cosmeticType
     const shape = cosmeticType ?? ln.shape ?? DEFAULT_NODE.shape
+    const legacyTipAngle = ln.tipAngle ?? angleFromTipDirection(ln.tipDirection)
     const node: ModelNode = {
       id: ln.id,
       label: ln.label ?? '',
@@ -160,7 +164,7 @@ function translate(
       shape,
       cellColor: ln.cellColor ?? DEFAULT_NODE.cellColor,
       membraneColor: ln.membraneColor ?? DEFAULT_NODE.membraneColor,
-      ...(cosmeticType ? { cosmeticType, tipAngle: ln.tipAngle ?? DEFAULT_COSMETIC_TIP_ANGLE, tipLength: ln.tipLength ?? DEFAULT_COSMETIC_TIP_LENGTH } : {}),
+      ...(cosmeticType ? { cosmeticType, tipAngle: legacyTipAngle ?? DEFAULT_COSMETIC_TIP_ANGLE, tipLength: ln.tipLength ?? DEFAULT_COSMETIC_TIP_LENGTH } : {}),
       ...(childModelId ? { childModelId } : {}),
       ...(mpdDimensions && mpdDimensions.length > 0 ? { mpdDimensions } : {}),
       ...(ln.locked ? { locked: true } : {}),
@@ -201,6 +205,16 @@ function translate(
     name: f.label ?? f.id,
     nodes,
     edges,
+  }
+}
+
+function angleFromTipDirection(dir: LegacyNode['tipDirection']): number | undefined {
+  switch (dir) {
+    case 'bottom-left': return Math.PI * 0.75
+    case 'bottom-right': return Math.PI * 0.25
+    case 'top-left': return -Math.PI * 0.75
+    case 'top-right': return -Math.PI * 0.25
+    default: return undefined
   }
 }
 

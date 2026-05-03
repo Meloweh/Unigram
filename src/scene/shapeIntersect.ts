@@ -12,6 +12,7 @@
  */
 
 import type { NodeShape } from './shapes'
+import { thinkingCloudOutlinePoints } from './cosmeticGeometry'
 
 const POLYGONS: Partial<Record<NodeShape, (hw: number, hh: number) => Array<[number, number]>>> = {
   diamond: (hw, hh) => [[0, -hh], [hw, 0], [0, hh], [-hw, 0]],
@@ -35,8 +36,13 @@ export function shapeEdgeIntersect(
   dx: number,
   dy: number,
 ): { x: number; y: number } {
-  // Cosmetic boundaries match a base shape.
-  if (shape === 'thinking-cloud' || shape === 'oval' || shape === 'circle') {
+  if (shape === 'thinking-cloud') {
+    const hit = rayPolygonIntersect(thinkingCloudOutlinePoints(hw * 2, hh * 2, 4), dx, dy)
+    if (hit) return hit
+  }
+
+  // Oval/circle boundaries use the exact ellipse intersection.
+  if (shape === 'oval' || shape === 'circle') {
     const denom = Math.sqrt((dx * dx) / (hw * hw) + (dy * dy) / (hh * hh))
     if (denom < 1e-9) return { x: 0, y: 0 }
     return { x: dx / denom, y: dy / denom }
@@ -65,4 +71,20 @@ export function shapeEdgeIntersect(
   const ty = Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity
   const t = Math.min(tx, ty)
   return { x: dx * t, y: dy * t }
+}
+
+function rayPolygonIntersect(poly: Array<[number, number]>, dx: number, dy: number): { x: number; y: number } | null {
+  let bestT = Infinity
+  for (let i = 0; i < poly.length; i++) {
+    const [p1x, p1y] = poly[i]
+    const [p2x, p2y] = poly[(i + 1) % poly.length]
+    const ex = p2x - p1x
+    const ey = p2y - p1y
+    const det = dy * ex - dx * ey
+    if (Math.abs(det) < 1e-12) continue
+    const t = (p1y * ex - p1x * ey) / det
+    const u = (dx * p1y - dy * p1x) / det
+    if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9 && t < bestT) bestT = t
+  }
+  return bestT < Infinity ? { x: dx * bestT, y: dy * bestT } : null
 }

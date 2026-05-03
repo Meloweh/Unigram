@@ -69,6 +69,8 @@ interface Run {
 }
 
 let RUN_COUNTER = 0
+const PHASE_CACHE_LIMIT = 4096
+const phaseCache = new Map<string, number>()
 
 export class FlowRuntime {
   private runs = new Map<string, Run>()
@@ -328,7 +330,7 @@ export class FlowRuntime {
                   : finalCam
               }
             } else {
-              const finalContrib = contribution(t.node, 1, t.durationMs)
+              const finalContrib = contribution(t.node, 1, t.durationMs, run.targetNodeId)
               if (finalContrib) {
                 run.held = run.held
                   ? mergeOverride(run.held, finalContrib)
@@ -345,7 +347,7 @@ export class FlowRuntime {
             const cam = cameraContribution(t.node, loopRatio)
             if (cam) cameraMerged = cameraMerged ? mergeCameraOverride(cameraMerged, cam) : cam
           } else {
-            const contrib = contribution(t.node, loopRatio, loopElapsed)
+            const contrib = contribution(t.node, loopRatio, loopElapsed, run.targetNodeId)
             if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
           }
         }
@@ -391,7 +393,7 @@ export class FlowRuntime {
           else this.onSpawnCircular?.(run.targetNodeId, t.node.params)
         }
       } else {
-        const contrib = contribution(t.node, ratio, localElapsed)
+        const contrib = contribution(t.node, ratio, localElapsed, run.targetNodeId)
         if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
         if (t.node.kind === 'break') {
           const shake = breakScreenShake(t.node, localElapsed)
@@ -544,6 +546,7 @@ function contribution(
   n: EffectNode,
   ratio: number,
   localElapsed: number,
+  targetNodeId = '',
 ): NodeOverride | null {
   switch (n.kind) {
     case 'wait':
@@ -616,31 +619,39 @@ function contribution(
       }
     }
     case 'cloud-levitate': {
-      // Legacy cloudy levitate: lateral drift, vertical bob, and a slight
-      // sway. Use task ratio so always-play loops reconnect perfectly.
-      const ampX = n.params.ampX ?? 0.35
-      const ampY = n.params.ampY ?? 0.75
+      // Match the prototype's independent X/Y/rotation rates. The built-in
+      // duration is a full common cycle, so always-play loops reconnect.
+      const ampX = n.params.ampX ?? 0.1667
+      const ampY = n.params.ampY ?? 0.7407
       const rotAmp = n.params.rotAmp ?? 1.5
-      const phase = ratio * 2 * Math.PI
+      const speed = n.params.speed ?? 0.8
+      const durationSec = Math.max(0.001, (n.params.ms ?? 25000) / 1000)
+      const baseCycles = quantizedCycles(speed * durationSec, 10)
+      const s = ratio * Math.PI * 2 * baseCycles
+      const phaseX = phaseFor(targetNodeId || n.id, 0)
+      const phaseY = phaseFor(targetNodeId || n.id, 1)
       return {
-        dx: Math.sin(phase) * ampX,
-        dy: Math.sin(phase + Math.PI * 0.5) * ampY,
-        rotationDeg: Math.sin(phase + Math.PI * 0.2) * rotAmp,
+        dx: Math.sin(s * 0.7 + phaseX) * ampX,
+        dy: Math.sin(s * 0.5 + phaseY) * ampY,
+        rotationDeg: Math.sin(s * 0.3 + phaseX) * rotAmp,
       }
     }
     case 'bubble-levitate': {
-      // Legacy soap-bubble levitate: X/Y drift plus slight scale pulse.
-      // Ratio-based phases make the runtime loop seamless.
-      const ampX = n.params.ampX ?? 0.54
-      const ampY = n.params.ampY ?? 0.5
-      const scaleAmp = n.params.scaleAmp ?? 0.04
+      // Match the prototype's soap-bubble Lissajous drift and scale pulse.
+      const ampX = n.params.ampX ?? 0.3125
+      const ampY = n.params.ampY ?? 0.9259
+      const scaleAmp = n.params.scaleAmp ?? 0.03
       const scalePulse = (n.params.scalePulse ?? 1) !== 0
-      const phase = ratio * 2 * Math.PI
-      const dyPhase = Math.sin(phase + Math.PI * 0.35)
+      const speed = n.params.speed ?? 0.5
+      const durationSec = Math.max(0.001, (n.params.ms ?? 10000) / 1000)
+      const baseCycles = quantizedCycles(speed * durationSec, 5)
+      const s = ratio * Math.PI * 2 * baseCycles
+      const phaseX = phaseFor(targetNodeId || n.id, 0)
+      const phaseY = phaseFor(targetNodeId || n.id, 1)
       return {
-        dx: Math.sin(phase) * ampX,
-        dy: dyPhase * ampY,
-        scaleMul: scalePulse ? 1 + scaleAmp * Math.sin(phase + Math.PI * 0.7) : 1,
+        dx: Math.sin(s * 0.6 + phaseX) * ampX,
+        dy: Math.sin(s * 0.4 + phaseY) * ampY,
+        scaleMul: scalePulse ? 1 + scaleAmp * Math.sin(s * 0.8) : 1,
       }
     }
     case 'break': {
@@ -725,6 +736,28 @@ function cameraContribution(n: EffectNode, ratio: number): CameraOverride | null
 
 function lerp(a: number, b: number, t: number): number {
   return Math.round(a + (b - a) * t)
+}
+
+function phaseFor(seed: string, salt: number): number {
+  const key = `${salt}|${seed}`
+  const cached = phaseCache.get(key)
+  if (cached != null) return cached
+  let h = 2166136261 ^ salt
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  const phase = ((h >>> 0) / 0xffffffff) * Math.PI * 2
+  phaseCache.set(key, phase)
+  if (phaseCache.size > PHASE_CACHE_LIMIT) {
+    const first = phaseCache.keys().next().value as string | undefined
+    if (first) phaseCache.delete(first)
+  }
+  return phase
+}
+
+function quantizedCycles(rawCycles: number, quantum: number): number {
+  return Math.max(quantum, Math.round(rawCycles / quantum) * quantum)
 }
 
 function easeInCubic(t: number): number {

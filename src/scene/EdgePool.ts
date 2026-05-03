@@ -37,7 +37,9 @@ const keyOf = (
   to: ModelNode,
 ): string =>
   `${from.x},${from.y},${from.w},${from.h},${from.shape}|` +
+  `${from.cosmeticType ?? ''},${from.tipAngle ?? ''},${from.tipLength ?? ''}|` +
   `${to.x},${to.y},${to.w},${to.h},${to.shape}|` +
+  `${to.cosmeticType ?? ''},${to.tipAngle ?? ''},${to.tipLength ?? ''}|` +
   `${e.color}|${e.width}|${e.kind ?? 'default'}|${e.dash ?? 'solid'}|` +
   `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}`
 

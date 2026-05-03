@@ -12,7 +12,7 @@ import { SCENE_W, SCENE_H } from './sceneConstants'
 import { DEFAULT_NODE, type ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 import { drawNodeShape } from './shapes'
-import { cosmeticTip } from './cosmeticGeometry'
+import { cosmeticTip, cosmeticTypeOf } from './cosmeticGeometry'
 import {
   NODE_FONT_FAMILY,
   NODE_FONT_SIZE,
@@ -109,6 +109,15 @@ interface MediaPreviewState {
 const TEXT_INSET = 0.82
 /** Extra scene-percent padding around the text bounding box. */
 const TEXT_PAD_PCT = 1.0
+
+function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
+  const type = cosmeticTypeOf(n)
+  if (type === 'thinking-cloud') {
+    return { inset: 0.58, padW: (100 / SCENE_W) * 100, padH: (80 / SCENE_H) * 100 }
+  }
+  if (type === 'chat-bubble') return { inset: 0.74, padW: 1.6, padH: 1.4 }
+  return { inset: TEXT_INSET, padW: TEXT_PAD_PCT, padH: TEXT_PAD_PCT }
+}
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
   `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
@@ -371,13 +380,14 @@ export class NodePool {
       if (lod === 'full' && this.onNodeFit && pn.label.visible) {
         const labelWPx = pn.label.width
         const labelHPx = pn.label.height
+        const fit = labelFit(n)
         const requiredW = Math.max(
           NODE_MIN_W,
-          (labelWPx / TEXT_INSET / SCENE_W) * 100 + TEXT_PAD_PCT,
+          (labelWPx / fit.inset / SCENE_W) * 100 + fit.padW,
         )
         const requiredH = Math.max(
           NODE_MIN_H,
-          (labelHPx / TEXT_INSET / SCENE_H) * 100 + TEXT_PAD_PCT,
+          (labelHPx / fit.inset / SCENE_H) * 100 + fit.padH,
         )
         if (requiredW > n.w + 0.01 || requiredH > n.h + 0.01) {
           this.onNodeFit(n.id, Math.max(n.w, requiredW), Math.max(n.h, requiredH))

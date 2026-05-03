@@ -159,6 +159,8 @@ interface Actions {
    * and pushes them as a single transaction.
    */
   commitDrag(baselines: Iterable<{ id: string; x: number; y: number }>): void
+  /** Commit renderer-direct cosmetic tip edits as one undoable change. */
+  commitCosmeticTip(baseline: { id: string; tipAngle?: number; tipLength?: number; tip?: ModelNode['tip'] }): void
 
   undo(): void
   redo(): void
@@ -502,6 +504,31 @@ export const useOmniStore = create<Store>((set, get) => ({
     // Live nodes already hold the new positions (renderer wrote them in
     // place). Push the patches to the undo stack and bump rev so other
     // subscribers see the change; do NOT call applyPatch again.
+    set((s) => {
+      s.undoStack.push(tx)
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
+    })
+  },
+
+  commitCosmeticTip(baseline) {
+    const cur = get().model.nodes.get(baseline.id)
+    if (!cur) return
+    if (
+      cur.tipAngle === baseline.tipAngle &&
+      cur.tipLength === baseline.tipLength &&
+      cur.tip?.x === baseline.tip?.x &&
+      cur.tip?.y === baseline.tip?.y
+    ) return
+    const before: ModelNode = {
+      ...cur,
+      tipAngle: baseline.tipAngle,
+      tipLength: baseline.tipLength,
+      tip: baseline.tip,
+    }
+    const tx: Patch[] = [{ kind: 'node', op: 'update', id: baseline.id, before, after: cur }]
     set((s) => {
       s.undoStack.push(tx)
       const model = { ...s.model }

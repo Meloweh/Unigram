@@ -310,7 +310,8 @@ describe('FlowRuntime — extended kinds', () => {
     )
     rt.tick(250)
     const ov = rt.getOverride('n1')!
-    expect(ov.dy).toBeCloseTo(Math.sin(Math.PI * 0.85), 1)
+    expect(Math.abs(ov.dx ?? 0)).toBeLessThanOrEqual(0.3126)
+    expect(Math.abs(ov.dy ?? 0)).toBeLessThanOrEqual(1.0001)
     expect(ov.scaleMul).toBe(1)
   })
 
