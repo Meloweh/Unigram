@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import JSZip from 'jszip'
 import { exportBundle, importBundle } from './projectBundle'
 import type { Model } from './types'
 import { clearMediaStore, getMediaBlob, storeMediaBlob } from '../media/mediaStore'
@@ -76,6 +77,69 @@ describe('projectBundle round-trip', () => {
   it('rejects bundles with missing project.json or wrong version', async () => {
     const empty = new Blob([''], { type: 'application/zip' })
     await expect(importBundle(empty)).rejects.toThrow()
+  })
+
+  it('loads bundles whose model map key differs from the embedded model id', async () => {
+    const root = mkModel('root', 'Key Mismatch')
+    const zip = new JSZip()
+    zip.file('project.json', JSON.stringify({
+      version: 1,
+      rootModelId: 'root',
+      models: {
+        current: {
+          id: root.id,
+          name: root.name,
+          nodes: [...root.nodes.values()],
+          edges: [...root.edges.values()],
+        },
+      },
+    }))
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const restored = await importBundle(blob)
+    expect(restored.models.has('root')).toBe(true)
+    expect(restored.models.get('root')?.name).toBe('Key Mismatch')
+  })
+
+  it('uses the root model key when the embedded model id drifted', async () => {
+    const root = mkModel('current', 'Root Key Wins')
+    const zip = new JSZip()
+    zip.file('project.json', JSON.stringify({
+      version: 1,
+      rootModelId: 'root',
+      models: {
+        root: {
+          id: root.id,
+          name: root.name,
+          nodes: [...root.nodes.values()],
+          edges: [...root.edges.values()],
+        },
+      },
+    }))
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const restored = await importBundle(blob)
+    expect(restored.rootModelId).toBe('root')
+    expect(restored.models.get('root')?.name).toBe('Root Key Wins')
+  })
+
+  it('falls back to the only saved model when rootModelId is stale', async () => {
+    const only = mkModel('current', 'Only Model')
+    const zip = new JSZip()
+    zip.file('project.json', JSON.stringify({
+      version: 1,
+      rootModelId: 'root',
+      models: {
+        current: {
+          id: only.id,
+          name: only.name,
+          nodes: [...only.nodes.values()],
+          edges: [...only.edges.values()],
+        },
+      },
+    }))
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const restored = await importBundle(blob)
+    expect(restored.rootModelId).toBe('current')
+    expect(restored.models.get('current')?.name).toBe('Only Model')
   })
 
   it('round-trips diagram cosmetics (theme, background, particles)', async () => {

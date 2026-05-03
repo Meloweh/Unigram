@@ -31,6 +31,8 @@ interface Task {
   startAt: number
   /** Total duration in ms (0 for instant or pure-source tasks). */
   durationMs: number
+  /** Duration downstream tasks should wait after this task starts. */
+  blockMs: number
   /** ids of tasks this one waits on (nodes with edges into us). */
   dependsOn: string[]
   /** Set once `startAt` is computed (after dependsOn complete). */
@@ -151,6 +153,7 @@ export class FlowRuntime {
         node: n,
         startAt: 0,
         durationMs: durationOf(n),
+        blockMs: blockDurationOf(n),
         dependsOn: incoming.get(n.id) ?? [],
         scheduled: false,
         endedAt: -1,
@@ -219,19 +222,6 @@ export class FlowRuntime {
         }
         if (anyAlive) break
         if (!run.loop && run.repeatLeft === 0) {
-          // Final flush so any held overrides land in this tick.
-          if (run.held) {
-            const cur = this.overrides.get(run.targetNodeId)
-            this.overrides.set(
-              run.targetNodeId,
-              cur ? mergeOverride(cur, run.held) : run.held,
-            )
-          }
-          if (run.cameraHeld) {
-            this.cameraOverride = this.cameraOverride
-              ? mergeCameraOverride(this.cameraOverride, run.cameraHeld)
-              : run.cameraHeld
-          }
           this.runs.delete(id)
           break
         }
@@ -248,6 +238,7 @@ export class FlowRuntime {
           t.scheduled = false
           t.startAt = 0
           t.endedAt = -1
+          t.sideEffectFired = false
         }
         // If we're still past the new cycle end, loop again to catch up.
         if (now - run.startedAt < cycle) {
@@ -289,11 +280,11 @@ export class FlowRuntime {
             allReady = false
             break
           }
-          const depEnd = dep.startAt + dep.durationMs
+          const depEnd = dep.startAt + dep.blockMs
           if (depEnd > latestEnd) latestEnd = depEnd
         }
         if (allReady) {
-          t.startAt = latestEnd
+          t.startAt = latestEnd + delayOf(t.node)
           t.scheduled = true
           progressed = true
         }
@@ -347,6 +338,17 @@ export class FlowRuntime {
             }
           }
         }
+        if (shouldKeepPlaying(t.node) && runHasUnfinishedTasks(run) && t.durationMs > 0) {
+          const loopElapsed = (elapsed - t.startAt) % t.durationMs
+          const loopRatio = loopElapsed / t.durationMs
+          if (t.node.kind === 'camera') {
+            const cam = cameraContribution(t.node, loopRatio)
+            if (cam) cameraMerged = cameraMerged ? mergeCameraOverride(cameraMerged, cam) : cam
+          } else {
+            const contrib = contribution(t.node, loopRatio, loopElapsed)
+            if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
+          }
+        }
         continue
       }
       if (elapsed < t.startAt) continue
@@ -391,8 +393,13 @@ export class FlowRuntime {
       } else {
         const contrib = contribution(t.node, ratio, localElapsed)
         if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
+        if (t.node.kind === 'break') {
+          const shake = breakScreenShake(t.node, localElapsed)
+          if (shake) cameraMerged = cameraMerged ? mergeCameraOverride(cameraMerged, shake) : shake
+        }
       }
     }
+    if (!run.loop && run.repeatLeft === 0 && !runHasUnfinishedTasks(run)) return
     if (merged) {
       const cur = this.overrides.get(run.targetNodeId)
       this.overrides.set(
@@ -422,6 +429,16 @@ export class FlowRuntime {
       else if (t.node.kind === 'spawn-circular') this.onSpawnCircularStop?.(run.targetNodeId)
     }
   }
+
+}
+
+function runHasUnfinishedTasks(run: Run): boolean {
+  for (const t of run.tasks.values()) if (t.endedAt < 0) return true
+  return false
+}
+
+function shouldKeepPlaying(n: EffectNode): boolean {
+  return (n.params.keepPlaying ?? 0) !== 0
 }
 
 function durationOf(n: EffectNode): number {
@@ -449,6 +466,74 @@ function durationOf(n: EffectNode): number {
     return Math.max(0, n.params.ms ?? 1500)
   }
   return Math.max(0, n.params.ms ?? 0)
+}
+
+function delayOf(n: EffectNode): number {
+  return Math.max(0, n.params.delayMs ?? 0)
+}
+
+function blockDurationOf(n: EffectNode): number {
+  const waits = (n.params.waitForFinish ?? 1) !== 0
+  return waits ? durationOf(n) : 0
+}
+
+export function estimateFlowEffectDuration(effect: FlowEffect): number {
+  const { nodes, edges } = effect.graph
+  if (nodes.length === 0) return 0
+  const incoming = new Map<string, string[]>()
+  const dependents = new Map<string, string[]>()
+  for (const n of nodes) {
+    incoming.set(n.id, [])
+    dependents.set(n.id, [])
+  }
+  for (const e of edges) {
+    incoming.get(e.to)?.push(e.from)
+    dependents.get(e.from)?.push(e.to)
+  }
+  const indeg = new Map<string, number>()
+  for (const [id, inc] of incoming) indeg.set(id, inc.length)
+  const queue: string[] = []
+  for (const [id, d] of indeg) if (d === 0) queue.push(id)
+  let visited = 0
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    visited++
+    for (const dep of dependents.get(id) ?? []) {
+      const left = (indeg.get(dep) ?? 0) - 1
+      indeg.set(dep, left)
+      if (left === 0) queue.push(dep)
+    }
+  }
+  if (visited !== nodes.length) return 0
+
+  const scheduled = new Set<string>()
+  const startAt = new Map<string, number>()
+  let progressed = true
+  while (progressed) {
+    progressed = false
+    for (const n of nodes) {
+      if (scheduled.has(n.id)) continue
+      let allReady = true
+      let latestEnd = 0
+      for (const depId of incoming.get(n.id) ?? []) {
+        if (!scheduled.has(depId)) {
+          allReady = false
+          break
+        }
+        const dep = nodes.find((candidate) => candidate.id === depId)
+        if (dep) latestEnd = Math.max(latestEnd, (startAt.get(depId) ?? 0) + blockDurationOf(dep))
+      }
+      if (allReady) {
+        startAt.set(n.id, latestEnd + delayOf(n))
+        scheduled.add(n.id)
+        progressed = true
+      }
+    }
+  }
+  if (scheduled.size !== nodes.length) return 0
+  let maxEnd = 0
+  for (const n of nodes) maxEnd = Math.max(maxEnd, (startAt.get(n.id) ?? 0) + durationOf(n))
+  return maxEnd
 }
 
 /**
@@ -555,20 +640,22 @@ function contribution(
       }
     }
     case 'break': {
-      const axis = n.params.axis ?? 0
-      const shakeIntensity = n.params.shakeIntensity ?? 0.8
+      const axis = n.params.axis === 1 ? 'vertical' : 'horizontal'
+      const shakeIntensity = n.params.shakeIntensity ?? 8
       const shakeDurationMs = Math.max(1, n.params.shakeDurationMs ?? 300)
       const fallDurationMs = Math.max(1, n.params.fallDurationMs ?? 600)
       const shakeRatio = Math.min(1, localElapsed / shakeDurationMs)
       const fallRatio = Math.max(0, Math.min(1, (localElapsed - shakeDurationMs) / fallDurationMs))
-      const shakeFade = 1 - fallRatio
-      const shakeX = Math.sin(localElapsed * 0.11) * shakeIntensity * shakeFade
-      const shakeY = Math.cos(localElapsed * 0.13) * shakeIntensity * shakeFade
-      const fall = easeInCubic(fallRatio) * 10
-      const split = Math.sin(shakeRatio * Math.PI) * 1.5
-      return axis === 1
-        ? { dx: shakeX + fall, dy: shakeY + split, alphaMul: 1 - fallRatio * 0.35 }
-        : { dx: shakeX + split, dy: shakeY + fall, alphaMul: 1 - fallRatio * 0.35 }
+      const decay = localElapsed < shakeDurationMs ? 1 - shakeRatio : 0
+      return {
+        alphaMul: 0,
+        breakApart: {
+          axis,
+          shakeX: Math.sin(localElapsed * 0.11) * shakeIntensity * decay,
+          shakeY: Math.cos(localElapsed * 0.13) * shakeIntensity * decay,
+          fallRatio: easeInCubic(fallRatio),
+        },
+      }
     }
     case 'repeater':
       // Pure scheduling node — no per-frame contribution. Repeat semantics
@@ -598,6 +685,18 @@ function contribution(
       // Spawn side-effects: bridged via `onSpawn` / `onSpawnCircular`.
       // Spawned ephemerals live entirely in the renderer.
       return null
+  }
+}
+
+function breakScreenShake(n: EffectNode, localElapsed: number): CameraOverride | null {
+  const shakeDurationMs = Math.max(1, n.params.shakeDurationMs ?? 300)
+  if (localElapsed >= shakeDurationMs) return null
+  const t = Math.min(1, localElapsed / shakeDurationMs)
+  const decay = 1 - t
+  const intensity = n.params.shakeIntensity ?? 8
+  return {
+    screenShakeX: Math.sin(localElapsed * 0.19) * intensity * decay,
+    screenShakeY: Math.cos(localElapsed * 0.23) * intensity * decay,
   }
 }
 

@@ -19,7 +19,7 @@ import type { ModelCosmetics } from '../theme/types'
 import { getMediaBlob, storeMediaBlob } from '../media/mediaStore'
 
 interface ModelFile {
-  id: string
+  id?: string
   name: string
   grid?: GridSettings
   cosmetics?: ModelCosmetics
@@ -78,20 +78,31 @@ export async function importBundle(blob: Blob): Promise<ProjectSnapshot> {
   for (const [id, mf] of Object.entries(file.models)) {
     const nodes: ModelNode[] = []
     for (const node of mf.nodes) nodes.push(await hydrateNodeMedia(node, zip))
-    models.set(id, {
-      id: mf.id,
+    const modelId = mf.id || id
+    const model: Model = {
+      id: modelId,
       name: mf.name,
       nodes: new Map(nodes.map((n) => [n.id, n])),
       edges: new Map(mf.edges.map((e) => [e.id, e])),
       ...(mf.grid ? { grid: mf.grid } : {}),
       ...(mf.cosmetics ? { cosmetics: mf.cosmetics } : {}),
       ...(mf.extra ? { extra: mf.extra } : {}),
-    })
+    }
+    models.set(modelId, model)
+    if (id !== modelId && !models.has(id)) models.set(id, { ...model, id })
   }
-  if (!models.has(file.rootModelId)) {
-    throw new Error(`Bundle rootModelId "${file.rootModelId}" not present in models`)
-  }
-  return { rootModelId: file.rootModelId, models }
+  const rootModelId = resolveRootModelId(file.rootModelId, models)
+  return { rootModelId, models }
+}
+
+function resolveRootModelId(rootModelId: string, models: Map<string, Model>): string {
+  if (models.has(rootModelId)) return rootModelId
+  if (models.size === 1) return models.keys().next().value as string
+  const firstRootish = [...models.keys()].find((id) => id.toLowerCase().includes('root'))
+  if (firstRootish) return firstRootish
+  const first = models.keys().next().value as string | undefined
+  if (first) return first
+  throw new Error(`Bundle rootModelId "${rootModelId}" not present in models`)
 }
 
 async function serializeNodeMedia(node: ModelNode, zip: JSZip): Promise<ModelNode> {

@@ -184,7 +184,9 @@ function SaveLoadButtons() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const onSave = async () => {
     const s = useOmniStore.getState()
-    const blob = await exportBundle({ rootModelId: s.model.id, models: s.models })
+    const models = new Map(s.models)
+    models.set(s.model.id, s.model)
+    const blob = await exportBundle({ rootModelId: s.model.id, models })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

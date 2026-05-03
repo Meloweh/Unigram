@@ -29,7 +29,7 @@ import { shapeEdgeIntersect } from './shapeIntersect'
 import { pulse01 } from './anim'
 import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZoom'
 import { ParticleLayer } from '../theme/ParticleLayer'
-import { FlowRuntime } from '../flow/runtime'
+import { estimateFlowEffectDuration, FlowRuntime } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import type { FlowEffect } from '../flow/types'
@@ -667,7 +667,7 @@ export class SceneRenderer {
         const fromArr = arrival.get(from)
         if (fromArr === undefined) continue
         for (const out of outs) {
-          const candidate = fromArr + WIRE_MS
+          const candidate = fromArr + this.oneShotFlowDuration(from) + WIRE_MS
           const existing = arrival.get(out.to)
           if (existing === undefined || candidate > existing) {
             arrival.set(out.to, candidate)
@@ -706,7 +706,8 @@ export class SceneRenderer {
       if (depth > 8) return
       const node = this.model.nodes.get(nodeId)
       if (!node) return
-      this.playActiveNodes.set(nodeId, { startMs: arriveAt, durMs: NODE_HALO_MS })
+      const nodeDuration = this.oneShotFlowDuration(nodeId)
+      this.playActiveNodes.set(nodeId, { startMs: arriveAt, durMs: Math.max(NODE_HALO_MS, nodeDuration + 250) })
       for (const eff of node.flowEffects ?? []) {
         if (eff.alwaysPlay) continue
         const runId = this.flow.start(nodeId, eff, arriveAt)
@@ -719,7 +720,8 @@ export class SceneRenderer {
             if (!peer) continue
             const peerEff = (peer.flowEffects ?? []).find((e) => e.id === t.effectId)
             if (!peerEff || peerEff.alwaysPlay) continue
-            this.playActiveNodes.set(t.nodeId, { startMs: arriveAt, durMs: NODE_HALO_MS })
+            const peerDuration = this.oneShotFlowDuration(t.nodeId)
+            this.playActiveNodes.set(t.nodeId, { startMs: arriveAt, durMs: Math.max(NODE_HALO_MS, peerDuration + 250) })
             const peerRunId = this.flow.start(t.nodeId, peerEff, arriveAt)
             if (peerRunId) { this.playRuns.add(peerRunId); started++ }
           }
@@ -742,7 +744,7 @@ export class SceneRenderer {
       const fromArr = arrival.get(from)
       if (fromArr === undefined) continue
       for (const out of outs) {
-        this.playWires.set(out.edgeId, { startMs: fromArr, durMs: WIRE_MS })
+        this.playWires.set(out.edgeId, { startMs: fromArr + this.oneShotFlowDuration(from), durMs: WIRE_MS })
       }
     }
 
@@ -750,6 +752,17 @@ export class SceneRenderer {
     // attached produced any node-override changes.
     this.dirty = true
     return started
+  }
+
+  private oneShotFlowDuration(nodeId: string): number {
+    const node = this.model.nodes.get(nodeId)
+    if (!node) return 0
+    let duration = 0
+    for (const eff of node.flowEffects ?? []) {
+      if (eff.alwaysPlay) continue
+      duration = Math.max(duration, estimateFlowEffectDuration(eff))
+    }
+    return duration
   }
 
   /** Cancel every run started by `playFlowFromNode` and clear the cascade. */
@@ -940,6 +953,22 @@ export class SceneRenderer {
     return best
   }
 
+  private visualNode(node: ModelNode): ModelNode {
+    const override = this.flow.getOverride(node.id)
+    if (!override) return node
+    const dx = override.dx ?? 0
+    const dy = override.dy ?? 0
+    const scale = override.scaleMul ?? 1
+    if (dx === 0 && dy === 0 && scale === 1) return node
+    return {
+      ...node,
+      x: node.x + dx,
+      y: node.y + dy,
+      w: node.w * scale,
+      h: node.h * scale,
+    }
+  }
+
   // ---- internals ----------------------------------------------------------
 
   private onTick = (ticker: { deltaMS: number }): void => {
@@ -1018,8 +1047,9 @@ export class SceneRenderer {
         const idIter = this.selectedIds.values().next()
         const node = idIter.value ? this.model.nodes.get(idIter.value) : null
         if (node) {
-          const cx = (node.x / 100) * SCENE_W
-          const cy = (node.y / 100) * SCENE_H
+          const visual = this.visualNode(node)
+          const cx = (visual.x / 100) * SCENE_W
+          const cy = (visual.y / 100) * SCENE_H
           const k = 1 + 0.03 * p
           this.selectionAuraOuter.pivot.set(cx, cy)
           this.selectionAuraOuter.position.set(cx, cy)
@@ -1059,6 +1089,8 @@ export class SceneRenderer {
     const dPanX = camOv?.dPanX ?? 0
     const dPanY = camOv?.dPanY ?? 0
     const camScaleMul = camOv?.scaleMul ?? 1
+    const screenShakeX = camOv?.screenShakeX ?? 0
+    const screenShakeY = camOv?.screenShakeY ?? 0
     // Camera-tracked-node compensation: ease the world toward placing any
     // active cameraTracked node at viewport centre. Computed per call so
     // node motion (drag, flow override) is followed live.
@@ -1069,8 +1101,8 @@ export class SceneRenderer {
     // Scene coords are signed percent around (0,0) = viewport center.
     // World children draw at scene-pixel positions (scene% / 100 * SCENE_W).
     this.world.scale.set(this.effectiveScale)
-    this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX + this.cameraTrackOffsetX) * this.effectiveScale
-    this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY + this.cameraTrackOffsetY) * this.effectiveScale
+    this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX + this.cameraTrackOffsetX) * this.effectiveScale + screenShakeX
+    this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY + this.cameraTrackOffsetY) * this.effectiveScale + screenShakeY
   }
 
   /**
@@ -1099,8 +1131,9 @@ export class SceneRenderer {
         const node = this.model.nodes.get(id)
         if (!node || !node.cameraTracked) continue
         if (!leader || halo.startMs > leader.startMs) {
-          const cxPx = ((node.x + node.w / 2) / 100) * SCENE_W
-          const cyPx = ((node.y + node.h / 2) / 100) * SCENE_H
+          const visual = this.visualNode(node)
+          const cxPx = ((visual.x + visual.w / 2) / 100) * SCENE_W
+          const cyPx = ((visual.y + visual.h / 2) / 100) * SCENE_H
           leader = { startMs: halo.startMs, x: cxPx, y: cyPx }
         }
       }
@@ -1113,14 +1146,16 @@ export class SceneRenderer {
         const from = this.model.nodes.get(edge.from)
         const to = this.model.nodes.get(edge.to)
         if (!from || !to) continue
+        const fromVisual = this.visualNode(from)
+        const toVisual = this.visualNode(to)
         // Linear interpolation of the head bead along the wire matches the
         // visual on `flowOverlayGfx`. Coordinates use node center (no w/2)
         // so the camera lands on the same point as the bead.
         const t = Math.min(1, Math.max(0, (now - w.startMs) / w.durMs))
-        const fxC = (from.x / 100) * SCENE_W
-        const fyC = (from.y / 100) * SCENE_H
-        const txC = (to.x / 100) * SCENE_W
-        const tyC = (to.y / 100) * SCENE_H
+        const fxC = (fromVisual.x / 100) * SCENE_W
+        const fyC = (fromVisual.y / 100) * SCENE_H
+        const txC = (toVisual.x / 100) * SCENE_W
+        const tyC = (toVisual.y / 100) * SCENE_H
         const hx = fxC + (txC - fxC) * t
         const hy = fyC + (tyC - fyC) * t
         if (!leader || w.startMs > leader.startMs) {
@@ -1234,7 +1269,7 @@ export class SceneRenderer {
       const to = this.model.nodes.get(e.to)
       if (!from || !to) continue
       if (!this.prevVisibleNodes.has(e.from) && !this.prevVisibleNodes.has(e.to)) continue
-      this.edgePool.acquire(e, from, to)
+      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to))
       visibleEdges.add(e.id)
     }
     // Release edges whose endpoints are no longer near view.
@@ -1282,29 +1317,30 @@ export class SceneRenderer {
         this.selectionAuraRing.addChild(ring)
         this.selectionAuraRingPool.push(ring)
       }
-      const wPx = (node.w / 100) * SCENE_W
-      const hPx = (node.h / 100) * SCENE_H
-      const xPx = (node.x / 100) * SCENE_W
-      const yPx = (node.y / 100) * SCENE_H
+      const visual = this.visualNode(node)
+      const wPx = (visual.w / 100) * SCENE_W
+      const hPx = (visual.h / 100) * SCENE_H
+      const xPx = (visual.x / 100) * SCENE_W
+      const yPx = (visual.y / 100) * SCENE_H
       const tip = node.tip
         ? { x: (node.tip.x / 100) * SCENE_W, y: (node.tip.y / 100) * SCENE_H }
         : undefined
       outer.visible = true
       outer.x = xPx; outer.y = yPx
       outer.clear()
-      drawNodeShapePath(outer, node.shape, wPx + 22, hPx + 22, tip)
+      drawNodeShapePath(outer, visual.shape, wPx + 22, hPx + 22, tip)
       outer.fill({ color: HALO_COLOR, alpha: 0.32 })
       inner.visible = true
       inner.x = xPx; inner.y = yPx
       inner.clear()
-      drawNodeShapePath(inner, node.shape, wPx + 12, hPx + 12, tip)
+      drawNodeShapePath(inner, visual.shape, wPx + 12, hPx + 12, tip)
       inner.fill({ color: HALO_COLOR, alpha: 0.42 })
       ring.visible = true
       ring.x = xPx; ring.y = yPx
       ring.clear()
       // Crisp blue membrane frame. The amber wave is below the node only,
       // so it never paints an inner orange membrane over the node face.
-      drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
       ring.stroke({ color: RING_COLOR, width: 2.4, alignment: 1, alpha: 0.98 })
       used++
     }
@@ -1335,10 +1371,12 @@ export class SceneRenderer {
       g.visible = true
       g.clear()
       g.x = 0; g.y = 0
-      const ax = (a.x / 100) * SCENE_W
-      const ay = (a.y / 100) * SCENE_H
-      const bx = (b.x / 100) * SCENE_W
-      const by = (b.y / 100) * SCENE_H
+      const av = this.visualNode(a)
+      const bv = this.visualNode(b)
+      const ax = (av.x / 100) * SCENE_W
+      const ay = (av.y / 100) * SCENE_H
+      const bx = (bv.x / 100) * SCENE_W
+      const by = (bv.y / 100) * SCENE_H
       const baseW = Math.max(1, (e.width / 100) * SCENE_W)
       g.moveTo(ax, ay).lineTo(bx, by)
       g.stroke({ color: RING_COLOR, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
@@ -1469,20 +1507,22 @@ export class SceneRenderer {
       const from = this.model.nodes.get(e.from)
       const to = this.model.nodes.get(e.to)
       if (!from || !to) { this.playWires.delete(edgeId); continue }
-      const fxC = (from.x / 100) * SCENE_W
-      const fyC = (from.y / 100) * SCENE_H
-      const txC = (to.x / 100) * SCENE_W
-      const tyC = (to.y / 100) * SCENE_H
+      const fromVisual = this.visualNode(from)
+      const toVisual = this.visualNode(to)
+      const fxC = (fromVisual.x / 100) * SCENE_W
+      const fyC = (fromVisual.y / 100) * SCENE_H
+      const txC = (toVisual.x / 100) * SCENE_W
+      const tyC = (toVisual.y / 100) * SCENE_H
       const dx = txC - fxC
       const dy = tyC - fyC
       const len = Math.hypot(dx, dy)
       if (len < 1) continue
-      const fHw = ((from.w / 100) * SCENE_W) / 2
-      const fHh = ((from.h / 100) * SCENE_H) / 2
-      const tHw = ((to.w / 100) * SCENE_W) / 2
-      const tHh = ((to.h / 100) * SCENE_H) / 2
-      const fEdge = shapeEdgeIntersect(from.shape, fHw, fHh, dx, dy)
-      const tEdge = shapeEdgeIntersect(to.shape, tHw, tHh, -dx, -dy)
+      const fHw = ((fromVisual.w / 100) * SCENE_W) / 2
+      const fHh = ((fromVisual.h / 100) * SCENE_H) / 2
+      const tHw = ((toVisual.w / 100) * SCENE_W) / 2
+      const tHh = ((toVisual.h / 100) * SCENE_H) / 2
+      const fEdge = shapeEdgeIntersect(fromVisual.shape, fHw, fHh, dx, dy)
+      const tEdge = shapeEdgeIntersect(toVisual.shape, tHw, tHh, -dx, -dy)
       const fx = fxC + fEdge.x
       const fy = fyC + fEdge.y
       const tx = txC + tEdge.x
@@ -1538,10 +1578,11 @@ export class SceneRenderer {
       }
       const n = this.model.nodes.get(nodeId)
       if (!n) { this.playActiveNodes.delete(nodeId); continue }
-      const cx = (n.x / 100) * SCENE_W
-      const cy = (n.y / 100) * SCENE_H
-      const wPx = (n.w / 100) * SCENE_W
-      const hPx = (n.h / 100) * SCENE_H
+      const visual = this.visualNode(n)
+      const cx = (visual.x / 100) * SCENE_W
+      const cy = (visual.y / 100) * SCENE_H
+      const wPx = (visual.w / 100) * SCENE_W
+      const hPx = (visual.h / 100) * SCENE_H
       const tip = n.tip
         ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
         : undefined
@@ -1568,13 +1609,13 @@ export class SceneRenderer {
       ring.visible = true
       ring.x = cx; ring.y = cy
       ring.clear()
-      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
       ring.stroke({ color: 0xffaa1f, width: 11, alignment: 1, alpha: alpha * 0.08 })
-      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
       ring.stroke({ color: 0xffaa1f, width: 6, alignment: 1, alpha: alpha * 0.22 })
-      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
       ring.stroke({ color: 0xffaa1f, width: 3, alignment: 1, alpha: alpha * 0.42 })
-      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      drawNodeShapePath(ring, visual.shape, wPx, hPx, tip)
       ring.stroke({ color: 0xffd58a, width: 1.5, alignment: 1, alpha: alpha * 0.28 })
       auraUsed++
     }
@@ -1594,11 +1635,12 @@ export class SceneRenderer {
       this.connectGhost.visible = false
       return
     }
+    const visualSrc = this.visualNode(src)
     const cam = this.camera
     const s = this.effectiveScale
     const vp = this.viewport
-    const cx = vp.width / 2 + (cam.panX + (src.x / 100) * SCENE_W) * s
-    const cy = vp.height / 2 + (cam.panY + (src.y / 100) * SCENE_H) * s
+    const cx = vp.width / 2 + (cam.panX + (visualSrc.x / 100) * SCENE_W) * s
+    const cy = vp.height / 2 + (cam.panY + (visualSrc.y / 100) * SCENE_H) * s
     const dx = cursor.x - cx
     const dy = cursor.y - cy
     if (Math.hypot(dx, dy) < 1) {
@@ -1607,9 +1649,9 @@ export class SceneRenderer {
     }
     // Clip the start to the source-node boundary in screen pixels so the
     // line never overdraws the membrane.
-    const hw = ((src.w / 100) * SCENE_W * s) / 2
-    const hh = ((src.h / 100) * SCENE_H * s) / 2
-    const edge = shapeEdgeIntersect(src.shape, hw, hh, dx, dy)
+    const hw = ((visualSrc.w / 100) * SCENE_W * s) / 2
+    const hh = ((visualSrc.h / 100) * SCENE_H * s) / 2
+    const edge = shapeEdgeIntersect(visualSrc.shape, hw, hh, dx, dy)
     const ax = cx + edge.x
     const ay = cy + edge.y
     const g = this.connectGhost

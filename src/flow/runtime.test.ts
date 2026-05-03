@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FlowRuntime } from './runtime'
+import { estimateFlowEffectDuration, FlowRuntime } from './runtime'
 import type { FlowEffect, FlowEffectKind } from './types'
 import { mergeOverride } from './types'
 
@@ -52,6 +52,84 @@ describe('FlowRuntime', () => {
     rt.tick(150) // wait done at t=100, move running for 50ms → ratio 0.5
     const ov = rt.getOverride('n1')
     expect(ov?.dx).toBeCloseTo(5, 1)
+  })
+
+  it('delays task activation and blocks downstream until delayed task finishes by default', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'w', kind: 'wait', params: { ms: 100, delayMs: 200 } },
+          { id: 'm', kind: 'move', params: { dx: 10, ms: 100 } },
+        ],
+        [{ from: 'w', to: 'm' }],
+      ),
+      0,
+    )
+    rt.tick(250)
+    expect(rt.getOverride('n1')).toBeUndefined()
+    rt.tick(350)
+    expect(rt.getOverride('n1')?.dx).toBeCloseTo(5, 1)
+  })
+
+  it('can let downstream tasks start immediately after an upstream delay without waiting for finish', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'w', kind: 'wait', params: { ms: 1000, delayMs: 200, waitForFinish: 0 } },
+          { id: 'm', kind: 'move', params: { dx: 10, ms: 100 } },
+        ],
+        [{ from: 'w', to: 'm' }],
+      ),
+      0,
+    )
+    rt.tick(250)
+    expect(rt.getOverride('n1')?.dx).toBeCloseTo(5, 1)
+  })
+
+  it('keeps a completed visual task contributing while downstream tasks are still active', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'f', kind: 'float', params: { amp: 2, freq: 1, ms: 1000, keepPlaying: 1 } },
+          { id: 'w', kind: 'wait', params: { ms: 2000 } },
+        ],
+        [{ from: 'f', to: 'w' }],
+      ),
+      0,
+    )
+    rt.tick(1250)
+    expect(rt.getOverride('n1')?.dy).toBeCloseTo(2, 1)
+  })
+
+  it('estimates effect graph duration using delay and wait-until-finished semantics', () => {
+    expect(
+      estimateFlowEffectDuration(
+        mkEffect(
+          [
+            { id: 'w', kind: 'wait', params: { ms: 100, delayMs: 200 } },
+            { id: 'm', kind: 'move', params: { dx: 10, ms: 100 } },
+          ],
+          [{ from: 'w', to: 'm' }],
+        ),
+      ),
+    ).toBe(400)
+    expect(
+      estimateFlowEffectDuration(
+        mkEffect(
+          [
+            { id: 'w', kind: 'wait', params: { ms: 1000, delayMs: 200, waitForFinish: 0 } },
+            { id: 'm', kind: 'move', params: { dx: 10, ms: 100 } },
+          ],
+          [{ from: 'w', to: 'm' }],
+        ),
+      ),
+    ).toBe(1200)
   })
 
   it('rejects cyclic graphs', () => {
@@ -226,8 +304,10 @@ describe('FlowRuntime — extended kinds', () => {
     )
     rt.tick(300)
     const ov = rt.getOverride('n1')!
-    expect(ov.dy).toBeGreaterThan(0)
-    expect(ov.alphaMul).toBeLessThan(1)
+    expect(ov.alphaMul).toBe(0)
+    expect(ov.breakApart?.axis).toBe('horizontal')
+    expect(ov.breakApart?.fallRatio).toBeGreaterThan(0)
+    expect(rt.getCameraOverride()?.screenShakeX ?? 0).toBe(0)
   })
 
   it('repeater rewinds the run a finite number of times', () => {
@@ -271,6 +351,9 @@ describe('FlowRuntime — extended kinds', () => {
     )
     rt.tick(150) // color done; wait running
     expect(rt.getOverride('n1')?.tint).toBe(0xff0000)
+    rt.tick(700)
+    expect(rt.getOverride('n1')).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
   })
 
   it('scale with permanent flag holds final scale after task ends', () => {
@@ -288,6 +371,30 @@ describe('FlowRuntime — extended kinds', () => {
     )
     rt.tick(200)
     expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(1.5, 3)
+    rt.tick(700)
+    expect(rt.getOverride('n1')).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
+  })
+
+  it('move with permanent flag holds position only while downstream flow is active', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'm', kind: 'move', params: { dx: 10, dy: 4, ms: 100, permanent: 1 } },
+          { id: 'w', kind: 'wait', params: { ms: 500 } },
+        ],
+        [{ from: 'm', to: 'w' }],
+      ),
+      0,
+    )
+    rt.tick(200)
+    expect(rt.getOverride('n1')?.dx).toBeCloseTo(10, 3)
+    expect(rt.getOverride('n1')?.dy).toBeCloseTo(4, 3)
+    rt.tick(700)
+    expect(rt.getOverride('n1')).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
   })
 })
 
@@ -343,6 +450,9 @@ describe('FlowRuntime — camera', () => {
     const cam = rt.getCameraOverride()!
     expect(cam.dPanX).toBeCloseTo(6, 3)
     expect(cam.scaleMul).toBeCloseTo(1.5, 3)
+    rt.tick(700)
+    expect(rt.getCameraOverride()).toBeUndefined()
+    expect(rt.hasActiveRuns).toBe(false)
   })
 })
 

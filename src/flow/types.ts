@@ -112,6 +112,15 @@ export interface NodeOverride {
   alphaMul?: number
   /** Pixi tint (0xRRGGBB). 0xFFFFFF = no change. */
   tint?: number
+  /** Render the target as two falling masked halves instead of one whole node. */
+  breakApart?: BreakApartOverride
+}
+
+export interface BreakApartOverride {
+  axis: 'horizontal' | 'vertical'
+  shakeX: number
+  shakeY: number
+  fallRatio: number
 }
 
 /** Identity merge: two overrides combine multiplicatively. */
@@ -123,6 +132,7 @@ export function mergeOverride(a: NodeOverride, b: NodeOverride): NodeOverride {
     alphaMul: (a.alphaMul ?? 1) * (b.alphaMul ?? 1),
     // Tint composition is multiplicative per channel.
     tint: tintCombine(a.tint ?? 0xffffff, b.tint ?? 0xffffff),
+    breakApart: b.breakApart ?? a.breakApart,
   }
 }
 
@@ -146,6 +156,9 @@ export interface CameraOverride {
   dPanY?: number
   /** Multiplicative zoom on top of `camera.freeScale`. 1 = no change. */
   scaleMul?: number
+  /** Screen-space shake in CSS pixels, applied after world scaling. */
+  screenShakeX?: number
+  screenShakeY?: number
 }
 
 export function mergeCameraOverride(
@@ -156,5 +169,7 @@ export function mergeCameraOverride(
     dPanX: (a.dPanX ?? 0) + (b.dPanX ?? 0),
     dPanY: (a.dPanY ?? 0) + (b.dPanY ?? 0),
     scaleMul: (a.scaleMul ?? 1) * (b.scaleMul ?? 1),
+    screenShakeX: (a.screenShakeX ?? 0) + (b.screenShakeX ?? 0),
+    screenShakeY: (a.screenShakeY ?? 0) + (b.screenShakeY ?? 0),
   }
 }

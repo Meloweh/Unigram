@@ -241,9 +241,11 @@ const emptyModel = (): Model => ({
   edges: new Map(),
 })
 
+const initialModel = emptyModel()
+
 export const useOmniStore = create<Store>((set, get) => ({
-  model: emptyModel(),
-  models: new Map(),
+  model: initialModel,
+  models: new Map([[initialModel.id, initialModel]]),
   camera: { panX: 0, panY: 0, freeScale: 1 },
   selectedIds: new Set(),
   selectedEdgeIds: new Set(),
@@ -414,7 +416,10 @@ export const useOmniStore = create<Store>((set, get) => ({
       const edges = s.model.edges
       for (const p of patches) applyPatch(p, nodes, edges)
       s.undoStack.push(patches)
-      return { model: { ...s.model }, rev: s.rev + 1 }
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
     })
   },
 
@@ -499,7 +504,10 @@ export const useOmniStore = create<Store>((set, get) => ({
     // subscribers see the change; do NOT call applyPatch again.
     set((s) => {
       s.undoStack.push(tx)
-      return { model: { ...s.model }, rev: s.rev + 1 }
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
     })
   },
 
@@ -510,7 +518,10 @@ export const useOmniStore = create<Store>((set, get) => ({
       const nodes = s.model.nodes
       const edges = s.model.edges
       for (const p of inverted) applyPatch(p, nodes, edges)
-      return { model: { ...s.model }, rev: s.rev + 1 }
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
     })
   },
 
@@ -521,7 +532,10 @@ export const useOmniStore = create<Store>((set, get) => ({
       const nodes = s.model.nodes
       const edges = s.model.edges
       for (const p of tx) applyPatch(p, nodes, edges)
-      return { model: { ...s.model }, rev: s.rev + 1 }
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
     })
   },
 

@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
 import { useOmniStore } from '../model/store'
 import type { CrossEffectLink } from '../model/types'
@@ -45,77 +46,104 @@ const KINDS: FlowEffectKind[] = [
   'collapse',
 ]
 
-const NODE_W = 140
-const NODE_H = 64
+const NODE_W = 160
+const NODE_H = 56
+const PORT_R = 6
 
 const KIND_COLORS: Record<FlowEffectKind, string> = {
-  wait: '#3a4a66',
-  move: '#2d5e7e',
-  scale: '#5a3d7a',
-  color: '#7a4540',
-  jitter: '#3f6b3a',
-  float: '#356b7a',
-  emerge: '#4a7a3a',
-  dismiss: '#7a4a3a',
-  'cloud-levitate': '#4f5d8a',
-  'bubble-levitate': '#7a5b3a',
-  repeater: '#5b3a7a',
-  camera: '#3a6b5e',
-  break: '#7a3840',
-  'text-generator': '#7a4a8a',
-  record: '#7a3030',
-  'obs-record': '#a04040',
-  'handoff-rmm': '#3a6b8a',
-  'return-rmm': '#5a8a6b',
-  'handoff-mpd': '#8a6b3a',
-  spawn: '#3a8a8a',
-  'spawn-circular': '#5b8a3a',
-  expand: '#5a7a3d',
-  collapse: '#7a5a3d',
+  wait: '#6366f1',
+  move: '#10b981',
+  scale: '#34d399',
+  color: '#f59e0b',
+  jitter: '#fb923c',
+  float: '#67e8f9',
+  emerge: '#a3e635',
+  dismiss: '#fb923c',
+  'cloud-levitate': '#94a3b8',
+  'bubble-levitate': '#7dd3fc',
+  repeater: '#facc15',
+  camera: '#818cf8',
+  break: '#f87171',
+  'text-generator': '#c084fc',
+  record: '#dc2626',
+  'obs-record': '#ef4444',
+  'handoff-rmm': '#a78bfa',
+  'return-rmm': '#c084fc',
+  'handoff-mpd': '#2dd4bf',
+  spawn: '#ec4899',
+  'spawn-circular': '#f472b6',
+  expand: '#22c55e',
+  collapse: '#ef4444',
+}
+
+const KIND_LABELS: Record<FlowEffectKind, string> = {
+  wait: 'Wait',
+  move: 'Move',
+  scale: 'Scale',
+  color: 'Color',
+  jitter: 'Jitter',
+  float: 'Float',
+  emerge: 'Emerge',
+  dismiss: 'Dismiss',
+  'cloud-levitate': 'Cloudy Levitate',
+  'bubble-levitate': 'Soap Bubble Levitate',
+  repeater: 'Repeater',
+  camera: 'Camera',
+  break: 'Break Apart',
+  'text-generator': 'Text Generator',
+  record: 'Record',
+  'obs-record': 'OBS Record',
+  'handoff-rmm': 'Handoff to RMM',
+  'return-rmm': 'Return from RMM',
+  'handoff-mpd': 'Handoff to MPD',
+  spawn: 'Spawn',
+  'spawn-circular': 'Spawn Circular',
+  expand: 'Expand',
+  collapse: 'Collapse',
 }
 
 const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
-  wait: ['ms'],
-  move: ['dx', 'dy', 'ms', 'roundtrip'],
-  scale: ['mul', 'ms', 'permanent'],
-  color: ['tint', 'ms', 'permanent'],
-  jitter: ['amp', 'ms'],
-  float: ['amp', 'freq', 'ms'],
-  emerge: ['ms', 'fromScale'],
-  dismiss: ['ms', 'toScale'],
-  'cloud-levitate': ['ampX', 'ampY', 'freq', 'ms'],
-  'bubble-levitate': ['ampY', 'scaleAmp', 'scalePulse', 'freq', 'ms'],
-  repeater: ['times'],
-  camera: ['panX', 'panY', 'zoom', 'ms', 'permanent'],
-  break: ['axis', 'shakeIntensity', 'shakeDurationMs', 'fallDurationMs', 'ms'],
-  'text-generator': ['charsPerSec', 'soundPreset', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms'],
-  record: ['ms', 'fps'],
-  'obs-record': ['ms'],
+  wait: ['ms', 'delayMs', 'waitForFinish'],
+  move: ['dx', 'dy', 'ms', 'delayMs', 'roundtrip', 'permanent', 'keepPlaying', 'waitForFinish'],
+  scale: ['mul', 'ms', 'delayMs', 'permanent', 'keepPlaying', 'waitForFinish'],
+  color: ['tint', 'ms', 'delayMs', 'permanent', 'keepPlaying', 'waitForFinish'],
+  jitter: ['amp', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
+  float: ['amp', 'freq', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
+  emerge: ['ms', 'delayMs', 'fromScale', 'waitForFinish'],
+  dismiss: ['ms', 'delayMs', 'toScale', 'waitForFinish'],
+  'cloud-levitate': ['ampX', 'ampY', 'freq', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
+  'bubble-levitate': ['ampY', 'scaleAmp', 'scalePulse', 'freq', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
+  repeater: ['times', 'delayMs'],
+  camera: ['panX', 'panY', 'zoom', 'ms', 'delayMs', 'permanent', 'waitForFinish'],
+  break: ['axis', 'shakeIntensity', 'shakeDurationMs', 'fallDurationMs', 'ms', 'delayMs', 'waitForFinish'],
+  'text-generator': ['charsPerSec', 'soundPreset', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms', 'delayMs', 'waitForFinish'],
+  record: ['ms', 'fps', 'delayMs', 'waitForFinish'],
+  'obs-record': ['ms', 'delayMs', 'waitForFinish'],
   // RMM handoff drives `useOmniStore.rmmZoomStep('in')` until the dial
   // reaches handoff (i.e. swap to host node's child model). `ms` is the
   // visual budget; the renderer steps the dial at ~60 Hz inside it.
-  'handoff-rmm': ['ms'],
+  'handoff-rmm': ['ms', 'delayMs', 'waitForFinish'],
   // RMM return walks the dial back out, popping one frame off the stack.
-  'return-rmm': ['ms'],
+  'return-rmm': ['ms', 'delayMs', 'waitForFinish'],
   // MPD handoff cycles to the next/previous MPD dimension on the host
   // node. `direction` is +1 (next) or -1 (previous). `ms` controls the
   // curtain animation length.
-  'handoff-mpd': ['direction', 'ms'],
+  'handoff-mpd': ['direction', 'ms', 'delayMs', 'waitForFinish'],
   // Spawn N decorative children at random offsets around the host within
   // `radius` (scene-percent). They fade in over `fadeMs`, hold, then fade
   // out when the task ends. `ms` is on-screen lifetime.
-  spawn: ['count', 'radius', 'ms', 'fadeMs'],
+  spawn: ['count', 'radius', 'ms', 'fadeMs', 'delayMs', 'waitForFinish'],
   // Same as spawn but children land on a regular circle.
-  'spawn-circular': ['count', 'radius', 'ms', 'fadeMs'],
+  'spawn-circular': ['count', 'radius', 'ms', 'fadeMs', 'delayMs', 'waitForFinish'],
   // Grow node by `mul` over `ms` (defaults to 1.5×). `permanent` holds final.
-  expand: ['mul', 'ms', 'permanent'],
+  expand: ['mul', 'ms', 'delayMs', 'permanent', 'waitForFinish'],
   // Shrink node by 1/mul over `ms`. `permanent` holds final.
-  collapse: ['mul', 'ms', 'permanent'],
+  collapse: ['mul', 'ms', 'delayMs', 'permanent', 'waitForFinish'],
 }
 
 const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   wait: { ms: 500 },
-  move: { dx: 4, dy: 0, ms: 400, roundtrip: 0 },
+  move: { dx: 4, dy: 0, ms: 400, roundtrip: 0, permanent: 0 },
   scale: { mul: 1.3, ms: 250, permanent: 0 },
   color: { tint: 0xff5555, ms: 400, permanent: 0 },
   jitter: { amp: 0.4, ms: 600 },
@@ -126,7 +154,7 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, scalePulse: 1, freq: 1, ms: 3000 },
   repeater: { times: 1 },
   camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
-  break: { axis: 0, shakeIntensity: 0.8, shakeDurationMs: 300, fallDurationMs: 600, ms: 900 },
+  break: { axis: 0, shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600, ms: 900 },
   'text-generator': { charsPerSec: 24, soundPreset: 0, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
   // Record canvas to .webm for `ms` while task is active. `fps` is the
   // capture frame rate; defaults to 30. The recording downloads on stop.
@@ -166,6 +194,8 @@ interface FieldMeta {
 }
 const FIELD_META: Record<string, FieldMeta> = {
   ms: { label: 'Duration', unit: 'ms', step: 50, min: 0 },
+  delayMs: { label: 'Delay', unit: 'ms', step: 50, min: 0 },
+  waitForFinish: { label: 'Wait until finished', kind: 'bool', hint: 'Block downstream nodes until this task finishes.' },
   dx: { label: 'Δ X', unit: '%' },
   dy: { label: 'Δ Y', unit: '%' },
   mul: { label: 'Multiplier', step: 0.05, min: 0 },
@@ -182,6 +212,7 @@ const FIELD_META: Record<string, FieldMeta> = {
   panY: { label: 'Pan Y', unit: '%' },
   zoom: { label: 'Zoom', step: 0.1, min: 0.01 },
   permanent: { label: 'Hold final state', kind: 'bool' },
+  keepPlaying: { label: 'Keep playing', kind: 'bool', hint: 'Loop visual motion while the run is active.' },
   roundtrip: { label: 'Round-trip', kind: 'bool', hint: 'Animate back to start.' },
   loop: { label: 'Loop', kind: 'bool' },
   charsPerSec: { label: 'Chars / sec', step: 1, min: 1 },
@@ -214,7 +245,7 @@ const FIELD_META: Record<string, FieldMeta> = {
       { value: 1, label: 'Horizontal' },
     ],
   },
-  shakeIntensity: { label: 'Shake', unit: '%', step: 0.1, min: 0 },
+  shakeIntensity: { label: 'Shake', unit: 'px', step: 1, min: 0 },
   shakeDurationMs: { label: 'Shake time', unit: 'ms', step: 50, min: 0 },
   fallDurationMs: { label: 'Fall time', unit: 'ms', step: 50, min: 0 },
   direction: {
@@ -458,7 +489,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
     setSelection(null)
   }
 
-  return (
+  const modal = (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <header style={headerStyle}>
@@ -470,12 +501,12 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
           />
           <div style={{ flex: 1 }} />
           {hostNodeId && <LinkPicker hostNodeId={hostNodeId} onPick={() => onLinkPick?.(effect)} />}
-          <button onClick={() => onSave(effect)} style={{ ...btnStyle, background: '#2f5a32' }}>Save</button>
-          <button onClick={onClose} style={btnStyle}>✕</button>
+          <button onClick={() => onSave(effect)} style={saveBtnStyle}>Save</button>
+          <button onClick={onClose} style={closeBtnStyle}>×</button>
         </header>
         <div ref={setBodyEl} style={bodyStyle}>
           <aside style={sidebarStyle}>
-            <div style={{ fontSize: 13, color: '#7a8aa0', marginBottom: 4 }}>Add node</div>
+            <div style={panelTitleStyle}>Add node</div>
             {KINDS.map((k) => (
               <button
                 key={k}
@@ -485,15 +516,14 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
                   e.dataTransfer.setData('application/omnigram-effect-kind', k)
                   e.dataTransfer.effectAllowed = 'copy'
                 }}
-                style={{ ...btnStyle, justifyContent: 'flex-start', background: KIND_COLORS[k], cursor: 'grab' }}
+                style={{ ...paletteBtnStyle, borderColor: KIND_COLORS[k], cursor: 'grab' }}
               >
-                + {k}
+                <span style={{ color: KIND_COLORS[k], fontWeight: 700 }}>+</span> {KIND_LABELS[k]}
               </button>
             ))}
             {wireDraft && (
               <div style={{ marginTop: 12, fontSize: 13, color: '#cfe' }}>
-                Drop on a node to connect (drag across the divider for a
-                cross-link).
+                Drop on a node to connect. Drag across the divider for a cross-link.
               </div>
             )}
           </aside>
@@ -556,6 +586,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
       </div>
     </div>
   )
+  return createPortal(modal, document.body)
 }
 
 // ---- Pure effect mutators (used by both panes) ---------------------------
@@ -729,6 +760,18 @@ function CanvasPane({
         onChangeEffect(addNodeTo(effect, kind, pt.x, pt.y))
       }}
     >
+      <defs>
+        <pattern id={`fx-grid-${paneId}`} width={GRID} height={GRID} patternUnits="userSpaceOnUse">
+          <circle cx={GRID / 2} cy={GRID / 2} r="1" fill="rgba(255,255,255,0.08)" />
+        </pattern>
+        <marker id={`fx-arrow-${paneId}`} markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#94a3b8" />
+        </marker>
+        <filter id={`fx-shadow-${paneId}`} x="-30%" y="-30%" width="160%" height="180%">
+          <feDropShadow dx="0" dy="4" stdDeviation="5" floodColor="#000" floodOpacity="0.28" />
+        </filter>
+      </defs>
+      <rect width="100%" height="100%" fill={`url(#fx-grid-${paneId})`} />
       {/* Edges */}
       {effect.graph.edges.map((e) => {
         const a = nodeIndex.get(e.from)
@@ -741,52 +784,63 @@ function CanvasPane({
             key={`${e.from}->${e.to}`}
             d={curvePath(x1, y1, x2, y2)}
             fill="none"
-            stroke="#88a"
+            stroke="#94a3b8"
             strokeWidth={2}
+            markerEnd={`url(#fx-arrow-${paneId})`}
             onClick={() => onChangeEffect(toggleEdgeIn(effect, e.from, e.to))}
             style={{ cursor: 'pointer' }}
           />
         )
       })}
       {/* Nodes */}
-      {effect.graph.nodes.map((n) => (
-        <g
-          key={n.id}
-          transform={`translate(${n.x},${n.y})`}
-          data-effect-node-id={n.id}
-          data-pane-id={paneId}
-          onPointerDown={(e) => startDrag(e, n)}
-          style={{ cursor: wireDraft ? 'crosshair' : 'grab' }}
-        >
-          <rect
-            width={NODE_W}
-            height={NODE_H}
-            rx={8}
-            fill={KIND_COLORS[n.kind]}
-            stroke={selectedId === n.id ? '#cfe' : '#456'}
-            strokeWidth={selectedId === n.id ? 2 : 1}
-          />
-          <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
-            {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : (n.label?.trim() || n.kind)}
-          </text>
-          {/* Output port (bottom edge) */}
-          <circle
-            cx={NODE_W / 2}
-            cy={NODE_H}
-            r={6}
-            fill="#cfe"
-            stroke="#456"
-            onPointerDown={(e) => {
-              e.stopPropagation()
-              onBeginWire(n.id, e.clientX, e.clientY)
-            }}
-            style={{ cursor: 'crosshair' }}
-          />
-          {n.id !== ENTRY_NODE_ID && (
-            <circle cx={NODE_W / 2} cy={0} r={4} fill="#456" stroke="#cfe" />
-          )}
-        </g>
-      ))}
+      {effect.graph.nodes.map((n) => {
+        const color = KIND_COLORS[n.kind]
+        const isEntry = n.id === ENTRY_NODE_ID
+        const isSelected = selectedId === n.id
+        return (
+          <g
+            key={n.id}
+            transform={`translate(${n.x},${n.y})`}
+            data-effect-node-id={n.id}
+            data-pane-id={paneId}
+            onPointerDown={(e) => startDrag(e, n)}
+            style={{ cursor: wireDraft ? 'crosshair' : 'grab' }}
+            filter={isSelected ? `url(#fx-shadow-${paneId})` : undefined}
+          >
+            <rect
+              width={NODE_W}
+              height={NODE_H}
+              rx={isEntry ? 28 : 8}
+              fill={isEntry ? '#0c1929' : '#1e293b'}
+              stroke={isSelected ? '#60a5fa' : color}
+              strokeWidth={isSelected ? 3 : 2}
+            />
+            <text x={NODE_W / 2} y={22} fill={color} fontSize={11} fontWeight={700} textAnchor="middle" letterSpacing="0.6">
+              {isEntry ? 'SIGNAL IN' : KIND_LABELS[n.kind].toUpperCase()}
+            </text>
+            <text x={NODE_W / 2} y={40} fill="#cbd5e1" fontSize={12} textAnchor="middle">
+              {n.label?.trim() || KIND_LABELS[n.kind]}
+            </text>
+            {/* Output port (bottom edge) */}
+            <circle
+              cx={NODE_W / 2}
+              cy={NODE_H}
+              r={PORT_R}
+              fill={color}
+              stroke="#0f172a"
+              strokeWidth={2}
+              onPointerDown={(e) => {
+                e.stopPropagation()
+                onBeginWire(n.id, e.clientX, e.clientY)
+              }}
+              style={{ cursor: 'crosshair' }}
+            />
+            {!isEntry && (
+              <circle cx={NODE_W / 2} cy={0} r={PORT_R} fill={color} stroke="#0f172a" strokeWidth={2} />
+            )}
+          </g>
+        )
+      })}
     </svg>
   )
 }
@@ -806,7 +860,7 @@ function NodeSettingsPanel({
   if (node.id === ENTRY_NODE_ID) {
     return (
       <>
-        <div style={{ fontSize: 14, color: '#dde', fontWeight: 600 }}>Entry node</div>
+        <div style={panelTitleStyle}>Entry node</div>
         <div style={{ fontSize: 13, color: '#7a8aa0', marginTop: 4 }}>
           The signal source. Connect downstream effect nodes to its bottom port.
         </div>
@@ -817,8 +871,8 @@ function NodeSettingsPanel({
   const hint = KIND_HINTS[node.kind]
   return (
     <>
-      <div style={{ fontSize: 14, color: '#dde', fontWeight: 600, textTransform: 'capitalize' }}>
-        {node.kind.replace(/-/g, ' ')}
+      <div style={panelTitleStyle}>
+        {KIND_LABELS[node.kind]}
       </div>
       {hint && (
         <div style={{ fontSize: 12, color: '#7a8aa0', marginTop: 2, marginBottom: 6 }}>{hint}</div>
@@ -842,7 +896,7 @@ function NodeSettingsPanel({
       ))}
       <button
         onClick={onDelete}
-        style={{ ...btnStyle, background: '#5a1f1f', borderColor: '#a04040', marginTop: 12 }}
+        style={{ ...dangerBtnStyle, marginTop: 12 }}
       >
         Delete node
       </button>
@@ -966,31 +1020,31 @@ const overlayStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 100,
+  zIndex: 9000,
 }
 
 const modalStyle: React.CSSProperties = {
-  // Doubled relative to the previous min(1100,90vw) / min(700,85vh) sizing so
-  // the editor canvas has enough room for vertical-stacked graphs.
-  width: 'min(2200px, 95vw)',
-  height: 'min(1400px, 95vh)',
-  background: '#1a1f2a',
-  border: '1px solid #2f3a4a',
-  borderRadius: 8,
+  width: '90vw',
+  height: '90vh',
+  maxWidth: 2400,
+  maxHeight: 1600,
+  background: '#1e293b',
+  borderRadius: 12,
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
   color: '#dde',
   fontFamily: 'system-ui, sans-serif',
+  boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
 }
 
 const headerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '8px 12px',
-  borderBottom: '1px solid #2f3a4a',
-  background: '#222a38',
+  padding: '10px 16px',
+  borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+  background: '#0f172a',
 }
 
 const bodyStyle: React.CSSProperties = {
@@ -1004,55 +1058,106 @@ const bodyStyle: React.CSSProperties = {
 }
 
 const sidebarStyle: React.CSSProperties = {
-  // Widened proportionally to the doubled modal so the kind buttons +
-  // param fields still breathe.
-  width: 240,
+  width: 220,
   padding: 12,
-  borderRight: '1px solid #2f3a4a',
+  borderRight: '1px solid rgba(255, 255, 255, 0.08)',
   display: 'flex',
   flexDirection: 'column',
   gap: 4,
   overflowY: 'auto',
+  background: '#1e293b',
 }
 
 const rightSidebarStyle: React.CSSProperties = {
-  // Mirror of `sidebarStyle` but anchored to the right edge of the modal
-  // body (tasks F + G). Hosts per-effect-node settings for the current
-  // selection.
-  width: 280,
+  width: 260,
   padding: 12,
-  borderLeft: '1px solid #2f3a4a',
+  borderLeft: '1px solid rgba(255, 255, 255, 0.08)',
   display: 'flex',
   flexDirection: 'column',
   gap: 2,
   overflowY: 'auto',
-  background: '#161c26',
+  background: '#1e293b',
 }
 
 const canvasStyle: React.CSSProperties = {
   flex: 1,
-  background: '#0e131c',
+  background: '#151d2c',
   cursor: 'default',
   userSelect: 'none',
 }
 
-const btnStyle: React.CSSProperties = {
+const paletteBtnStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 4,
-  padding: '4px 10px',
-  background: '#2c3548',
-  border: '1px solid #455168',
-  borderRadius: 4,
-  color: '#dde',
-  fontSize: 14,
+  gap: 6,
+  padding: '5px 8px',
+  background: 'rgba(15, 23, 42, 0.55)',
+  border: '1px solid rgba(255, 255, 255, 0.12)',
+  borderRadius: 6,
+  color: '#cbd5e1',
+  fontSize: 12,
   cursor: 'pointer',
+  textAlign: 'left',
+}
+
+const saveBtnStyle: React.CSSProperties = {
+  background: '#3b82f6',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 6,
+  padding: '5px 14px',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const closeBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: '1px solid rgba(255, 255, 255, 0.1)',
+  color: '#94a3b8',
+  width: 28,
+  height: 28,
+  borderRadius: 6,
+  fontSize: 18,
+  lineHeight: 1,
+  cursor: 'pointer',
+}
+
+const linkBtnStyle: React.CSSProperties = {
+  background: 'rgba(168, 85, 247, 0.15)',
+  border: '1px solid rgba(168, 85, 247, 0.4)',
+  color: '#c084fc',
+  borderRadius: 6,
+  padding: '5px 14px',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const dangerBtnStyle: React.CSSProperties = {
+  background: 'rgba(239, 68, 68, 0.14)',
+  border: '1px solid rgba(239, 68, 68, 0.45)',
+  color: '#fca5a5',
+  borderRadius: 6,
+  padding: '5px 12px',
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const panelTitleStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 700,
+  color: '#94a3b8',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  marginBottom: 6,
 }
 
 const titleInputStyle: React.CSSProperties = {
   background: 'transparent',
   border: '1px solid transparent',
-  color: '#fff',
+  color: '#e2e8f0',
   font: '600 14px system-ui, sans-serif',
   padding: '4px 6px',
   outline: 'none',
@@ -1060,7 +1165,7 @@ const titleInputStyle: React.CSSProperties = {
 
 const fieldStyle: React.CSSProperties = {
   flex: 1,
-  background: '#0e131c',
+  background: '#151d2c',
   border: '1px solid #2f3a4a',
   color: '#dde',
   padding: '3px 6px',
@@ -1157,7 +1262,7 @@ function CrossOverlay({
       const a = portPos(fromPane, fromNode, 'out')
       const b = portPos(toPane, toNode, 'in')
       if (!a || !b) continue
-      lines.push({ d: curvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#cfa544', dash: '6 4', arrow: true })
+      lines.push({ d: curvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#c084fc', dash: '6 4', arrow: true })
     }
   }
 
@@ -1169,7 +1274,7 @@ function CrossOverlay({
     if (a) {
       const cx = cursorClient.x - bodyRect.left
       const cy = cursorClient.y - bodyRect.top
-      lines.push({ d: curvePath(a.x, a.y, cx, cy), key: '__draft__', color: '#cfe', dash: '4 3' })
+      lines.push({ d: curvePath(a.x, a.y, cx, cy), key: '__draft__', color: '#60a5fa', dash: '5 5' })
     }
   }
 
@@ -1186,7 +1291,7 @@ function CrossOverlay({
     >
       <defs>
         <marker id="crossArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#cfa544" />
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc" />
         </marker>
       </defs>
       {lines.map((l) => (
@@ -1222,7 +1327,7 @@ function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => 
             store.unlinkNodes(hostNodeId, peerId)
           }
         }}
-        style={{ ...btnStyle, padding: '4px 10px', background: '#5a3a2a' }}
+        style={linkBtnStyle}
         title="Tear down the split-screen pairing"
       >
         Unlink Node
@@ -1240,7 +1345,7 @@ function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => 
         store.setPickMode('link-node')
         onPick()
       }}
-      style={{ ...btnStyle, padding: '4px 10px' }}
+      style={linkBtnStyle}
       title="Click a node on the canvas to link it to this one"
     >
       Link Node

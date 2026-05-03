@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useOmniStore } from './store'
 
 beforeEach(() => {
+  const model = { id: 'root', name: 'test', nodes: new Map(), edges: new Map() }
   useOmniStore.setState({
-    model: { id: 'root', name: 'test', nodes: new Map(), edges: new Map() },
+    model,
+    models: new Map([['root', model]]),
     camera: { panX: 0, panY: 0, freeScale: 1 },
     selectedIds: new Set(),
     rev: 0,
@@ -17,6 +19,15 @@ beforeEach(() => {
 })
 
 describe('store', () => {
+  it('keeps the active model registered for project save/load', () => {
+    const s = useOmniStore.getState()
+    expect(s.models.get(s.model.id)).toBe(s.model)
+    const id = s.addNode({ x: 10, y: 20 })
+    const after = useOmniStore.getState()
+    expect(after.models.get(after.model.id)).toBe(after.model)
+    expect(after.models.get(after.model.id)?.nodes.has(id)).toBe(true)
+  })
+
   it('adds and removes nodes', () => {
     const id = useOmniStore.getState().addNode({ x: 10, y: 20 })
     expect(useOmniStore.getState().model.nodes.size).toBe(1)

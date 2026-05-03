@@ -59,6 +59,15 @@ interface PooledNode {
   mediaSprite: Sprite
   mediaText: Text
   label: Text
+  breakContainer: Container
+  breakA: Container
+  breakAShape: Graphics
+  breakALabel: Text
+  breakAMask: Graphics
+  breakB: Container
+  breakBShape: Graphics
+  breakBLabel: Text
+  breakBMask: Graphics
   /** Cheap dirty key to skip Graphics rebuilds on no-op updates. */
   dirtyKey: string
   lod: Lod
@@ -99,6 +108,10 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | nul
     strokeWidth: NODE_STROKE_WIDTH,
     tip,
   })
+}
+
+function drawBreakShape(g: Graphics, n: ModelNode, theme: ThemeColors | null): void {
+  drawShape(g, n, 'full', theme)
 }
 
 function setLabel(t: Text, n: ModelNode, lod: Lod): void {
@@ -201,12 +214,13 @@ export class NodePool {
     if (!pn) return
     const baseX = (n.x / 100) * SCENE_W
     const baseY = (n.y / 100) * SCENE_H
+    const breaking = override?.breakApart
     if (override) {
       pn.container.x = baseX + ((override.dx ?? 0) / 100) * SCENE_W
       pn.container.y = baseY + ((override.dy ?? 0) / 100) * SCENE_H
       const s = override.scaleMul ?? 1
       pn.container.scale.set(s, s)
-      pn.container.alpha = override.alphaMul ?? 1
+      pn.container.alpha = breaking ? 1 : (override.alphaMul ?? 1)
       pn.container.tint = override.tint ?? 0xffffff
     } else {
       pn.container.x = baseX
@@ -246,6 +260,7 @@ export class NodePool {
       setMediaPreview(pn, n, lod)
       setLabel(pn.label, n, lod)
     }
+    this.syncBreakApart(pn, n, breaking)
   }
 
   /** Hide a node, returning its container to the free list. */
@@ -277,9 +292,13 @@ export class NodePool {
     for (const pn of this.active.values()) {
       pn.dirtyKey = ''
       pn.label.style.fill = theme?.label ?? NODE_LABEL_FILL
+      pn.breakALabel.style.fill = theme?.label ?? NODE_LABEL_FILL
+      pn.breakBLabel.style.fill = theme?.label ?? NODE_LABEL_FILL
     }
     for (const pn of this.free) {
       pn.label.style.fill = theme?.label ?? NODE_LABEL_FILL
+      pn.breakALabel.style.fill = theme?.label ?? NODE_LABEL_FILL
+      pn.breakBLabel.style.fill = theme?.label ?? NODE_LABEL_FILL
     }
   }
 
@@ -328,6 +347,100 @@ export class NodePool {
     label.anchor.set(0.5)
     label.visible = false
     container.addChild(label)
-    return { container, shape, mediaBg, mediaSprite, mediaText, label, dirtyKey: '', lod: 'full' }
+    const breakContainer = new Container()
+    breakContainer.eventMode = 'none'
+    breakContainer.visible = false
+    const breakA = new Container()
+    breakA.eventMode = 'none'
+    const breakAShape = new Graphics()
+    const breakALabel = new Text({
+      text: '',
+      style: { fontFamily: NODE_FONT_FAMILY, fontSize: NODE_FONT_SIZE, fill: NODE_LABEL_FILL, align: 'center' },
+    })
+    breakALabel.anchor.set(0.5)
+    const breakAMask = new Graphics()
+    breakA.addChild(breakAShape, breakALabel, breakAMask)
+    breakA.mask = breakAMask
+    const breakB = new Container()
+    breakB.eventMode = 'none'
+    const breakBShape = new Graphics()
+    const breakBLabel = new Text({
+      text: '',
+      style: { fontFamily: NODE_FONT_FAMILY, fontSize: NODE_FONT_SIZE, fill: NODE_LABEL_FILL, align: 'center' },
+    })
+    breakBLabel.anchor.set(0.5)
+    const breakBMask = new Graphics()
+    breakB.addChild(breakBShape, breakBLabel, breakBMask)
+    breakB.mask = breakBMask
+    breakContainer.addChild(breakA, breakB)
+    container.addChild(breakContainer)
+    return {
+      container,
+      shape,
+      mediaBg,
+      mediaSprite,
+      mediaText,
+      label,
+      breakContainer,
+      breakA,
+      breakAShape,
+      breakALabel,
+      breakAMask,
+      breakB,
+      breakBShape,
+      breakBLabel,
+      breakBMask,
+      dirtyKey: '',
+      lod: 'full',
+    }
+  }
+
+  private syncBreakApart(
+    pn: PooledNode,
+    n: ModelNode,
+    breaking: NodeOverride['breakApart'] | undefined,
+  ): void {
+    const visible = !!breaking
+    pn.shape.visible = !visible
+    pn.mediaBg.visible = !visible && pn.mediaBg.visible
+    pn.mediaSprite.visible = !visible && pn.mediaSprite.visible
+    pn.mediaText.visible = !visible && pn.mediaText.visible
+    pn.label.visible = !visible && pn.label.visible
+    pn.breakContainer.visible = visible
+    if (!breaking) return
+
+    drawBreakShape(pn.breakAShape, n, this.theme)
+    drawBreakShape(pn.breakBShape, n, this.theme)
+    const text = n.label
+    if (pn.breakALabel.text !== text) pn.breakALabel.text = text
+    if (pn.breakBLabel.text !== text) pn.breakBLabel.text = text
+    pn.breakALabel.visible = text.length > 0
+    pn.breakBLabel.visible = text.length > 0
+    const wPx = (n.w / 100) * SCENE_W
+    const hPx = (n.h / 100) * SCENE_H
+    pn.breakAMask.clear()
+    pn.breakBMask.clear()
+    if (breaking.axis === 'vertical') {
+      pn.breakAMask.rect(-wPx / 2 - 2, -hPx / 2 - 2, wPx / 2 + 2, hPx + 4).fill(0xffffff)
+      pn.breakBMask.rect(0, -hPx / 2 - 2, wPx / 2 + 2, hPx + 4).fill(0xffffff)
+    } else {
+      pn.breakAMask.rect(-wPx / 2 - 2, -hPx / 2 - 2, wPx + 4, hPx / 2 + 2).fill(0xffffff)
+      pn.breakBMask.rect(-wPx / 2 - 2, 0, wPx + 4, hPx / 2 + 2).fill(0xffffff)
+    }
+    const ease = breaking.fallRatio
+    const fade = Math.max(0, 1 - ease * 1.5)
+    pn.breakA.alpha = fade
+    pn.breakB.alpha = fade
+    if (breaking.axis === 'vertical') {
+      pn.breakA.position.set(breaking.shakeX - 80 * ease, breaking.shakeY + 20 * ease)
+      pn.breakB.position.set(breaking.shakeX + 80 * ease, breaking.shakeY + 20 * ease)
+      pn.breakA.rotation = -15 * Math.PI / 180 * ease
+      pn.breakB.rotation = 15 * Math.PI / 180 * ease
+    } else {
+      pn.breakA.position.set(breaking.shakeX - 20 * ease, breaking.shakeY - 80 * ease)
+      pn.breakB.position.set(breaking.shakeX + 20 * ease, breaking.shakeY + 120 * ease)
+      pn.breakA.rotation = -15 * Math.PI / 180 * ease
+      pn.breakB.rotation = 10 * Math.PI / 180 * ease
+    }
   }
 }
