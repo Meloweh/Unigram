@@ -15,6 +15,7 @@ import { createShapeDragPreview } from './dragPreview'
 
 /** dataTransfer MIME used by the palette → canvas drop. */
 export const DRAG_MIME_SHAPE = 'application/omnigram-shape'
+export const DRAG_MIME_MEDIA = 'application/omnigram-media'
 
 interface ShapeEntry {
   id: NodeShape
@@ -139,8 +140,11 @@ export function LeftSidebar() {
               onClick={() => spawnMedia(m.id)}
               onDragStart={(e) => {
                 // Re-use the shape drag protocol; the inspector will offer
-                // a file picker once the dropped node is selected.
+                // a file picker once the dropped node is selected. Also
+                // tag the drag with the media kind so the drop handler can
+                // pre-set `mediaType` and the inspector dropdown shows it.
                 e.dataTransfer.setData(DRAG_MIME_SHAPE, 'rounded-rect')
+                e.dataTransfer.setData(DRAG_MIME_MEDIA, m.id)
                 e.dataTransfer.effectAllowed = 'copy'
               }}
             />
@@ -196,7 +200,7 @@ function ConnectionKindRadio({
             border: '1px solid ' + (value === o.id ? 'var(--ug-accent)' : 'var(--ug-border-light)'),
             cursor: 'pointer',
             color: 'var(--ug-text)',
-            font: '12px system-ui, sans-serif',
+            font: '14px system-ui, sans-serif',
           }}
         >
           <input
@@ -246,7 +250,7 @@ function PaletteItem({
         border: '1px solid var(--ug-border-light)',
         borderRadius: 4,
         padding: '6px 8px',
-        font: '12px system-ui, sans-serif',
+        font: '14px system-ui, sans-serif',
         cursor: 'pointer',
         textAlign: 'left',
         width: '100%',
@@ -281,7 +285,7 @@ function Section({
           color: 'var(--ug-text-heading)',
           border: 'none',
           padding: '4px 0',
-          font: '600 12px system-ui, sans-serif',
+          font: '600 14px system-ui, sans-serif',
           cursor: 'pointer',
           textAlign: 'left',
         }}
@@ -335,7 +339,7 @@ export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSS
     width: collapsed ? scaled(SIDEBAR_COLLAPSED_W) : scaled(SIDEBAR_EXPANDED_W),
     background: 'var(--ug-glass)',
     color: 'var(--ug-text)',
-    font: `${scaled(12)} system-ui, sans-serif`,
+    font: `${scaled(14)} system-ui, sans-serif`,
     borderRadius: side === 'left' ? `0 ${scaled(6)} ${scaled(6)} 0` : `${scaled(6)} 0 0 ${scaled(6)}`,
     border: '1px solid var(--ug-border)',
     [side === 'left' ? 'borderLeft' : 'borderRight']: 'none',
@@ -350,23 +354,23 @@ export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSS
 const contentStyle: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
-  padding: scaled(12),
+  padding: scaled(10),
   display: 'flex',
   flexDirection: 'column',
-  gap: scaled(10),
+  gap: scaled(3),
   overflowY: 'auto',
 }
 
 const titleStyle: React.CSSProperties = {
   fontWeight: 600,
-  fontSize: scaled(13),
+  fontSize: scaled(14),
   color: 'var(--ug-text-heading)',
   borderBottom: '1px solid var(--ug-border-light)',
-  paddingBottom: scaled(6),
+  paddingBottom: scaled(3),
 }
 
 const hintStyle: React.CSSProperties = {
-  fontSize: scaled(11),
+  fontSize: scaled(13),
   color: 'var(--ug-text-muted)',
   fontStyle: 'italic',
   marginTop: 'auto',

@@ -19,6 +19,7 @@ import { Graphics } from 'pixi.js'
 import { clientToScene } from '../scene/sceneConstants'
 import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
+import { DEFAULT_NODE } from '../model/types'
 
 interface ActiveDrag {
   kind: 'pan' | 'node' | 'connect' | 'box'
@@ -303,12 +304,14 @@ export class PointerController {
     if (a.kind === 'node' && a.dragBaselines) {
       if (movedFar) {
         // Snap each dragged node to the grid using the *first* node as the
-        // anchor so the relative offsets are preserved.
+        // anchor so the relative offsets are preserved. We snap the
+        // anchor's top-left corner to the grid ("corner-to-corner")
+        // because users align node edges, not centres, against grid lines.
         const store = useOmniStore.getState()
         const anchor = a.dragBaselines[0]
         const cur = store.model.nodes.get(anchor.id)
         if (cur) {
-          const snapped = snapToGrid(cur.x, cur.y, this.snapStep)
+          const snapped = snapNodeCornerToGrid(cur.x, cur.y, cur.w, cur.h, this.snapStep)
           const sx = snapped.x - cur.x
           const sy = snapped.y - cur.y
           if (sx !== 0 || sy !== 0) {
@@ -379,7 +382,11 @@ export class PointerController {
     this.lastClickPos = { x: e.clientX, y: e.clientY }
 
     if (isDouble) {
-      const snapped = snapToGrid(scene.x, scene.y, this.snapStep)
+      // Snap the *new node's* top-left corner to the grid so the created
+      // node aligns corner-to-corner with the visible grid lines.
+      const w = DEFAULT_NODE.w
+      const h = DEFAULT_NODE.h
+      const snapped = snapNodeCornerToGrid(scene.x, scene.y, w, h, this.snapStep)
       const id = useOmniStore.getState().addNode({
         x: snapped.x,
         y: snapped.y,
@@ -398,12 +405,25 @@ export class PointerController {
   }
 }
 
-function snapToGrid(x: number, y: number, step: number): { x: number; y: number } {
+/**
+ * Corner-to-corner snap: nodes carry their position as the centre, but
+ * users align edges against grid lines. We snap the *top-left corner*
+ * (`x - w/2`, `y - h/2`) to the nearest grid intersection, then convert
+ * back to centre coords. Returns the new centre.
+ */
+function snapNodeCornerToGrid(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  step: number,
+): { x: number; y: number } {
   if (step <= 0) return { x, y }
-  return {
-    x: Math.round(x / step) * step,
-    y: Math.round(y / step) * step,
-  }
+  const cornerX = x - w / 2
+  const cornerY = y - h / 2
+  const snappedCornerX = Math.round(cornerX / step) * step
+  const snappedCornerY = Math.round(cornerY / step) * step
+  return { x: snappedCornerX + w / 2, y: snappedCornerY + h / 2 }
 }
 
 // Suppress unused import warning when the codebase later wires Pixi ghost lines.

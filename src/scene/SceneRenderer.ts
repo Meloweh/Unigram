@@ -8,7 +8,7 @@
  * React). `tick()` is registered with the Pixi ticker.
  */
 
-import { Application, Container, Graphics, RenderTexture, Sprite, Text } from 'pixi.js'
+import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, Text } from 'pixi.js'
 import {
   LOD_FULL,
   LOD_SIMPLE,
@@ -24,8 +24,9 @@ import type { Connection, Model, ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
 import { EdgePool } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
-import { drawNodeShape, pointInShape } from './shapes'
+import { drawNodeShape, drawNodeShapePath, pointInShape } from './shapes'
 import { shapeEdgeIntersect } from './shapeIntersect'
+import { easeOutCubic, pulse01 } from './anim'
 import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZoom'
 import { ParticleLayer } from '../theme/ParticleLayer'
 import { FlowRuntime } from '../flow/runtime'
@@ -36,7 +37,7 @@ import type { CrossEffectLink } from '../model/types'
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
   edges: ReadonlyMap<string, Connection>
-  grid?: { enabled: boolean; snap: boolean; sizePercent: number }
+  grid?: { enabled: boolean; snap: boolean; sizePercent: number; appearance?: 'lines' | 'dots' | 'tile' }
   crossLinks?: CrossEffectLink[]
 }
 
@@ -73,6 +74,40 @@ export class SceneRenderer {
   private selectedIds: ReadonlySet<string> = new Set()
   private selectedEdgeIds: ReadonlySet<string> = new Set()
   private selectionGfxPool: Graphics[] = []
+  /**
+   * Aura container painted BELOW the nodes layer so the wavey illumination
+   * bleeds outward from each silhouette without overpainting the node
+   * interior. Holds two filtered sub-containers (outer + inner glow) that
+   * each carry a single cached BlurFilter shared across nodes.
+   */
+  private selectionAuraLayer!: Container
+  private selectionAuraOuter!: Container
+  private selectionAuraInner!: Container
+  private selectionAuraOuterPool: Graphics[] = []
+  private selectionAuraInnerPool: Graphics[] = []
+  /**
+   * Crisp ring container, drawn ABOVE nodes (sits on `selectionLayer`).
+   * Index-aligned with the aura pools above so position-by-id is implicit.
+   */
+  private selectionAuraRing!: Container
+  private selectionAuraRingPool: Graphics[] = []
+  /** Cached BlurFilter instances — never reconstructed per frame. */
+  private selectionAuraOuterBlur: BlurFilter | null = null
+  private selectionAuraInnerBlur: BlurFilter | null = null
+  /**
+   * Flow halo aura — also painted BELOW the nodes layer (parented to a
+   * dedicated `flowAuraLayer` between particles and the edges). Wire core
+   * and rings live on `flowOverlayGfx` above the nodes.
+   */
+  private flowAuraLayer!: Container
+  private flowAuraGlow!: Container
+  private flowAuraGlowBlur: BlurFilter | null = null
+  /** Per-active-node aura graphics, lazily expanded. */
+  private flowAuraPool: Graphics[] = []
+  /** Per-active-node crisp ring graphics (no filter), pooled. */
+  private flowRingPool: Graphics[] = []
+  /** Wire glow Graphics (warm halo + bead trail), filtered. */
+  private flowWireGlowGfx!: Graphics
   private boxSelectAabb: SceneAabb | null = null
   /** RMM inflating-frame container in SCREEN coords (not world). */
   private rmmStage!: Container
@@ -215,15 +250,55 @@ export class SceneRenderer {
     this.nodesLayer.eventMode = 'none'
     this.selectionLayer = new Container()
     this.selectionLayer.eventMode = 'none'
+    // Aura layer sits BELOW nodes so the wavey glow bleeds outward but the
+    // node interior is never overpainted (matches legacy `drop-shadow` +
+    // `clip-path` behaviour). Two filtered sub-containers each carry a
+    // single cached BlurFilter shared across nodes.
+    this.selectionAuraLayer = new Container()
+    this.selectionAuraLayer.eventMode = 'none'
+    this.selectionAuraOuter = new Container()
+    this.selectionAuraOuter.eventMode = 'none'
+    // High quality + larger kernel = the smoother wavey gradient that the
+    // legacy CSS box-shadow rendered. Quality 4 / kernel 9 is the highest
+    // sane preset before per-frame cost spikes; benched at >120 FPS with
+    // 50 selected nodes.
+    this.selectionAuraOuterBlur = new BlurFilter({ strength: 6, quality: 4, kernelSize: 9 })
+    this.selectionAuraOuter.filters = [this.selectionAuraOuterBlur]
+    this.selectionAuraInner = new Container()
+    this.selectionAuraInner.eventMode = 'none'
+    this.selectionAuraInnerBlur = new BlurFilter({ strength: 3, quality: 4, kernelSize: 7 })
+    this.selectionAuraInner.filters = [this.selectionAuraInnerBlur]
+    this.selectionAuraLayer.addChild(this.selectionAuraOuter)
+    this.selectionAuraLayer.addChild(this.selectionAuraInner)
+    // Ring sub-container stays on `selectionLayer` (above nodes).
+    this.selectionAuraRing = new Container()
+    this.selectionAuraRing.eventMode = 'none'
+    this.selectionLayer.addChild(this.selectionAuraRing)
     this.overlayLayer = new Container()
     this.overlayLayer.eventMode = 'none'
     this.boxSelectGfx = new Graphics()
     this.overlayLayer.addChild(this.boxSelectGfx)
+    // Flow halo glow lives on its own below-nodes layer so the warm bleed
+    // never overpaints node bodies. Wire core + beads + crisp ring stay on
+    // `flowOverlayGfx` above the nodes for legibility.
+    this.flowAuraLayer = new Container()
+    this.flowAuraLayer.eventMode = 'none'
+    this.flowAuraGlow = new Container()
+    this.flowAuraGlow.eventMode = 'none'
+    this.flowAuraGlowBlur = new BlurFilter({ strength: 14, quality: 4, kernelSize: 9 })
+    this.flowWireGlowGfx = new Graphics()
+    this.flowWireGlowGfx.eventMode = 'none'
+    this.flowAuraGlow.addChild(this.flowWireGlowGfx)
+    this.flowAuraGlow.filters = [this.flowAuraGlowBlur]
+    this.flowAuraLayer.addChild(this.flowAuraGlow)
     this.flowOverlayGfx = new Graphics()
     this.flowOverlayGfx.eventMode = 'none'
     this.overlayLayer.addChild(this.flowOverlayGfx)
     this.world.addChild(this.gridLayer)
     this.world.addChild(this.edgesLayer)
+    // Glow layers go BELOW nodes so they bleed outward only.
+    this.world.addChild(this.selectionAuraLayer)
+    this.world.addChild(this.flowAuraLayer)
     this.world.addChild(this.nodesLayer)
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
@@ -906,9 +981,10 @@ export class SceneRenderer {
       this.flowOverlayGfx.clear()
     }
     // Camera-tracking lerp: keep ticking while either an active cameraTracked
-    // halo exists or the offset hasn't fully eased back to zero.
+    // halo / wire reveal exists or the offset hasn't fully eased back to zero.
     if (
       this.playActiveNodes.size > 0 ||
+      this.playWires.size > 0 ||
       this.cameraTrackOffsetX !== 0 ||
       this.cameraTrackOffsetY !== 0
     ) {
@@ -931,15 +1007,48 @@ export class SceneRenderer {
       // remains accurate at any refresh rate.
       this.particleLayer.tick(ticker.deltaMS / 16.667)
     }
-    // Selection breathing animation: alpha pulse on the selectionLayer.
-    // (Scaling the whole layer would drift rings off origin; per-ring scale
-    // would need per-frame draws — alpha alone is free.)
+    // Selection breathing animation: per-layer alpha + scale pulse on the
+    // shape-conforming aura. The crisp ring stays solid (acts as the
+    // selection anchor); the two filtered glow layers breathe at 1.5 s.
     if (this.selectedIds.size > 0) {
-      const phase = (performance.now() % 1400) / 1400
-      const pulse = 0.5 - 0.5 * Math.cos(phase * Math.PI * 2)
-      this.selectionLayer.alpha = 0.65 + 0.35 * pulse
-    } else if (this.selectionLayer.alpha !== 1) {
-      this.selectionLayer.alpha = 1
+      const p = pulse01(performance.now(), 1500)
+      this.selectionAuraOuter.alpha = 0.45 + 0.30 * p
+      this.selectionAuraInner.alpha = 0.55 + 0.25 * p
+      this.selectionAuraRing.alpha = 0.95
+      // Subtle outward breath \u2014 4% on outer, 2% on inner. Layer-level
+      // scale is pivot-free which would drift; both layers are already
+      // centred at the world origin so scaling pulses around (0,0). To keep
+      // pulses centred on each node, drive a uniform per-pool scale via
+      // the layer's `scale` only when there is one selected node, and skip
+      // the scale pulse otherwise (alpha alone still reads as breathing).
+      if (this.selectedIds.size === 1) {
+        const idIter = this.selectedIds.values().next()
+        const node = idIter.value ? this.model.nodes.get(idIter.value) : null
+        if (node) {
+          const cx = (node.x / 100) * SCENE_W
+          const cy = (node.y / 100) * SCENE_H
+          const k = 1 + 0.04 * p
+          this.selectionAuraOuter.pivot.set(cx, cy)
+          this.selectionAuraOuter.position.set(cx, cy)
+          this.selectionAuraOuter.scale.set(k)
+          const k2 = 1 + 0.02 * p
+          this.selectionAuraInner.pivot.set(cx, cy)
+          this.selectionAuraInner.position.set(cx, cy)
+          this.selectionAuraInner.scale.set(k2)
+        }
+      } else {
+        // Reset transforms when multi-selected so positions stay accurate.
+        this.selectionAuraOuter.pivot.set(0, 0)
+        this.selectionAuraOuter.position.set(0, 0)
+        this.selectionAuraOuter.scale.set(1)
+        this.selectionAuraInner.pivot.set(0, 0)
+        this.selectionAuraInner.position.set(0, 0)
+        this.selectionAuraInner.scale.set(1)
+      }
+    } else {
+      if (this.selectionAuraOuter.alpha !== 0) this.selectionAuraOuter.alpha = 0
+      if (this.selectionAuraInner.alpha !== 0) this.selectionAuraInner.alpha = 0
+      if (this.selectionAuraRing.alpha !== 0) this.selectionAuraRing.alpha = 0
     }
     this.fpsAccumFrames++
     this.fpsAccumTimeMs += ticker.deltaMS
@@ -984,26 +1093,51 @@ export class SceneRenderer {
   private tickCameraTracking(): void {
     let targetX = 0
     let targetY = 0
-    let leader: { id: string; startMs: number } | null = null
+    // Two leader candidates: the most-recently activated cameraTracked
+    // node, AND the most-recently started cameraTracked wire reveal. The
+    // newest startMs wins, so the camera smoothly slides along a tracked
+    // wire from one tracked node to the next.
+    type Leader = { startMs: number; x: number; y: number }
+    let leader: Leader | null = null
+    const now = performance.now()
     if (this.playActiveNodes.size > 0) {
-      const now = performance.now()
       for (const [id, halo] of this.playActiveNodes) {
         if (now < halo.startMs) continue
         const node = this.model.nodes.get(id)
         if (!node || !node.cameraTracked) continue
         if (!leader || halo.startMs > leader.startMs) {
-          leader = { id, startMs: halo.startMs }
+          const cxPx = ((node.x + node.w / 2) / 100) * SCENE_W
+          const cyPx = ((node.y + node.h / 2) / 100) * SCENE_H
+          leader = { startMs: halo.startMs, x: cxPx, y: cyPx }
+        }
+      }
+    }
+    if (this.playWires.size > 0) {
+      for (const [edgeId, w] of this.playWires) {
+        if (now < w.startMs || now > w.startMs + w.durMs) continue
+        const edge = this.model.edges.get(edgeId)
+        if (!edge || !edge.cameraTracked) continue
+        const from = this.model.nodes.get(edge.from)
+        const to = this.model.nodes.get(edge.to)
+        if (!from || !to) continue
+        // Linear interpolation of the head bead along the wire matches the
+        // visual on `flowOverlayGfx`. Coordinates use node center (no w/2)
+        // so the camera lands on the same point as the bead.
+        const t = Math.min(1, Math.max(0, (now - w.startMs) / w.durMs))
+        const fxC = (from.x / 100) * SCENE_W
+        const fyC = (from.y / 100) * SCENE_H
+        const txC = (to.x / 100) * SCENE_W
+        const tyC = (to.y / 100) * SCENE_H
+        const hx = fxC + (txC - fxC) * t
+        const hy = fyC + (tyC - fyC) * t
+        if (!leader || w.startMs > leader.startMs) {
+          leader = { startMs: w.startMs, x: hx, y: hy }
         }
       }
     }
     if (leader) {
-      const node = this.model.nodes.get(leader.id)
-      if (node) {
-        const cxPx = ((node.x + node.w / 2) / 100) * SCENE_W
-        const cyPx = ((node.y + node.h / 2) / 100) * SCENE_H
-        targetX = -cxPx - this.camera.panX
-        targetY = -cyPx - this.camera.panY
-      }
+      targetX = -leader.x - this.camera.panX
+      targetY = -leader.y - this.camera.panY
     }
     // Lerp factor 0.08 matches legacy flowCameraRef tuning. Small enough to
     // avoid jitter on sub-pixel node moves, large enough to track a 60 FPS
@@ -1126,71 +1260,101 @@ export class SceneRenderer {
   }
 
   private drawSelectionAndOverlays(): void {
-    // Reuse a small pool of selection ring Graphics. One per visible+selected
-    // node. Hidden when not in use. Animation (alpha pulse + outer ring scale)
-    // is applied in `onTick` directly on the shared selectionLayer to avoid
-    // re-issuing draw commands per frame.
+    // Layered shape-conforming aura: outer + inner blurred glow are filled
+    // silhouettes inflated past the node's own bounds. Because the aura
+    // layer sits BELOW the nodes layer, the node body is drawn on top of
+    // the glow each frame so only the bleed outside the membrane is ever
+    // visible. The crisp ring stays above as a selection anchor.
     let used = 0
+    const AURA_FILL = 0xf59e0b
+    const RING_COLOR = 0x4aa3ff
+    // Inflations are kept small so the BlurFilter’s axis-aligned padding
+    // does not reveal a rectangular halo behind shaped silhouettes.
+    const SCALE_OUTER = 1.18
+    const SCALE_INNER = 1.08
     for (const id of this.selectedIds) {
       if (!this.prevVisibleNodes.has(id)) continue
       const node = this.model.nodes.get(id)
       if (!node) continue
-      let g = this.selectionGfxPool[used]
-      if (!g) {
-        g = new Graphics()
-        g.eventMode = 'none'
-        this.selectionLayer.addChild(g)
-        this.selectionGfxPool.push(g)
+      let outer = this.selectionAuraOuterPool[used]
+      let inner = this.selectionAuraInnerPool[used]
+      let ring = this.selectionAuraRingPool[used]
+      if (!outer) {
+        outer = new Graphics(); outer.eventMode = 'none'
+        this.selectionAuraOuter.addChild(outer)
+        this.selectionAuraOuterPool.push(outer)
       }
-      g.visible = true
-      g.clear()
-      const pad = 1.2
-      const wPx = ((node.w + pad * 2) / 100) * SCENE_W
-      const hPx = ((node.h + pad * 2) / 100) * SCENE_H
+      if (!inner) {
+        inner = new Graphics(); inner.eventMode = 'none'
+        this.selectionAuraInner.addChild(inner)
+        this.selectionAuraInnerPool.push(inner)
+      }
+      if (!ring) {
+        ring = new Graphics(); ring.eventMode = 'none'
+        this.selectionAuraRing.addChild(ring)
+        this.selectionAuraRingPool.push(ring)
+      }
+      const wPx = (node.w / 100) * SCENE_W
+      const hPx = (node.h / 100) * SCENE_H
       const xPx = (node.x / 100) * SCENE_W
       const yPx = (node.y / 100) * SCENE_H
-      g.x = xPx
-      g.y = yPx
-      const r = Math.min(wPx, hPx) * 0.18
-      // Outer halo (drawn first, faint).
-      g.roundRect(-wPx / 2 - 6, -hPx / 2 - 6, wPx + 12, hPx + 12, r + 6)
-      g.stroke({ color: 0x4aa3ff, width: 2, alpha: 0.35, alignment: 0.5 })
-      // Inner crisp ring.
-      g.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, r)
-      g.stroke({ color: 0x4aa3ff, width: 3, alignment: 0.5 })
+      const tip = node.tip
+        ? { x: (node.tip.x / 100) * SCENE_W, y: (node.tip.y / 100) * SCENE_H }
+        : undefined
+      // Outer halo: fat fuzzy silhouette.
+      outer.visible = true
+      outer.x = xPx; outer.y = yPx
+      outer.clear()
+      drawNodeShapePath(outer, node.shape, wPx * SCALE_OUTER, hPx * SCALE_OUTER, tip)
+      outer.fill({ color: AURA_FILL, alpha: 0.65 })
+      // Inner halo: tighter, brighter silhouette for the bright rim.
+      inner.visible = true
+      inner.x = xPx; inner.y = yPx
+      inner.clear()
+      drawNodeShapePath(inner, node.shape, wPx * SCALE_INNER, hPx * SCALE_INNER, tip)
+      inner.fill({ color: AURA_FILL, alpha: 0.85 })
+      // Crisp ring (above nodes): outside-aligned blue stroke that anchors
+      // the selection visually and disambiguates from flow halos.
+      ring.visible = true
+      ring.x = xPx; ring.y = yPx
+      ring.clear()
+      drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
+      ring.stroke({ color: RING_COLOR, width: 3, alignment: 1 })
       used++
     }
-    for (let i = used; i < this.selectionGfxPool.length; i++) {
-      this.selectionGfxPool[i].visible = false
+    for (let i = used; i < this.selectionAuraOuterPool.length; i++) {
+      this.selectionAuraOuterPool[i].visible = false
+      this.selectionAuraInnerPool[i].visible = false
+      this.selectionAuraRingPool[i].visible = false
     }
-    // Edge selection: thicker translucent overlay along each selected edge.
+    // Edge selection overlay (separate pool — kept distinct so the aura
+    // layer doesn't blur thin edge highlights into illegibility).
+    let edgeUsed = 0
     for (const eid of this.selectedEdgeIds) {
       const e = this.model.edges.get(eid)
       if (!e) continue
       const a = this.model.nodes.get(e.from)
       const b = this.model.nodes.get(e.to)
       if (!a || !b) continue
-      let g = this.selectionGfxPool[used]
+      let g = this.selectionGfxPool[edgeUsed]
       if (!g) {
-        g = new Graphics()
-        g.eventMode = 'none'
+        g = new Graphics(); g.eventMode = 'none'
         this.selectionLayer.addChild(g)
         this.selectionGfxPool.push(g)
       }
       g.visible = true
       g.clear()
-      g.x = 0
-      g.y = 0
+      g.x = 0; g.y = 0
       const ax = (a.x / 100) * SCENE_W
       const ay = (a.y / 100) * SCENE_H
       const bx = (b.x / 100) * SCENE_W
       const by = (b.y / 100) * SCENE_H
       const baseW = Math.max(1, (e.width / 100) * SCENE_W)
       g.moveTo(ax, ay).lineTo(bx, by)
-      g.stroke({ color: 0x4aa3ff, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
-      used++
+      g.stroke({ color: RING_COLOR, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
+      edgeUsed++
     }
-    for (let i = used; i < this.selectionGfxPool.length; i++) {
+    for (let i = edgeUsed; i < this.selectionGfxPool.length; i++) {
       this.selectionGfxPool[i].visible = false
     }
     // Box-select rectangle.
@@ -1219,7 +1383,7 @@ export class SceneRenderer {
     const stepPct = Math.max(0.5, grid.sizePercent)
     const stepX = (stepPct / 100) * SCENE_W
     const stepY = (stepPct / 100) * SCENE_H
-    // Visible scene rect → which grid lines must be drawn.
+    // Visible scene rect → which grid cells must be drawn.
     const aabb = visibleSceneAabb(this.getCamera(), this.viewport)
     const minXpx = (aabb.minX / 100) * SCENE_W
     const maxXpx = (aabb.maxX / 100) * SCENE_W
@@ -1230,17 +1394,46 @@ export class SceneRenderer {
     const g = this.gridLayer
     g.visible = true
     g.clear()
-    for (let x = startX; x <= maxXpx; x += stepX) {
-      g.moveTo(x, minYpx).lineTo(x, maxYpx)
+    const appearance = grid.appearance ?? 'lines'
+    const invScale = 1 / Math.max(this.effectiveScale, 0.01)
+    if (appearance === 'tile') {
+      // Checkerboard cells. Cell parity is computed from integer indices
+      // so the pattern is camera-stable.
+      const i0 = Math.floor(startX / stepX)
+      const j0 = Math.floor(startY / stepY)
+      let j = j0
+      for (let y = startY; y < maxYpx; y += stepY, j++) {
+        let i = i0
+        for (let x = startX; x < maxXpx; x += stepX, i++) {
+          if (((i + j) & 1) === 0) continue
+          g.rect(x, y, stepX, stepY)
+        }
+      }
+      g.fill({ color: 0x4aa3ff, alpha: 0.06 })
+    } else if (appearance === 'dots') {
+      // A small dot at every intersection. Radius shrinks with zoom so
+      // dots stay roughly screen-pixel-sized.
+      const r = Math.max(0.2, 1.2 * invScale)
+      for (let y = startY; y <= maxYpx; y += stepY) {
+        for (let x = startX; x <= maxXpx; x += stepX) {
+          g.circle(x, y, r)
+        }
+      }
+      g.fill({ color: 0x4aa3ff, alpha: 0.35 })
+    } else {
+      // 'lines' — original crosshatch.
+      for (let x = startX; x <= maxXpx; x += stepX) {
+        g.moveTo(x, minYpx).lineTo(x, maxYpx)
+      }
+      for (let y = startY; y <= maxYpx; y += stepY) {
+        g.moveTo(minXpx, y).lineTo(maxXpx, y)
+      }
+      g.stroke({
+        color: 0x4aa3ff,
+        width: invScale,
+        alpha: 0.18,
+      })
     }
-    for (let y = startY; y <= maxYpx; y += stepY) {
-      g.moveTo(minXpx, y).lineTo(maxXpx, y)
-    }
-    g.stroke({
-      color: 0x4aa3ff,
-      width: 1 / Math.max(this.effectiveScale, 0.01),
-      alpha: 0.18,
-    })
   }
 
   /**
@@ -1267,8 +1460,10 @@ export class SceneRenderer {
    */
   private drawFlowOverlay(now: number): void {
     const g = this.flowOverlayGfx
+    const glow = this.flowWireGlowGfx
     g.clear()
-    // Wire reveals
+    glow.clear()
+    // ---- wire reveals ---------------------------------------------------
     for (const [edgeId, w] of [...this.playWires]) {
       const t = (now - w.startMs) / w.durMs
       if (t <= 0) continue
@@ -1290,7 +1485,8 @@ export class SceneRenderer {
       const tyC = (to.y / 100) * SCENE_H
       const dx = txC - fxC
       const dy = tyC - fyC
-      if (Math.hypot(dx, dy) < 1) continue
+      const len = Math.hypot(dx, dy)
+      if (len < 1) continue
       const fHw = ((from.w / 100) * SCENE_W) / 2
       const fHh = ((from.h / 100) * SCENE_H) / 2
       const tHw = ((to.w / 100) * SCENE_W) / 2
@@ -1305,15 +1501,44 @@ export class SceneRenderer {
       const hx = fx + (tx - fx) * k
       const hy = fy + (ty - fy) * k
       const baseStrokePx = Math.max(2, (e.width / 100) * SCENE_W * 1.4)
-      const wPx = baseStrokePx + 4
-      // Bright orange leader stroke that grows to full length, plus a
-      // soft glow underneath for legibility on dark backgrounds.
+      // Shimmer phase 0..1 advancing over ~600 ms — drives a subtle alpha
+      // wobble on the bright core for the "liquid" feel.
+      const shimmer = 0.85 + 0.15 * Math.sin((now / 180) + len * 0.001)
+      // Layered wire passes: warm halo (blurred), mid orange, bright core.
+      glow.moveTo(fx, fy).lineTo(hx, hy)
+      glow.stroke({ color: 0xffd58a, width: baseStrokePx * 4, alpha: 0.28 })
       g.moveTo(fx, fy).lineTo(hx, hy)
-      g.stroke({ color: 0xffd58a, width: wPx + 4, alpha: 0.25 })
+      g.stroke({ color: 0xffaa1f, width: baseStrokePx * 2, alpha: 0.65 })
       g.moveTo(fx, fy).lineTo(hx, hy)
-      g.stroke({ color: 0xffaa1f, width: wPx, alpha: 0.95 })
+      g.stroke({ color: 0xfff2c0, width: baseStrokePx * 1.0, alpha: 0.95 * shimmer })
+      // Travelling head bead + short trail — only while reveal is in flight.
+      if (k < 1) {
+        const beadR = baseStrokePx * 1.4
+        // Bead glow halo (filtered).
+        glow.circle(hx, hy, beadR * 1.8)
+        glow.fill({ color: 0xffd58a, alpha: 0.55 })
+        // Bead bright core (crisp).
+        g.circle(hx, hy, beadR)
+        g.fill({ color: 0xfff7d6, alpha: 0.95 })
+        // Tiny trail of fading sparks behind the bead, anchored on the line.
+        const ux = (hx - fx) / Math.max(1, k * len)
+        const uy = (hy - fy) / Math.max(1, k * len)
+        const trail: Array<[number, number]> = [
+          [beadR * 2.2, 0.55],
+          [beadR * 4.0, 0.28],
+          [beadR * 6.0, 0.12],
+        ]
+        for (const [d, a] of trail) {
+          const px = hx - ux * d
+          const py = hy - uy * d
+          if ((px - fx) * ux + (py - fy) * uy < 0) break
+          g.circle(px, py, beadR * 0.55)
+          g.fill({ color: 0xfff2c0, alpha: a })
+        }
+      }
     }
-    // Active node halos
+    // ---- active node halos ---------------------------------------------
+    let auraUsed = 0
     for (const [nodeId, h] of [...this.playActiveNodes]) {
       const t = (now - h.startMs) / h.durMs
       if (t <= 0) continue
@@ -1325,18 +1550,53 @@ export class SceneRenderer {
       if (!n) { this.playActiveNodes.delete(nodeId); continue }
       const cx = (n.x / 100) * SCENE_W
       const cy = (n.y / 100) * SCENE_H
-      const hw = ((n.w / 100) * SCENE_W) / 2
-      const hh = ((n.h / 100) * SCENE_H) / 2
-      // Pulse: ramp in fast, decay slow. Ring expands ~10% over its life.
-      const pulse = t < 0.2 ? t / 0.2 : 1 - (t - 0.2) / 0.8
-      const alpha = 0.7 * Math.max(0, pulse)
-      const grow = 1 + 0.10 * t
-      const rx = hw * grow + 6
-      const ry = hh * grow + 6
-      g.ellipse(cx, cy, rx, ry)
-      g.stroke({ color: 0xffaa1f, width: 4, alpha })
-      g.ellipse(cx, cy, rx + 6, ry + 6)
-      g.stroke({ color: 0xffd58a, width: 2, alpha: alpha * 0.5 })
+      const wPx = (n.w / 100) * SCENE_W
+      const hPx = (n.h / 100) * SCENE_H
+      const tip = n.tip
+        ? { x: (n.tip.x / 100) * SCENE_W, y: (n.tip.y / 100) * SCENE_H }
+        : undefined
+      // Pulse: ramp in fast, decay slow.
+      const pulse = t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85
+      const alpha = Math.max(0, pulse)
+      // Aura silhouette (filtered, BELOW nodes): inflated shape filled with
+      // warm orange. The node body is drawn on top, so only the bleed past
+      // the membrane is ever visible.
+      let aura = this.flowAuraPool[auraUsed]
+      if (!aura) {
+        aura = new Graphics(); aura.eventMode = 'none'
+        this.flowAuraGlow.addChild(aura)
+        this.flowAuraPool.push(aura)
+      }
+      const inflate = 1.30 + 0.20 * easeOutCubic(t)
+      aura.visible = true
+      aura.x = cx; aura.y = cy
+      aura.alpha = alpha
+      aura.clear()
+      drawNodeShapePath(aura, n.shape, wPx * inflate, hPx * inflate, tip)
+      aura.fill({ color: 0xffaa1f, alpha: 0.95 })
+      // Crisp shape-conforming ring on a separate pooled Graphics — drawn
+      // straddling the node membrane so it reads as an emanation, never an
+      // overlay on the body.
+      let ring = this.flowRingPool[auraUsed]
+      if (!ring) {
+        ring = new Graphics(); ring.eventMode = 'none'
+        this.overlayLayer.addChild(ring)
+        this.flowRingPool.push(ring)
+      }
+      ring.visible = true
+      ring.x = cx; ring.y = cy
+      ring.clear()
+      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      ring.stroke({ color: 0xffaa1f, width: 4, alignment: 1, alpha })
+      drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
+      ring.stroke({ color: 0xffd58a, width: 2, alignment: 1, alpha: alpha * 0.5 })
+      auraUsed++
+    }
+    for (let i = auraUsed; i < this.flowAuraPool.length; i++) {
+      this.flowAuraPool[i].visible = false
+    }
+    for (let i = auraUsed; i < this.flowRingPool.length; i++) {
+      this.flowRingPool[i].visible = false
     }
   }
 

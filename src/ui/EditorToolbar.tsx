@@ -53,7 +53,6 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
   const s = useOmniStore.getState()
   const canUndo = s.undoStack.canUndo()
   const canRedo = s.undoStack.canRedo()
-  const hasSelection = s.selectedIds.size > 0 || s.selectedEdgeIds.size > 0
   // Play root: prefer the first selected node; otherwise auto-pick the
   // first node with no *incoming* flow edge (cascade source); falling back
   // to the first node in the model. Matches legacy "Play from root" UX.
@@ -74,12 +73,6 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
   }, [renderer])
   const isPlaying = renderer?.isFlowPlaying ?? false
 
-  const onDelete = () => {
-    const cur = useOmniStore.getState()
-    if (cur.selectedIds.size > 0) cur.removeNodes([...cur.selectedIds])
-    if (cur.selectedEdgeIds.size > 0) cur.removeEdges([...cur.selectedEdgeIds])
-  }
-
   return (
     <div style={barStyle} role="toolbar" aria-label="Editor toolbar">
       <ToolbarButton
@@ -95,15 +88,6 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
         title="Redo (Ctrl+Shift+Z)"
       >
         ↪ Redo
-      </ToolbarButton>
-      <Separator />
-      <ToolbarButton
-        onClick={onDelete}
-        disabled={!hasSelection}
-        title="Delete selection (Del)"
-        danger
-      >
-        ✕ Delete
       </ToolbarButton>
       <Separator />
       {isPlaying ? (

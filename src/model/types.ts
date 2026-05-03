@@ -117,6 +117,13 @@ export interface Connection {
   label?: string
   /** Label font size in scene pixels (defaults to 22). */
   labelFontSize?: number
+  /**
+   * When true, the camera follows this connection during a flow Play cascade
+   * \u2014 specifically tracks the head bead of the wire-reveal animation as it
+   * travels from source to target. Combine with `cameraTracked` on the
+   * source/target nodes to get smooth pan-along-flow camera motion.
+   */
+  cameraTracked?: boolean
   /** When set, this connection only appears once the named spawn effect runs. */
   dependsOnSpawn?: string
   /**
@@ -143,12 +150,19 @@ export interface GridSettings {
   snap: boolean
   /** Grid spacing in scene-percent units. Always > 0. */
   sizePercent: number
+  /**
+   * Visual style of the grid overlay. Default is `'lines'` (full crosshatch).
+   * - `'dots'`  — a single dot at every intersection.
+   * - `'tile'`  — a checkerboard fill (alternating cells lightly tinted).
+   */
+  appearance?: 'lines' | 'dots' | 'tile'
 }
 
 export const DEFAULT_GRID: GridSettings = {
   enabled: false,
   snap: false,
   sizePercent: 4,
+  appearance: 'lines',
 }
 
 export interface Model {

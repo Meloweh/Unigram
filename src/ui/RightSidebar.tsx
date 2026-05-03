@@ -9,7 +9,7 @@
  * UI is plain React/CSS — we keep all visuals out of the canvas.
  */
 
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import { useOmniStore } from '../model/store'
 import type { ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
@@ -199,6 +199,11 @@ function renderInner(
                 onChange={(v) => useOmniStore.getState().updateEdge(eid, { labelFontSize: v })}
               />
             </Field>
+            <Checkbox
+              label="Tracked by camera"
+              checked={edge.cameraTracked === true}
+              onChange={(v) => useOmniStore.getState().updateEdge(eid, { cameraTracked: v || undefined })}
+            />
             <button
               onClick={() => useOmniStore.getState().removeEdges([eid])}
               style={dangerButtonStyle}
@@ -226,24 +231,18 @@ function renderInner(
             style={inputStyle}
           />
         </Field>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Grid</span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={grid.enabled}
-              onChange={(e) => useOmniStore.getState().setGrid({ enabled: e.target.checked })}
-            />
-            Show grid
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={grid.snap}
-              onChange={(e) => useOmniStore.getState().setGrid({ snap: e.target.checked })}
-            />
-            Snap to grid
-          </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Grid</span>
+          <Checkbox
+            label="Show grid"
+            checked={grid.enabled}
+            onChange={(v) => useOmniStore.getState().setGrid({ enabled: v })}
+          />
+          <Checkbox
+            label="Snap to grid"
+            checked={grid.snap}
+            onChange={(v) => useOmniStore.getState().setGrid({ snap: v })}
+          />
           <Field label="Grid size %">
             <NumberField
               value={grid.sizePercent}
@@ -252,6 +251,21 @@ function renderInner(
               step={0.5}
               onChange={(v) => useOmniStore.getState().setGrid({ sizePercent: v })}
             />
+          </Field>
+          <Field label="Grid appearance">
+            <select
+              value={grid.appearance ?? 'lines'}
+              onChange={(e) =>
+                useOmniStore
+                  .getState()
+                  .setGrid({ appearance: e.target.value as 'lines' | 'dots' | 'tile' })
+              }
+              style={inputStyle}
+            >
+              <option value="lines">Lines</option>
+              <option value="dots">Dots</option>
+              <option value="tile">Tile</option>
+            </select>
           </Field>
         </div>
         <CosmeticsControls />
@@ -441,7 +455,7 @@ function Title({ children }: { children: React.ReactNode }) {
     <div
       style={{
         fontWeight: 600,
-        fontSize: 13,
+        fontSize: 14,
         color: 'var(--ug-text-heading)',
         borderBottom: '1px solid var(--ug-border-light)',
         paddingBottom: 6,
@@ -454,8 +468,8 @@ function Title({ children }: { children: React.ReactNode }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>{label}</span>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>{label}</span>
       {children}
     </label>
   )
@@ -466,7 +480,7 @@ function Row({ children }: { children: React.ReactNode }) {
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 11, color: 'var(--ug-text-muted)', fontStyle: 'italic' }}>{children}</div>
+  return <div style={{ fontSize: 14, color: 'var(--ug-text-muted)', fontStyle: 'italic' }}>{children}</div>
 }
 
 /**
@@ -491,7 +505,7 @@ function CosmeticsControls() {
   const bgType = bg?.type ?? 'solid'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Theme</span>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Theme</span>
       <select
         value={themeMode}
         onChange={(e) => setMode(e.target.value as ThemeMode)}
@@ -509,7 +523,7 @@ function CosmeticsControls() {
         </optgroup>
       </select>
 
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Background</span>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Background</span>
       <select
         value={bgType}
         onChange={(e) => {
@@ -568,7 +582,7 @@ function CosmeticsControls() {
       )}
       <button onClick={() => setBg(undefined)} style={buttonStyle}>Clear background</button>
 
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Particles</span>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Particles</span>
       <select
         value={particle}
         onChange={(e) => setParticle(e.target.value)}
@@ -589,7 +603,7 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--ug-border)',
   borderRadius: 3,
   padding: '4px 6px',
-  font: 'inherit',
+  font: '12px system-ui, sans-serif',
   width: '100%',
   boxSizing: 'border-box',
 }
@@ -600,7 +614,15 @@ const buttonStyle: React.CSSProperties = {
   border: '1px solid var(--ug-border)',
   borderRadius: 3,
   padding: '4px 6px',
-  font: '11px system-ui, sans-serif',
+  font: '14px system-ui, sans-serif',
+  cursor: 'pointer',
+}
+
+const checkboxStyle: React.CSSProperties = {
+  width: 14,
+  height: 14,
+  margin: 0,
+  accentColor: 'var(--ug-primary)',
   cursor: 'pointer',
 }
 
@@ -640,12 +662,18 @@ function BehaviourFlags({
   updateAll: (patch: Partial<ModelNode>) => void
 }) {
   const allHave = (pick: (n: ModelNode) => boolean | undefined) => nodes.every((n) => !!pick(n))
-  const locked = allHave((n) => n.locked)
-  const hideDuringFlow = allHave((n) => n.hideDuringFlow)
-  const cameraTracked = allHave((n) => n.cameraTracked)
+  const someHave = (pick: (n: ModelNode) => boolean | undefined) => nodes.some((n) => !!pick(n))
+  const triState = (pick: (n: ModelNode) => boolean | undefined): boolean | 'mixed' => {
+    const all = allHave(pick)
+    if (all) return true
+    return someHave(pick) ? 'mixed' : false
+  }
+  const locked = triState((n) => n.locked)
+  const hideDuringFlow = triState((n) => n.hideDuringFlow)
+  const cameraTracked = triState((n) => n.cameraTracked)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Behaviour</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Behaviour</span>
       <Checkbox
         label="Locked (skip drag & untangle)"
         checked={locked}
@@ -657,7 +685,7 @@ function BehaviourFlags({
         onChange={(v) => updateAll({ hideDuringFlow: v || undefined })}
       />
       <Checkbox
-        label="Camera tracks this node"
+        label="Tracked by camera"
         checked={cameraTracked}
         onChange={(v) => updateAll({ cameraTracked: v || undefined })}
       />
@@ -671,15 +699,20 @@ function Checkbox({
   onChange,
 }: {
   label: string
-  checked: boolean
+  checked: boolean | 'mixed'
   onChange: (v: boolean) => void
 }) {
+  // Render an HTML "indeterminate" checkbox when the multi-selection is
+  // mixed so the user knows the value differs across nodes. Clicking
+  // promotes everything to checked (matches legacy Unigram behaviour).
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ug-text)', cursor: 'pointer' }}>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--ug-text)', cursor: 'pointer' }}>
       <input
         type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
+        checked={checked === true}
+        ref={(el) => { if (el) el.indeterminate = checked === 'mixed' }}
+        onChange={(e) => onChange(checked === 'mixed' ? true : e.target.checked)}
+        style={checkboxStyle}
       />
       {label}
     </label>
@@ -713,8 +746,8 @@ function CosmeticTipControls({
     updateAll({ tip: { x, y } })
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Tip / tail</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Tip / tail</span>
       <Row>
         <Field label="Angle°">
           <NumberField
@@ -746,10 +779,10 @@ function MpdSection({ node }: { node: ModelNode }) {
     useOmniStore.getState().addMpdDimension(node.id)
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>MPD dimensions</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>MPD dimensions</span>
       {dims.length === 0 ? (
-        <span style={{ fontSize: 11, color: '#576278' }}>None — add a dimension to enable the dial.</span>
+        <span style={{ fontSize: 14, color: '#576278' }}>None</span>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {dims.map((id) => {
@@ -827,8 +860,8 @@ function RmmSection({ node }: { node: ModelNode }) {
     }
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Child model (RMM)</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Child model (RMM)</span>
       {linkedId ? (
         <>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -861,7 +894,7 @@ function RmmSection({ node }: { node: ModelNode }) {
         </>
       ) : (
         <>
-          <span style={{ fontSize: 11, color: '#576278' }}>None — add a child to enable recursive zoom.</span>
+          <span style={{ fontSize: 14, color: '#576278' }}>None</span>
           <button onClick={handleAdd} style={buttonStyle}>+ Add child model</button>
         </>
       )}
@@ -882,15 +915,15 @@ function MediaSection({ node }: { node: ModelNode }) {
   const update = (patch: Partial<ModelNode>) => useOmniStore.getState().updateNode(node.id, patch)
   const mediaType = node.mediaType
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Media</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Media</span>
       <select
         value={mediaType ?? ''}
         onChange={(e) => {
           const v = e.target.value as ModelNode['mediaType'] | ''
           update({ mediaType: v === '' ? undefined : v })
         }}
-        style={{ ...buttonStyle, padding: '4px 6px', fontSize: 11 }}
+        style={inputStyle}
       >
         <option value="">— none —</option>
         <option value="image">Image</option>
@@ -915,10 +948,10 @@ function MediaSection({ node }: { node: ModelNode }) {
               const url = await storeMediaBlob(f)
               update({ mediaSrc: url, mediaFileName: f.name })
             }}
-            style={{ fontSize: 11, color: 'var(--ug-text)' }}
+            style={{ fontSize: 14, color: 'var(--ug-text)' }}
           />
           {node.mediaFileName && (
-            <span style={{ fontSize: 11, color: '#576278' }}>{node.mediaFileName}</span>
+            <span style={{ fontSize: 14, color: '#576278' }}>{node.mediaFileName}</span>
           )}
         </>
       )}
@@ -961,13 +994,13 @@ function LinkedNodesSection({ node }: { node: ModelNode }) {
   const labelFor = (id: string) => allNodes.get(id)?.label || id
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Linked nodes (paired effects)</span>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Linked nodes (paired effects)</span>
       <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
         {links.map((peerId) => (
-          <li key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}>
+          <li key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 14, color: 'var(--ug-text)' }}>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{labelFor(peerId)}</span>
             <button
-              style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
+              style={{ ...buttonStyle, padding: '2px 6px', fontSize: 14 }}
               onClick={() => useOmniStore.getState().unlinkNodes(node.id, peerId)}
             >
               Unlink
@@ -987,13 +1020,23 @@ function FlowEffectsSection({
   renderer: import('../scene/SceneRenderer').SceneRenderer
 }) {
   const [editing, setEditing] = useState<import('../flow/types').FlowEffect | null>(null)
-  const detach = (effectId: string) => {
-    const existing = node.flowEffects ?? []
-    useOmniStore
-      .getState()
-      .updateNode(node.id, { flowEffects: existing.filter((e) => e.id !== effectId) })
-  }
-  const editExisting = (eff: import('../flow/types').FlowEffect) => setEditing(eff)
+  // Snapshot of the in-progress effect kept while the editor is hidden
+  // during a canvas link-pick. When pickMode clears (the user clicked a
+  // peer node, or hit Cancel) we restore the editor with this snapshot so
+  // the user doesn't lose their unsaved graph edits.
+  const linkPickSnapshot = useRef<import('../flow/types').FlowEffect | null>(null)
+  const pickMode = useSyncExternalStore(
+    (cb) => useOmniStore.subscribe(cb),
+    () => useOmniStore.getState().pickMode,
+    () => null,
+  )
+  useEffect(() => {
+    if (pickMode === null && linkPickSnapshot.current && !editing) {
+      // Pick resolved (success or cancel) → reopen the editor.
+      setEditing(linkPickSnapshot.current)
+      linkPickSnapshot.current = null
+    }
+  }, [pickMode, editing])
   const editor = editing ? (
     <FlowEffectEditor
       initial={editing}
@@ -1016,83 +1059,28 @@ function FlowEffectsSection({
         setEditing(null)
       }}
       onClose={() => setEditing(null)}
+      onLinkPick={(latest) => {
+        // Stash the latest editor state so it survives the modal close,
+        // then close so the canvas pick UI is visible.
+        linkPickSnapshot.current = latest
+        setEditing(null)
+      }}
     />
   ) : null
   const all = node.flowEffects ?? []
-  const loops = all.filter((e) => e.alwaysPlay)
-  const oneShots = all.filter((e) => !e.alwaysPlay)
+  // Per omnigram parity (task E) every node hosts a single effect graph;
+  // multiple legacy effects are collapsed to the first entry.
+  const single = all[0] ?? null
+  const openGraph = () => {
+    if (single) setEditing(single)
+    else setEditing(emptyEffect())
+  }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Flow effects</span>
-      <button onClick={() => setEditing(emptyEffect())} style={buttonStyle}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Flow effect</span>
+      <button onClick={openGraph} style={buttonStyle}>
         Open effect graph
       </button>
-      {oneShots.length > 0 && (
-        <>
-          <span style={{ fontSize: 10, color: 'var(--ug-text-muted)', marginTop: 4 }}>
-            One-shots (Play)
-          </span>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {oneShots.map((e) => (
-              <li
-                key={e.id}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}
-              >
-                <span>▷ {e.label}</span>
-                <span>
-                  <button
-                    onClick={() => editExisting(e)}
-                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
-                    title="Edit effect"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={() => detach(e.id)}
-                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
-                    title="Remove effect"
-                  >
-                    ✕
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      {loops.length > 0 && (
-        <>
-          <span style={{ fontSize: 10, color: 'var(--ug-text-muted)', marginTop: 4 }}>
-            Always playing
-          </span>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {loops.map((e) => (
-              <li
-                key={e.id}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}
-              >
-                <span>∞ {e.label}</span>
-                <span>
-                  <button
-                    onClick={() => editExisting(e)}
-                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11, marginRight: 4 }}
-                    title="Edit effect"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={() => detach(e.id)}
-                    style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
-                    title="Remove looped effect"
-                  >
-                    ✕
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
       {editor}
     </div>
   )

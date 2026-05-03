@@ -22,13 +22,14 @@ import { applyThemeToDOM, resolvePalette } from '../theme/themes'
 import { resolveBackground } from '../theme/backgrounds'
 import type { ThemeMode, BackgroundConfig } from '../theme/types'
 import { FpsOverlay } from './FpsOverlay'
-import { LeftSidebar, DRAG_MIME_SHAPE } from '../ui/LeftSidebar'
+import { LeftSidebar, DRAG_MIME_SHAPE, DRAG_MIME_MEDIA } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
 import { EditorToolbar } from '../ui/EditorToolbar'
 import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { NodeShape } from '../model/types'
+import { DEFAULT_NODE } from '../model/types'
 
 export function OmnigramApp() {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -36,6 +37,11 @@ export function OmnigramApp() {
   const cosmetics = useSyncExternalStore(
     useOmniStore.subscribe,
     () => useOmniStore.getState().model.cosmetics,
+  )
+  const pickMode = useSyncExternalStore(
+    useOmniStore.subscribe,
+    () => useOmniStore.getState().pickMode,
+    () => null,
   )
   const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light'
   const background = cosmetics?.background
@@ -112,6 +118,7 @@ export function OmnigramApp() {
           position: 'absolute',
           inset: 0,
           touchAction: 'none',
+          cursor: pickMode === 'link-node' ? 'crosshair' : undefined,
         }}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes(DRAG_MIME_SHAPE)) {
@@ -135,9 +142,25 @@ export function OmnigramApp() {
           const store = useOmniStore.getState()
           const grid = store.model.grid
           const step = grid?.snap ? Math.max(0, grid.sizePercent) : 0
-          const sx = step > 0 ? Math.round(x / step) * step : x
-          const sy = step > 0 ? Math.round(y / step) * step : y
-          const id = store.addNode({ x: sx, y: sy, shape, label: '' })
+          // Corner-to-corner snap: align the new node's top-left corner to
+          // the grid (node x/y is the centre, so subtract w/2, snap, add back).
+          const w = DEFAULT_NODE.w
+          const h = DEFAULT_NODE.h
+          const sx = step > 0 ? Math.round((x - w / 2) / step) * step + w / 2 : x
+          const sy = step > 0 ? Math.round((y - h / 2) / step) * step + h / 2 : y
+          // If a media kind was attached during dragstart, propagate it so
+          // the inspector's Media dropdown shows the correct selection on
+          // first focus (instead of "— none —").
+          const mediaRaw = e.dataTransfer.getData(DRAG_MIME_MEDIA)
+          const mediaType =
+            mediaRaw === '' ? undefined : (mediaRaw as NonNullable<import('../model/types').ModelNode['mediaType']>)
+          const id = store.addNode({
+            x: sx,
+            y: sy,
+            shape,
+            label: mediaType ?? '',
+            ...(mediaType ? { mediaType } : {}),
+          })
           store.select(id)
         }}
       />
@@ -149,6 +172,7 @@ export function OmnigramApp() {
       <ConnectionReferencePopup renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
       <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
+      {pickMode === 'link-node' && <PickModeBanner />}
     </div>
   )
 }
@@ -438,5 +462,66 @@ function NodeLabelEditor({
         outline: 'none',
       }}
     />
+  )
+}
+
+/**
+ * Floating banner shown while the canvas is in `pickMode === 'link-node'`.
+ * Surfaces the link source's label and a Cancel button so the user can
+ * abort the pick. Sits at the top centre of the viewport so it doesn't
+ * occlude either sidebar.
+ */
+function PickModeBanner() {
+  const sourceLabel = useSyncExternalStore(
+    useOmniStore.subscribe,
+    () => {
+      const s = useOmniStore.getState()
+      const id = s.selectedIds.size === 1 ? (s.selectedIds.values().next().value as string) : null
+      const n = id ? s.model.nodes.get(id) : null
+      return n?.label || n?.id || ''
+    },
+    () => '',
+  )
+  return (
+    <div
+      role="status"
+      style={{
+        position: 'absolute',
+        top: 12,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: 'var(--ug-primary, #4aa3ff)',
+        color: '#fff',
+        padding: '8px 14px',
+        borderRadius: 6,
+        font: '600 14px system-ui, sans-serif',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        zIndex: 50,
+        pointerEvents: 'auto',
+      }}
+    >
+      <span>
+        Click a node to link
+        {sourceLabel ? ` to "${sourceLabel}"` : ''}…
+      </span>
+      <button
+        type="button"
+        onClick={() => useOmniStore.getState().setPickMode(null)}
+        style={{
+          background: 'rgba(255,255,255,0.18)',
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.35)',
+          borderRadius: 4,
+          padding: '3px 10px',
+          font: '600 13px system-ui, sans-serif',
+          cursor: 'pointer',
+        }}
+      >
+        Cancel
+      </button>
+    </div>
   )
 }

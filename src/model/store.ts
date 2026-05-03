@@ -257,7 +257,10 @@ export const useOmniStore = create<Store>((set, get) => ({
   focusedNodeId: null,
   zoomStack: [],
   editingNodeId: null,
-  defaultConnectionKind: 'default',
+  // 'flow' is the default per UX (Apr 2026): users almost always want
+  // flow-typed wires; the plain 'default' kind is reserved for purely
+  // structural / annotation edges that don't participate in playback.
+  defaultConnectionKind: 'flow',
   pickMode: null,
 
   setCamera(c) {

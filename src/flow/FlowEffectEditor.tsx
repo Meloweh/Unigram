@@ -11,6 +11,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
 import { useOmniStore } from '../model/store'
+import type { CrossEffectLink } from '../model/types'
+
+/** Stable empty fallback for store selectors — see CrossLinkPanel for why. */
+const EMPTY_CROSS_LINKS: readonly CrossEffectLink[] = []
+
 
 const KINDS: FlowEffectKind[] = [
   'wait',
@@ -133,6 +138,92 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
 }
 
 /**
+ * Friendly metadata per param field, surfaced in the right-side settings
+ * panel (tasks F + G). The `kind` decides the input control:
+ *   - `number` (default): plain numeric input
+ *   - `bool`: 0/1 toggled by a checkbox
+ *   - `tint`: 24-bit colour picker
+ *   - `enum`: a `<select>` whose option values are listed in `options`
+ * `label` overrides the raw param key, `unit` is appended in muted text,
+ * `step` overrides the default 0.1 step, `min`/`max` are advisory.
+ */
+type FieldKind = 'number' | 'bool' | 'tint' | 'enum'
+interface FieldMeta {
+  label?: string
+  hint?: string
+  unit?: string
+  kind?: FieldKind
+  options?: { value: number; label: string }[]
+  step?: number
+  min?: number
+  max?: number
+}
+const FIELD_META: Record<string, FieldMeta> = {
+  ms: { label: 'Duration', unit: 'ms', step: 50, min: 0 },
+  dx: { label: 'Δ X', unit: '%' },
+  dy: { label: 'Δ Y', unit: '%' },
+  mul: { label: 'Multiplier', step: 0.05, min: 0 },
+  tint: { label: 'Tint', kind: 'tint' },
+  amp: { label: 'Amplitude', step: 0.1 },
+  ampX: { label: 'Amp X', step: 0.1 },
+  ampY: { label: 'Amp Y', step: 0.1 },
+  freq: { label: 'Frequency', unit: 'Hz', step: 0.1, min: 0 },
+  scaleAmp: { label: 'Scale amp', step: 0.01 },
+  fromScale: { label: 'From scale', step: 0.05, min: 0 },
+  toScale: { label: 'To scale', step: 0.05, min: 0 },
+  panX: { label: 'Pan X', unit: '%' },
+  panY: { label: 'Pan Y', unit: '%' },
+  zoom: { label: 'Zoom', step: 0.1, min: 0.01 },
+  permanent: { label: 'Hold final state', kind: 'bool' },
+  roundtrip: { label: 'Round-trip', kind: 'bool', hint: 'Animate back to start.' },
+  loop: { label: 'Loop', kind: 'bool' },
+  charsPerSec: { label: 'Chars / sec', step: 1, min: 1 },
+  endHoldMs: { label: 'End hold', unit: 'ms', step: 50, min: 0 },
+  startIndex: { label: 'Start index', step: 1, min: 0 },
+  endIndex: { label: 'End index', step: 1, hint: '-1 = end of string.' },
+  degenerationMs: { label: 'Degeneration', unit: 'ms', step: 50, min: 0 },
+  fps: { label: 'FPS', step: 1, min: 1 },
+  count: { label: 'Count', step: 1, min: 1 },
+  radius: { label: 'Radius', unit: '%', step: 0.5, min: 0 },
+  fadeMs: { label: 'Fade', unit: 'ms', step: 50, min: 0 },
+  times: { label: 'Times', step: 1, min: 1 },
+  direction: {
+    label: 'Direction',
+    kind: 'enum',
+    options: [
+      { value: 1, label: 'Next' },
+      { value: -1, label: 'Previous' },
+    ],
+  },
+}
+
+/** Short human-readable description of each effect kind for the panel header. */
+const KIND_HINTS: Partial<Record<FlowEffectKind, string>> = {
+  wait: 'Hold the schedule for a fixed duration.',
+  move: 'Translate the host node by ΔX/ΔY scene-percent.',
+  scale: 'Multiply the host node\u2019s size.',
+  color: 'Tint the host node\u2019s fill.',
+  jitter: 'Randomly nudge the node within an amplitude.',
+  float: 'Sinusoidal vertical bob.',
+  emerge: 'Fade + scale the node in from `fromScale`.',
+  dismiss: 'Fade + scale the node out to `toScale`.',
+  'cloud-levitate': 'Slow XY drift, suited to thinking-cloud nodes.',
+  'bubble-levitate': 'Vertical bob with subtle scale pulse.',
+  repeater: 'Re-fire the downstream graph N times.',
+  camera: 'Pan + zoom the viewport.',
+  'text-generator': 'Reveal the node label one character at a time.',
+  record: 'Capture the canvas to a .webm for `ms`.',
+  'obs-record': 'Trigger OBS recording for `ms`.',
+  'handoff-rmm': 'Recursive zoom-in into this node\u2019s child model.',
+  'return-rmm': 'Pop one level back out of an RMM stack.',
+  'handoff-mpd': 'Cycle MPD dimensions on the host.',
+  spawn: 'Burst N decorative children at random offsets.',
+  'spawn-circular': 'Burst N decorative children on a circle.',
+  expand: 'Grow the node by `mul`.',
+  collapse: 'Shrink the node by 1/`mul`.',
+}
+
+/**
  * Auto-injected entry node id. The entry node is a `wait` with `ms: 0` that
  * the editor surfaces visually as a signal-source — every fresh effect graph
  * gets one so the user has a clear "play here" anchor (legacy parity, see
@@ -184,15 +275,22 @@ interface Props {
   onClose: () => void
   /**
    * Optional host node id this effect graph belongs to. When provided the
-   * editor surfaces a "Link to node …" picker so the user can pair other
-   * model nodes with this one (parity item I). The picker reads the model
-   * node list directly from the store; the canvas remains untouched while
-   * the modal is open, so we cannot reuse the canvas-side `pickMode`.
+   * editor surfaces a "Link Node" button so the user can pair other model
+   * nodes with this one (parity item I). Clicking the button arms the
+   * canvas-side `pickMode` and closes the modal so the peer can be chosen
+   * directly from the main view.
    */
   hostNodeId?: string
+  /**
+   * Called when the user clicks "Link Node". The parent should save the
+   * passed-in effect state, hide the editor, and arm canvas pick mode;
+   * once the link is recorded the editor can be re-opened with the saved
+   * state preserved.
+   */
+  onLinkPick?: (effect: FlowEffect) => void
 }
 
-export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props) {
+export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkPick }: Props) {
   const [effect, setEffect] = useState<FlowEffect>(() => withEntryNode(deepClone(initial)))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingFromId, setPendingFromId] = useState<string | null>(null)
@@ -298,7 +396,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
     }
   }, [pendingFromId])
 
-  const onSvgPointerUp = () => {
+  const onSvgPointerUp = (e?: React.PointerEvent<SVGSVGElement>) => {
     const d = dragState.current
     if (d) {
       // Release capture on the *exact* element it was set on, with the real
@@ -306,6 +404,13 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
       // to the node group, breaking subsequent drags ("drag but no drop").
       try { d.capturedOn?.releasePointerCapture?.(d.pointerId) } catch { /* ignore */ }
       dragState.current = null
+    }
+    // Wire-drop: when a wire is being drawn (pendingFromId) and the user
+    // releases the mouse with no node-up handler having claimed the event,
+    // cancel the pending wire (parity with task D — release attaches if
+    // over a node, else cancels).
+    if (pendingFromId && e) {
+      cancelEdge()
     }
   }
 
@@ -360,13 +465,13 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
             placeholder="Effect name"
           />
           <div style={{ flex: 1 }} />
-          {hostNodeId && <LinkPicker hostNodeId={hostNodeId} />}
+          {hostNodeId && <LinkPicker hostNodeId={hostNodeId} onPick={() => onLinkPick?.(effect)} />}
           <button onClick={() => onSave(effect)} style={{ ...btnStyle, background: '#2f5a32' }}>Save</button>
           <button onClick={onClose} style={btnStyle}>✕</button>
         </header>
         <div style={bodyStyle}>
           <aside style={sidebarStyle}>
-            <div style={{ fontSize: 11, color: '#7a8aa0', marginBottom: 4 }}>Add node</div>
+            <div style={{ fontSize: 13, color: '#7a8aa0', marginBottom: 4 }}>Add node</div>
             {KINDS.map((k) => (
               <button
                 key={k}
@@ -384,39 +489,14 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
                 + {k}
               </button>
             ))}
-            {selected && selected.id !== ENTRY_NODE_ID && (
-              <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 11, color: '#7a8aa0', marginBottom: 4 }}>
-                  {selected.kind} params
-                </div>
-                {PARAM_FIELDS[selected.kind].map((key) => (
-                  <ParamField
-                    key={key}
-                    label={key}
-                    value={selected.params[key] ?? 0}
-                    isTint={key === 'tint'}
-                    onChange={(v) => setParam(selected.id, key, v)}
-                  />
-                ))}
-                <button
-                  onClick={() => removeNode(selected.id)}
-                  style={{ ...btnStyle, background: '#5a1f1f', borderColor: '#a04040', marginTop: 8 }}
-                >
-                  Delete node
-                </button>
-              </div>
-            )}
             {pendingFromId && (
-              <div style={{ marginTop: 12, fontSize: 11, color: '#cfe' }}>
-                Click a node to connect (or
+              <div style={{ marginTop: 12, fontSize: 13, color: '#cfe' }}>
+                Drag onto a node to connect (or
                 <button onClick={cancelEdge} style={{ ...btnStyle, marginLeft: 6, padding: '2px 6px' }}>
                   cancel
                 </button>
                 )
               </div>
-            )}
-            {hostNodeId && (
-              <CrossLinkPanel hostNodeId={hostNodeId} effectId={effect.id} />
             )}
           </aside>
           <svg
@@ -479,24 +559,21 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
                 pointerEvents="none"
               />
             )}
-            {/* Cross-link indicators — dashed wires anchored at the right
-                edge of the canvas that name the peer host + effect they
-                pair this effect with. The editor doesn't render peer
-                columns inline (the per-effect state model would need a
-                rewrite); these dashed stubs are the visual parity for
-                "cross-link wires" while the runtime drives peer firing. */}
-            {hostNodeId && <CrossLinkOverlay hostNodeId={hostNodeId} effectId={effect.id} />}
             {/* Nodes */}
             {effect.graph.nodes.map((n) => (
               <g
                 key={n.id}
                 transform={`translate(${n.x},${n.y})`}
                 onPointerDown={(e) => {
-                  if (pendingFromId) {
+                  // Wire-attach is now release-driven (task D); pointerdown
+                  // on a node always starts a drag.
+                  startDrag(e, n)
+                }}
+                onPointerUp={(e) => {
+                  // If a wire is being drawn, release-on-node attaches it.
+                  if (pendingFromId && pendingFromId !== n.id) {
                     e.stopPropagation()
                     completeEdge(n.id)
-                  } else {
-                    startDrag(e, n)
                   }
                 }}
                 style={{ cursor: pendingFromId ? 'crosshair' : 'grab' }}
@@ -509,11 +586,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
                   stroke={selectedId === n.id ? '#cfe' : '#456'}
                   strokeWidth={selectedId === n.id ? 2 : 1}
                 />
-                <text x={10} y={22} fill="#fff" fontSize={13} fontWeight={600}>
+                <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
                   {n.id === ENTRY_NODE_ID ? '▶ entry' : n.kind}
-                </text>
-                <text x={10} y={42} fill="#cde" fontSize={11}>
-                  {n.id === ENTRY_NODE_ID ? '(signal source)' : summariseParams(n)}
                 </text>
                 {/* Output port (bottom edge) */}
                 <circle
@@ -531,28 +605,105 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props
                 )}              </g>
             ))}
           </svg>
+          {hostNodeId && <PeerPane hostNodeId={hostNodeId} />}
+          <aside style={rightSidebarStyle}>
+            {selected ? (
+              <NodeSettingsPanel
+                node={selected}
+                onChangeParam={(k, v) => setParam(selected.id, k, v)}
+                onDelete={() => removeNode(selected.id)}
+              />
+            ) : (
+              <div style={{ fontSize: 13, color: '#7a8aa0' }}>
+                Select an effect node to edit its settings.
+              </div>
+            )}
+          </aside>
         </div>
       </div>
     </div>
   )
 }
 
+function NodeSettingsPanel({
+  node,
+  onChangeParam,
+  onDelete,
+}: {
+  node: EffectNode
+  onChangeParam: (key: string, value: number) => void
+  onDelete: () => void
+}) {
+  if (node.id === ENTRY_NODE_ID) {
+    return (
+      <>
+        <div style={{ fontSize: 14, color: '#dde', fontWeight: 600 }}>Entry node</div>
+        <div style={{ fontSize: 13, color: '#7a8aa0', marginTop: 4 }}>
+          The signal source. Connect downstream effect nodes to its bottom port.
+        </div>
+      </>
+    )
+  }
+  const fields = PARAM_FIELDS[node.kind]
+  const hint = KIND_HINTS[node.kind]
+  return (
+    <>
+      <div style={{ fontSize: 14, color: '#dde', fontWeight: 600, textTransform: 'capitalize' }}>
+        {node.kind.replace(/-/g, ' ')}
+      </div>
+      {hint && (
+        <div style={{ fontSize: 12, color: '#7a8aa0', marginTop: 2, marginBottom: 6 }}>{hint}</div>
+      )}
+      {fields.map((key) => (
+        <ParamField
+          key={key}
+          fieldKey={key}
+          value={node.params[key] ?? 0}
+          onChange={(v) => onChangeParam(key, v)}
+        />
+      ))}
+      <button
+        onClick={onDelete}
+        style={{ ...btnStyle, background: '#5a1f1f', borderColor: '#a04040', marginTop: 12 }}
+      >
+        Delete node
+      </button>
+    </>
+  )
+}
+
 function ParamField({
-  label,
+  fieldKey,
   value,
-  isTint,
   onChange,
 }: {
-  label: string
+  fieldKey: string
   value: number
-  isTint?: boolean
   onChange: (v: number) => void
 }) {
-  if (isTint) {
+  const meta = FIELD_META[fieldKey] ?? {}
+  const label = meta.label ?? fieldKey
+  const kind: FieldKind = meta.kind ?? 'number'
+  if (kind === 'bool') {
+    return (
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+        <input
+          type="checkbox"
+          checked={value !== 0}
+          onChange={(e) => onChange(e.target.checked ? 1 : 0)}
+        />
+        <span style={{ fontSize: 13, color: '#bcd' }}>{label}</span>
+        {meta.hint && (
+          <span style={{ fontSize: 11, color: '#7a8aa0' }}>({meta.hint})</span>
+        )}
+      </label>
+    )
+  }
+  if (kind === 'tint') {
     const hex = '#' + (value & 0xffffff).toString(16).padStart(6, '0')
     return (
-      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-        <span style={{ fontSize: 11, color: '#bcd', width: 50 }}>{label}</span>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+        <span style={{ fontSize: 13, color: '#bcd', width: 90 }}>{label}</span>
         <input
           type="color"
           value={hex}
@@ -562,30 +713,52 @@ function ParamField({
       </label>
     )
   }
+  if (kind === 'enum') {
+    return (
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+        <span style={{ fontSize: 13, color: '#bcd', width: 90 }}>{label}</span>
+        <select
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          style={fieldStyle}
+        >
+          {meta.options?.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+  // Default: number input.
+  const step = meta.step ?? (fieldKey === 'ms' ? 50 : 0.1)
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-      <span style={{ fontSize: 11, color: '#bcd', width: 50 }}>{label}</span>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+      <span style={{ fontSize: 13, color: '#bcd', width: 90 }}>{label}</span>
       <input
         type="number"
         value={value}
-        step={label === 'ms' ? 50 : 0.1}
+        step={step}
+        min={meta.min}
+        max={meta.max}
         onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
         style={fieldStyle}
       />
+      {meta.unit && (
+        <span style={{ fontSize: 11, color: '#7a8aa0' }}>{meta.unit}</span>
+      )}
     </label>
   )
 }
 
-function summariseParams(n: EffectNode): string {
-  const parts: string[] = []
-  for (const k of PARAM_FIELDS[n.kind]) {
-    const v = n.params[k]
-    if (v == null) continue
-    if (k === 'tint') parts.push(`#${(v & 0xffffff).toString(16).padStart(6, '0')}`)
-    else parts.push(`${k}=${v}`)
-  }
-  return parts.join(' ')
+function summariseParams(): string {
+  // Retained for potential future tooltip use; in-membrane settings labels
+  // were removed per task H so this is currently unreferenced.
+  return ''
 }
+// Suppress unused-export lint warning — kept for future use.
+void summariseParams
 
 function curvePath(x1: number, y1: number, x2: number, y2: number): string {
   // Vertical S-curve: pull control points along the y-axis so wires read
@@ -651,7 +824,7 @@ const bodyStyle: React.CSSProperties = {
 const sidebarStyle: React.CSSProperties = {
   // Widened proportionally to the doubled modal so the kind buttons +
   // param fields still breathe.
-  width: 320,
+  width: 240,
   padding: 12,
   borderRight: '1px solid #2f3a4a',
   display: 'flex',
@@ -660,11 +833,41 @@ const sidebarStyle: React.CSSProperties = {
   overflowY: 'auto',
 }
 
+const rightSidebarStyle: React.CSSProperties = {
+  // Mirror of `sidebarStyle` but anchored to the right edge of the modal
+  // body (tasks F + G). Hosts per-effect-node settings for the current
+  // selection.
+  width: 280,
+  padding: 12,
+  borderLeft: '1px solid #2f3a4a',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  overflowY: 'auto',
+  background: '#161c26',
+}
+
 const canvasStyle: React.CSSProperties = {
   flex: 1,
   background: '#0e131c',
   cursor: 'default',
   userSelect: 'none',
+}
+
+const peerPaneStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  borderLeft: '2px dashed #2f3a4a',
+  minWidth: 0,
+}
+
+const peerPaneHeaderStyle: React.CSSProperties = {
+  padding: '6px 12px',
+  background: '#161c26',
+  borderBottom: '1px solid #2f3a4a',
+  display: 'flex',
+  alignItems: 'center',
 }
 
 const btnStyle: React.CSSProperties = {
@@ -676,7 +879,7 @@ const btnStyle: React.CSSProperties = {
   border: '1px solid #455168',
   borderRadius: 4,
   color: '#dde',
-  fontSize: 12,
+  fontSize: 14,
   cursor: 'pointer',
 }
 
@@ -701,119 +904,123 @@ const fieldStyle: React.CSSProperties = {
 }
 
 /**
- * Inline picker shown in the editor header. Lists all model nodes (minus
- * the host and any already-linked peers) in a select; choosing one calls
- * `linkNodes` directly. Lives inside the editor (not the right inspector)
- * because parity item I requires the link UX to be discovered while
- * authoring an effect graph.
+ * "Link Node" button shown in the editor header. Clicking it puts the
+ * canvas into one-shot `pickMode = 'link-node'` and notifies the parent
+ * (via `onPick`) so the editor can be hidden during the pick and then
+ * reopened once a peer has been chosen on the canvas (parity with legacy
+ * Unigram). The host node is forced into the active selection so
+ * `PointerController`'s pick handler can resolve the source.
  */
-function LinkPicker({ hostNodeId }: { hostNodeId: string }) {
-  const allNodes = useOmniStore((s) => s.model.nodes)
-  const host = allNodes.get(hostNodeId)
-  const linked = new Set(host?.linkedNodeIds ?? [])
-  const candidates: Array<{ id: string; label: string }> = []
-  for (const [id, n] of allNodes) {
-    if (id === hostNodeId || linked.has(id)) continue
-    candidates.push({ id, label: n.label || id })
+function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => void }) {
+  // Read peer state from the store so the button text + handler stay in
+  // sync with `host.linkedNodeIds`. Single subscription via selector so we
+  // re-render only when the peer set changes.
+  const linked = useOmniStore((s) => s.model.nodes.get(hostNodeId)?.linkedNodeIds ?? EMPTY_LINKED)
+  const hasPeer = linked.length > 0
+  if (hasPeer) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          const store = useOmniStore.getState()
+          // Symmetric unlink for every paired peer (matches legacy parity:
+          // "Unlink Node" tears down the split-screen pairing).
+          for (const peerId of [...linked]) {
+            store.unlinkNodes(hostNodeId, peerId)
+          }
+        }}
+        style={{ ...btnStyle, padding: '4px 10px', background: '#5a3a2a' }}
+        title="Tear down the split-screen pairing"
+      >
+        Unlink Node
+      </button>
+    )
   }
   return (
-    <select
-      value=""
-      onChange={(e) => {
-        const peer = e.target.value
-        if (!peer) return
-        useOmniStore.getState().linkNodes(hostNodeId, peer)
-        e.currentTarget.value = ''
+    <button
+      type="button"
+      onClick={() => {
+        const store = useOmniStore.getState()
+        // Ensure the host is the sole selection so PointerController's
+        // pick-mode handler picks it as the link source.
+        store.select(hostNodeId, false)
+        store.setPickMode('link-node')
+        onPick()
       }}
-      style={{ ...btnStyle, padding: '4px 8px' }}
-      title="Link this node to another node so they share an effect graph"
+      style={{ ...btnStyle, padding: '4px 10px' }}
+      title="Click a node on the canvas to link it to this one"
     >
-      <option value="">+ Link to node…</option>
-      {candidates.map((c) => (
-        <option key={c.id} value={c.id}>{c.label}</option>
-      ))}
-    </select>
+      Link Node
+    </button>
   )
 }
 
+const EMPTY_LINKED: readonly string[] = []
+
 /**
- * Cross-link manager shown in the editor sidebar. Lists every cross-link
- * that originates from the current `(hostNodeId, effectId)` pair and lets
- * the user create new ones. New links target a peer host (must already be
- * in `host.linkedNodeIds`) + one of that peer's effects, mirroring the
- * `model.crossLinks` schema 1:1.
+ * Split-screen peer pane. When the host node is paired with another via
+ * `linkedNodeIds`, render a read-only SVG view of the peer\u2019s primary
+ * effect graph next to the main canvas (legacy Unigram parity).
+ *
+ * Cross-links between effects are shown as dashed orange wires terminating
+ * at the peer\u2019s entry node \u2014 a visual indicator that lines up with the
+ * dragged-cross-wire pattern from legacy without requiring drag-drop
+ * across panes (which the runtime does not yet support in Omnigram).
  */
-function CrossLinkPanel({ hostNodeId, effectId }: { hostNodeId: string; effectId: string }) {
-  const nodes = useOmniStore((s) => s.model.nodes)
-  const crossLinks = useOmniStore((s) => s.model.crossLinks ?? [])
-  const host = nodes.get(hostNodeId)
-  const peers = (host?.linkedNodeIds ?? []).map((id) => nodes.get(id)).filter((n): n is NonNullable<typeof n> => !!n)
-  const outgoing = crossLinks.filter(
-    (l) => l.from.nodeId === hostNodeId && l.from.effectId === effectId,
-  )
-  // Collapse the new-link form into a single row of selects so it stays
-  // narrow inside the sidebar.
-  const [peerId, setPeerId] = useState('')
-  const [peerEffectId, setPeerEffectId] = useState('')
-  const peer = peerId ? nodes.get(peerId) : null
-  const peerEffects = peer?.flowEffects ?? []
-  const add = () => {
-    if (!peerId || !peerEffectId) return
-    useOmniStore.getState().addCrossLink(
-      { nodeId: hostNodeId, effectId },
-      { nodeId: peerId, effectId: peerEffectId },
-    )
-    setPeerId('')
-    setPeerEffectId('')
-  }
+function PeerPane({ hostNodeId }: { hostNodeId: string }) {
+  const linked = useOmniStore((s) => s.model.nodes.get(hostNodeId)?.linkedNodeIds ?? EMPTY_LINKED)
+  const peerNode = useOmniStore((s) => (linked[0] ? s.model.nodes.get(linked[0]) : null))
+  if (!peerNode) return null
+  const peerEffect = peerNode.flowEffects?.[0]
   return (
-    <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #2f3a4a' }}>
-      <div style={{ fontSize: 11, color: '#7a8aa0', marginBottom: 4 }}>Cross-links from this effect</div>
-      {outgoing.length === 0 && (
-        <div style={{ fontSize: 11, color: '#556677', fontStyle: 'italic' }}>None.</div>
-      )}
-      {outgoing.map((l) => {
-        const peerNode = nodes.get(l.to.nodeId)
-        const peerEff = peerNode?.flowEffects?.find((e) => e.id === l.to.effectId)
-        return (
-          <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-            <span style={{ flex: 1, fontSize: 11, color: '#cfe', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              → {peerNode?.label || l.to.nodeId} · {peerEff?.label || l.to.effectId}
-            </span>
-            <button
-              onClick={() => useOmniStore.getState().removeCrossLink(l.id)}
-              style={{ ...btnStyle, padding: '2px 6px', fontSize: 11 }}
-              title="Remove cross-link"
-            >
-              ✕
-            </button>
-          </div>
-        )
-      })}
-      {peers.length > 0 && (
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <select value={peerId} onChange={(e) => { setPeerId(e.target.value); setPeerEffectId('') }} style={fieldStyle}>
-            <option value="">— peer host —</option>
-            {peers.map((p) => (
-              <option key={p.id} value={p.id}>{p.label || p.id}</option>
-            ))}
-          </select>
-          {peer && (
-            <select value={peerEffectId} onChange={(e) => setPeerEffectId(e.target.value)} style={fieldStyle}>
-              <option value="">— peer effect —</option>
-              {peerEffects.map((e) => (
-                <option key={e.id} value={e.id}>{e.label || e.id}</option>
-              ))}
-            </select>
-          )}
-          <button onClick={add} disabled={!peerId || !peerEffectId} style={{ ...btnStyle, opacity: peerId && peerEffectId ? 1 : 0.5 }}>
-            + Add cross-link
-          </button>
-        </div>
-      )}
-      {peers.length === 0 && (
-        <div style={{ marginTop: 8, fontSize: 11, color: '#556677', fontStyle: 'italic' }}>
-          Link this node to another via the header picker first.
+    <div style={peerPaneStyle}>
+      <div style={peerPaneHeaderStyle}>
+        <span style={{ fontSize: 13, color: '#60a5fa', fontWeight: 600 }}>
+          Peer: {peerNode.label || peerNode.id}
+        </span>
+        {peerEffect && (
+          <span style={{ fontSize: 12, color: '#7a8aa0', marginLeft: 6 }}>
+            \u00b7 {peerEffect.label}
+          </span>
+        )}
+      </div>
+      {peerEffect ? (
+        <svg style={canvasStyle}>
+          {peerEffect.graph.edges.map((e) => {
+            const a = peerEffect.graph.nodes.find((n) => n.id === e.from)
+            const b = peerEffect.graph.nodes.find((n) => n.id === e.to)
+            if (!a || !b) return null
+            const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
+            const x2 = b.x + NODE_W / 2, y2 = b.y
+            return (
+              <path
+                key={`${e.from}->${e.to}`}
+                d={curvePath(x1, y1, x2, y2)}
+                fill="none"
+                stroke="#88a"
+                strokeWidth={2}
+              />
+            )
+          })}
+          {peerEffect.graph.nodes.map((n) => (
+            <g key={n.id} transform={`translate(${n.x},${n.y})`}>
+              <rect
+                width={NODE_W}
+                height={NODE_H}
+                rx={8}
+                fill={KIND_COLORS[n.kind]}
+                stroke="#456"
+                strokeWidth={1}
+              />
+              <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
+                {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : n.kind}
+              </text>
+            </g>
+          ))}
+        </svg>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#556677', fontSize: 13 }}>
+          (peer has no effect graph yet)
         </div>
       )}
     </div>
@@ -827,7 +1034,8 @@ function CrossLinkPanel({ hostNodeId, effectId }: { hostNodeId: string; effectId
  */
 function CrossLinkOverlay({ hostNodeId, effectId }: { hostNodeId: string; effectId: string }) {
   const nodes = useOmniStore((s) => s.model.nodes)
-  const crossLinks = useOmniStore((s) => s.model.crossLinks ?? [])
+  const crossLinksRaw = useOmniStore((s) => s.model.crossLinks)
+  const crossLinks = crossLinksRaw ?? EMPTY_CROSS_LINKS
   const outgoing = crossLinks.filter(
     (l) => l.from.nodeId === hostNodeId && l.from.effectId === effectId,
   )
@@ -847,7 +1055,7 @@ function CrossLinkOverlay({ hostNodeId, effectId }: { hostNodeId: string; effect
           <g key={l.id} transform={`translate(${x},${y})`}>
             <line x1={-80} y1={0} x2={0} y2={0} stroke="#cfa544" strokeWidth={2} strokeDasharray="6 4" />
             <circle cx={0} cy={0} r={5} fill="#cfa544" />
-            <text x={-86} y={4} fill="#cfa544" fontSize={11} textAnchor="end" fontWeight={600}>
+            <text x={-86} y={4} fill="#cfa544" fontSize={14} textAnchor="end" fontWeight={600}>
               {peer?.label || l.to.nodeId} · {peerEff?.label || l.to.effectId}
             </text>
           </g>
@@ -856,3 +1064,5 @@ function CrossLinkOverlay({ hostNodeId, effectId }: { hostNodeId: string; effect
     </g>
   )
 }
+// Suppress unused-export lint warning \u2014 retained for future cross-link UX.
+void CrossLinkOverlay

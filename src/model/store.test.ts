@@ -8,7 +8,7 @@ beforeEach(() => {
     selectedIds: new Set(),
     rev: 0,
     selRev: 0,
-    defaultConnectionKind: 'default',
+    defaultConnectionKind: 'flow',
     clipboard: null,
     lastPasteAt: 0,
     pickMode: null,
@@ -104,12 +104,12 @@ describe('store', () => {
     expect(useOmniStore.getState().rev).toBe(r0 + 2)
   })
 
-  it('defaultConnectionKind starts at "default" and round-trips through setter', () => {
-    expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
-    useOmniStore.getState().setDefaultConnectionKind('flow')
+  it('defaultConnectionKind starts at "flow" and round-trips through setter', () => {
     expect(useOmniStore.getState().defaultConnectionKind).toBe('flow')
     useOmniStore.getState().setDefaultConnectionKind('default')
     expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
+    useOmniStore.getState().setDefaultConnectionKind('flow')
+    expect(useOmniStore.getState().defaultConnectionKind).toBe('flow')
   })
 
   it('addEdge respects partial.kind so callers can author flow edges', () => {
@@ -234,5 +234,18 @@ describe('store', () => {
       { nodeId: b, effectId: 'fx-b' },
     )
     expect(id).toBeNull()
+  })
+
+  it('setGrid round-trips appearance through the model', () => {
+    const s = useOmniStore.getState()
+    s.setGrid({ enabled: true, snap: true, sizePercent: 5, appearance: 'dots' })
+    expect(useOmniStore.getState().model.grid).toMatchObject({
+      enabled: true,
+      snap: true,
+      sizePercent: 5,
+      appearance: 'dots',
+    })
+    s.setGrid({ appearance: 'tile' })
+    expect(useOmniStore.getState().model.grid?.appearance).toBe('tile')
   })
 })

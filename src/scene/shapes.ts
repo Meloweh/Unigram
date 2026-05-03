@@ -42,6 +42,94 @@ export interface DrawOptions {
   tip?: { x: number; y: number }
 }
 
+/**
+ * Path-only variant: lays down the geometry into `g` without applying fill
+ * or stroke. The caller follows up with `g.fill(...)` / `g.stroke(...)`.
+ *
+ * Used by the selection/flow aura layers, which need the silhouette filled
+ * with their own colour + alpha + blur — not the node body's styling.
+ *
+ * `tip` is the cosmetic chat-tail / cloud-trail anchor (pixels from centre).
+ */
+export function drawNodeShapePath(
+  g: Graphics,
+  shape: NodeShape,
+  w: number,
+  h: number,
+  tip?: { x: number; y: number },
+): void {
+  switch (shape) {
+    case 'rectangle':
+      g.rect(-w / 2, -h / 2, w, h)
+      break
+    case 'rounded-rect':
+      g.roundRect(-w / 2, -h / 2, w, h, Math.min(w, h) * 0.18)
+      break
+    case 'circle':
+      g.circle(0, 0, Math.min(w, h) / 2)
+      break
+    case 'oval':
+      g.ellipse(0, 0, w / 2, h / 2)
+      break
+    case 'diamond':
+      g.poly([0, -h / 2, w / 2, 0, 0, h / 2, -w / 2, 0])
+      break
+    case 'hexagon': {
+      const hw = w / 2
+      const hh = h / 2
+      const cut = hw * 0.5
+      g.poly([
+        -hw + cut, -hh,
+        hw - cut, -hh,
+        hw, 0,
+        hw - cut, hh,
+        -hw + cut, hh,
+        -hw, 0,
+      ])
+      break
+    }
+    case 'parallelogram': {
+      const skew = w * 0.18
+      g.poly([
+        -w / 2 + skew, -h / 2,
+        w / 2, -h / 2,
+        w / 2 - skew, h / 2,
+        -w / 2, h / 2,
+      ])
+      break
+    }
+    case 'triangle':
+      g.poly([0, -h / 2, w / 2, h / 2, -w / 2, h / 2])
+      break
+    case 'chat-bubble': {
+      const r = Math.min(w, h) * 0.22
+      g.roundRect(-w / 2, -h / 2, w, h, r)
+      const t = tip ?? { x: -w * 0.45, y: h * 0.85 }
+      const baseX = Math.max(-w / 2 + r, Math.min(w / 2 - r, t.x * 0.35))
+      const baseY = h / 2
+      const halfBase = Math.max(h * 0.06, 4)
+      g.poly([baseX - halfBase, baseY, baseX + halfBase, baseY, t.x, t.y])
+      break
+    }
+    case 'thinking-cloud': {
+      const rx = w / 2
+      const ry = h / 2
+      const lobes: Array<[number, number, number]> = [
+        [-rx * 0.55, ry * 0.05, ry * 0.85],
+        [-rx * 0.15, -ry * 0.35, ry * 0.95],
+        [rx * 0.30, -ry * 0.30, ry * 0.85],
+        [rx * 0.55, ry * 0.10, ry * 0.75],
+        [rx * 0.05, ry * 0.40, ry * 0.85],
+      ]
+      for (const [x, y, r] of lobes) g.circle(x, y, r)
+      const t = tip ?? { x: -w * 0.55, y: h * 0.95 }
+      g.circle(t.x * 0.55, t.y * 0.55, ry * 0.32)
+      g.circle(t.x * 0.85, t.y * 0.85, ry * 0.18)
+      break
+    }
+  }
+}
+
 /** Dispatch — writes a fully styled shape into `g`. Caller does `g.clear()`. */
 export function drawNodeShape(g: Graphics, shape: NodeShape, o: DrawOptions): void {
   switch (shape) {

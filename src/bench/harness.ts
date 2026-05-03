@@ -15,7 +15,8 @@
 
 import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
-import { spawnNested } from './spawnGrid'
+import { spawnGrid, spawnNested } from './spawnGrid'
+import type { FlowEffect } from '../flow/types'
 
 export interface BenchResult {
   scenario: string
@@ -117,6 +118,87 @@ const SCENARIOS: Record<string, ScenarioDef> = {
       store.clearSelection()
     },
   ),
+  /**
+   * Effects-heavy: 500 nodes, ~120 of them firing rolling spawn / expand /
+   * jitter effects. Stage-5 acceptance contract: ≥60 FPS @ 500 visible
+   * nodes with effects animating. Fires a fresh batch every 1 s so the
+   * runtime is never idle.
+   */
+  'effects-500': defineScenario(
+    (r, t) => {
+      // Fire a small wave every ~250 ms so multiple cohorts overlap.
+      const slot = Math.floor(t / 250)
+      const lastSlot = (r as unknown as { __benchSlot?: number }).__benchSlot ?? -1
+      if (slot === lastSlot) return
+      ;(r as unknown as { __benchSlot?: number }).__benchSlot = slot
+      const store = useOmniStore.getState()
+      const ids = [...store.model.nodes.keys()]
+      if (ids.length === 0) return
+      const cohort = 30
+      const start = (slot * cohort) % ids.length
+      for (let i = 0; i < cohort; i++) {
+        const id = ids[(start + i) % ids.length]
+        const kind = (['spawn', 'expand', 'jitter', 'spawn-circular'] as const)[i % 4]
+        const eff: FlowEffect = {
+          id: `bench-${kind}`,
+          label: `bench ${kind}`,
+          graph: {
+            nodes: [
+              { id: 'a', kind, params: defaultBenchParams(kind), x: 0, y: 0 },
+            ],
+            edges: [],
+          },
+        }
+        r.playFlowEffect(id, eff)
+      }
+    },
+    () => {
+      const model = spawnGrid({ count: 500, spacingPercent: 6 })
+      useOmniStore.getState().loadModel(model)
+    },
+    () => {
+      // Cancel all in-flight runs by reloading a fresh model so the next
+      // scenario starts clean.
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+    },
+  ),
+  /**
+   * Selection-pulse: 1000 nodes, 50 selected. Verifies the layered aura
+   * (BlurFilter outer + inner + crisp ring) sustains ≥60 FPS while the
+   * per-frame pulse animates the layer alphas. No camera motion — isolates
+   * the cost of the aura GPU passes.
+   */
+  'selection-pulse': defineScenario(
+    () => {
+      // Step is a no-op; the per-frame alpha modulation happens in onTick.
+    },
+    () => {
+      const model = spawnGrid({ count: 1000, spacingPercent: 4 })
+      const store = useOmniStore.getState()
+      store.loadModel(model)
+      const ids = [...model.nodes.keys()].slice(0, 50)
+      store.selectMany(ids)
+    },
+    () => {
+      useOmniStore.getState().clearSelection()
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+    },
+  ),
+}
+
+function defaultBenchParams(kind: string): Record<string, number> {
+  switch (kind) {
+    case 'spawn':
+      return { count: 6, radius: 6, ms: 800, fadeMs: 200 }
+    case 'spawn-circular':
+      return { count: 8, radius: 6, ms: 800, fadeMs: 200 }
+    case 'expand':
+      return { mul: 1.4, ms: 400, permanent: 0 }
+    case 'jitter':
+      return { amp: 0.4, ms: 600 }
+    default:
+      return { ms: 500 }
+  }
 }
 
 export function listScenarios(): string[] {
