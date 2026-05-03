@@ -31,11 +31,13 @@ import { ParticleLayer } from '../theme/ParticleLayer'
 import { FlowRuntime } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import type { FlowEffect } from '../flow/types'
+import type { CrossEffectLink } from '../model/types'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
   edges: ReadonlyMap<string, Connection>
   grid?: { enabled: boolean; snap: boolean; sizePercent: number }
+  crossLinks?: CrossEffectLink[]
 }
 
 export interface SceneRendererStats {
@@ -115,7 +117,37 @@ export class SceneRenderer {
   private playActiveNodes = new Map<string, { startMs: number; durMs: number }>()
   /** Overlay Graphics for the wire reveal + active-node halo. */
   private flowOverlayGfx!: Graphics
+  /**
+   * Camera-tracking lerp state. While the global Play cascade is active,
+   * the renderer follows any node with `cameraTracked === true` whose halo
+   * is currently visible (averaged when multiple). The offset eases back
+   * to (0,0) when no targets are active. Per-frame factor matches legacy
+   * useFlowEngine (~0.08).
+   */
+  private cameraTrackOffsetX = 0
+  private cameraTrackOffsetY = 0
   readonly textGen = new TextGenRunner()
+  /**
+   * Active recording sessions by target node id. The `record` flow kind
+   * spins up a `MediaRecorder` against the canvas; the `obs-record` kind
+   * dials OBS WebSocket. Stop callbacks finalize the blob (download) or
+   * issue OBS stop. One per kind; if a target node fires the same kind
+   * concurrently we reject the second start (legacy parity).
+   */
+  private canvasRecordings = new Map<string, { stop: () => Promise<Blob>; cancel: () => void }>()
+  private obsConnections = new Map<string, import('../recording/obsClient').ObsConnection>()
+  /**
+   * Ephemeral decorative spawn groups, keyed by host node id. Created by
+   * the `spawn` / `spawn-circular` flow kinds; rendered as plain Pixi
+   * Graphics in `ephemeralLayer` (world coords). Lifecycle:
+   *   start → fade in over `fadeMs`
+   *   stop  → fade out over `fadeMs` then destroy
+   * Multiple groups per host stack independently (each fires on its own
+   * task activation); `kind` lets the stop callback target only same-kind
+   * groups.
+   */
+  private ephemeralSpawns = new Map<string, EphemeralSpawnGroup[]>()
+  private ephemeralLayer!: Container
 
   /** MPD curtain: sprite painted with a snapshot of the previous scene. */
   private curtainSprite: Sprite | null = null
@@ -195,10 +227,21 @@ export class SceneRenderer {
     this.world.addChild(this.nodesLayer)
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
+    // Ephemeral spawn layer sits above nodes so spawned decorations are
+    // visible without occluding selection/box-select chrome.
+    this.ephemeralLayer = new Container()
+    this.ephemeralLayer.eventMode = 'none'
+    this.world.addChild(this.ephemeralLayer)
     app.stage.addChild(this.world)
-    // Particle overlay sits above world (screen-anchored), below RMM stage.
+    // Particle overlay is parented to the WORLD so it pans/zooms with the
+    // background (legacy parity — particles are part of the canvas, not the
+    // viewport chrome). The container is offset by -SCENE_W/2, -SCENE_H/2
+    // so particle coords (0..SCENE_W, 0..SCENE_H) land on the centred
+    // virtual canvas. Sits between gridLayer and edgesLayer in z-order.
     this.particleLayer = new ParticleLayer()
-    app.stage.addChild(this.particleLayer.container)
+    this.particleLayer.container.x = -SCENE_W / 2
+    this.particleLayer.container.y = -SCENE_H / 2
+    this.world.addChildAt(this.particleLayer.container, 1)
     // RMM stage + connection ghost live in screen coords ABOVE the world.
     this.rmmStage = new Container()
     this.rmmStage = new Container()
@@ -227,7 +270,9 @@ export class SceneRenderer {
     }
     this.edgePool = new EdgePool(this.edgesLayer)
     this.viewport = { width: app.screen.width, height: app.screen.height }
-    this.particleLayer.setViewport(this.viewport.width, this.viewport.height)
+    // Particles wrap inside the virtual scene rect, not the screen viewport,
+    // so they remain anchored to the background while the camera moves.
+    this.particleLayer.setViewport(SCENE_W, SCENE_H)
     this.applyCameraTransform()
     // Bridge text-generator side-effects from the FlowRuntime to the local
     // TextGenRunner so the `'text-generator'` flow effect kind drives the
@@ -240,6 +285,9 @@ export class SceneRenderer {
         charsPerSec: Math.max(1, params.charsPerSec ?? 24),
         loop: (params.loop ?? 0) !== 0,
         endHoldMs: Math.max(0, params.endHoldMs ?? 0),
+        startIndex: Math.max(0, params.startIndex ?? 0),
+        endIndex: params.endIndex ?? -1,
+        degenerationMs: Math.max(0, params.degenerationMs ?? 0),
       }
       this.textGen.start(node, config, performance.now())
       this.dirty = true
@@ -249,6 +297,127 @@ export class SceneRenderer {
       if (!node) return
       this.textGen.stop(node)
       this.dirty = true
+    }
+    // Bridge `record` flow kind to MediaRecorder. `targetId` is the node
+    // that fired the effect; the canvas itself is the capture surface.
+    this.flow.onRecord = async (targetId, params) => {
+      if (this.canvasRecordings.has(targetId)) return
+      const canvas = this.getCanvas()
+      if (!canvas) return
+      try {
+        const { startCanvasRecording, isRecordingSupported } = await import('../recording/canvasRecorder')
+        if (!isRecordingSupported()) return
+        const fps = Math.max(1, params.fps ?? 30)
+        this.canvasRecordings.set(targetId, startCanvasRecording(canvas, fps))
+      } catch (err) {
+        console.warn('[SceneRenderer] canvas record start failed', err)
+      }
+    }
+    this.flow.onRecordStop = async (targetId) => {
+      const rec = this.canvasRecordings.get(targetId)
+      if (!rec) return
+      this.canvasRecordings.delete(targetId)
+      try {
+        const blob = await rec.stop()
+        const { downloadBlob } = await import('../recording/canvasRecorder')
+        const ext = blob.type.includes('mp4') ? 'mp4' : 'webm'
+        downloadBlob(blob, `omnigram-${targetId}-${Date.now()}.${ext}`)
+      } catch (err) {
+        console.warn('[SceneRenderer] canvas record stop failed', err)
+      }
+    }
+    // Bridge `obs-record` to the OBS WebSocket. Connection details come from
+    // localStorage (`omnigram-obs`) so the user is prompted at most once.
+    this.flow.onObsRecord = async (targetId) => {
+      if (this.obsConnections.has(targetId)) return
+      try {
+        const { connectObs, obsStartRecord } = await import('../recording/obsClient')
+        const settings = readObsSettings()
+        if (!settings) return
+        const conn = await connectObs(settings.host, settings.port, settings.password)
+        await obsStartRecord(conn)
+        this.obsConnections.set(targetId, conn)
+      } catch (err) {
+        console.warn('[SceneRenderer] OBS record start failed', err)
+      }
+    }
+    this.flow.onObsRecordStop = async (targetId) => {
+      const conn = this.obsConnections.get(targetId)
+      if (!conn) return
+      this.obsConnections.delete(targetId)
+      try {
+        const { obsStopRecord } = await import('../recording/obsClient')
+        await obsStopRecord(conn)
+      } catch (err) {
+        console.warn('[SceneRenderer] OBS record stop failed', err)
+      } finally {
+        try { conn.close() } catch { /* ignore */ }
+      }
+    }
+    // Bridge navigation side-effects. RMM handoff steps the dial all the
+    // way in (firing the host swap when ready); RMM return walks all the
+    // way out (popping the zoom stack). MPD handoff cycles the host
+    // node's `mpdDimensions` by `direction` (+1 next, -1 prev) and runs
+    // the curtain. Each fires once per task activation.
+    this.flow.onHandoffRmm = (targetId) => {
+      const store = useOmniStore.getState()
+      // Seed selection on the host so rmmZoomStep('in') picks it as focus.
+      if (!store.focusedNodeId) store.select(targetId)
+      // Walk the dial in until handoff fires (the store no-ops once the
+      // child is unavailable or the swap completes).
+      for (let i = 0; i < 32; i++) {
+        const before = useOmniStore.getState().model.id
+        useOmniStore.getState().rmmZoomStep('in')
+        const after = useOmniStore.getState()
+        if (after.model.id !== before) return // handoff completed
+        if (after.zoom.progress >= 0.999 && before === after.model.id) return
+      }
+    }
+    this.flow.onReturnRmm = () => {
+      const store = useOmniStore.getState()
+      if (store.zoomStack.length === 0 && store.zoom.progress < 0.001) return
+      for (let i = 0; i < 32; i++) {
+        const before = useOmniStore.getState()
+        useOmniStore.getState().rmmZoomStep('out')
+        const after = useOmniStore.getState()
+        if (after.zoomStack.length === 0 && after.zoom.progress < 0.001) return
+        if (after === before) return
+      }
+    }
+    this.flow.onHandoffMpd = (targetId, params) => {
+      const store = useOmniStore.getState()
+      const node = store.model.nodes.get(targetId)
+      const dims = node?.mpdDimensions
+      if (!node || !dims || dims.length < 2) return
+      const curIdx = dims.indexOf(store.model.id)
+      const dir = (params.direction ?? 1) >= 0 ? 1 : -1
+      const nextIdx = ((curIdx < 0 ? 0 : curIdx) + dir + dims.length) % dims.length
+      const target = dims[nextIdx]
+      if (target === store.model.id) return
+      const targetModel = store.models.get(target)
+      const twin = targetModel?.nodes.get(targetId)
+      if (!targetModel || !twin) return
+      const dx = ((node.x - twin.x) / 100) * SCENE_W
+      const dy = ((node.y - twin.y) / 100) * SCENE_H
+      this.beginMpdCurtain()
+      store.setActiveModel(target)
+      const cam = useOmniStore.getState().camera
+      useOmniStore.getState().setCamera({ panX: cam.panX + dx, panY: cam.panY + dy })
+      const direction: 'left' | 'right' = dir > 0 ? 'right' : 'left'
+      this.playMpdCurtain(direction, Math.max(50, params.ms ?? 500))
+    }
+    // Bridge spawn / spawn-circular ephemeral decorations.
+    this.flow.onSpawn = (targetId, params) => {
+      this.startEphemeralSpawn(targetId, params, 'random')
+    }
+    this.flow.onSpawnStop = (targetId) => {
+      this.beginEphemeralFadeOut(targetId, 'spawn')
+    }
+    this.flow.onSpawnCircular = (targetId, params) => {
+      this.startEphemeralSpawn(targetId, params, 'circular')
+    }
+    this.flow.onSpawnCircularStop = (targetId) => {
+      this.beginEphemeralFadeOut(targetId, 'spawn-circular')
     }
     app.ticker.add(this.onTick)
   }
@@ -336,26 +505,61 @@ export class SceneRenderer {
     this.particleLayer.setPreset(presetId)
   }
 
+  /**
+   * Push the active theme palette to the node pool so default-coloured
+   * nodes adopt the theme. Per-node user-chosen colours stay verbatim.
+   * Cheap (O(visible nodes)). Called by the bridge whenever `themeMode`
+   * changes.
+   */
+  setThemePalette(theme: import('./NodePool').ThemeColors | null): void {
+    this.nodePool?.setThemePalette(theme)
+    this.dirty = true
+  }
+
   /** The Pixi-owned canvas (for capture / screenshot). */
   getCanvas(): HTMLCanvasElement | null {
     return this.app?.canvas ?? null
   }
 
-  /** Start a flow effect against a target node. Returns a runId (or null). */
+  /**
+   * Start a flow effect against a target node. Returns a runId (or null).
+   *
+   * Tier 3 I parity: also fires the effect on every linked peer of the
+   * target node so previewing an effect from the inspector animates all
+   * paired nodes simultaneously. Cross-links (`model.crossLinks`) are not
+   * walked here — they apply only to the global Play cascade where we
+   * have a deterministic schedule.
+   */
   playFlowEffect(targetNodeId: string, effect: FlowEffect): string | null {
-    return this.flow.start(targetNodeId, effect, performance.now())
+    const startedAt = performance.now()
+    const runId = this.flow.start(targetNodeId, effect, startedAt)
+    const node = this.model.nodes.get(targetNodeId)
+    for (const peerId of node?.linkedNodeIds ?? []) {
+      // Only fire on the peer if it doesn't already host this effect by id;
+      // otherwise the global Play would double-fire when both ends animate.
+      const peer = this.model.nodes.get(peerId)
+      if (!peer) continue
+      const owns = (peer.flowEffects ?? []).some((e) => e.id === effect.id)
+      if (owns) continue
+      this.flow.start(peerId, effect, startedAt)
+    }
+    return runId
   }
 
   /**
    * Global Play: walk the diagram from `rootNodeId` along `kind:'flow'`
-   * connections (BFS), triggering each visited node's *one-shot* effects
-   * (those with `alwaysPlay !== true`). Always-play loops are left alone
-   * since they are already running. Returns the number of runs started.
+   * connections, triggering each visited node's *one-shot* effects (those
+   * with `alwaysPlay !== true`). Always-play loops are left alone since
+   * they are already running. Returns the number of runs started.
    *
-   * Each downstream node's effects are delayed by `BFS depth * stagger`
-   * (default 200 ms) so the cascade matches the legacy visual pacing.
+   * Pacing: each node's arrival time = max over incoming flow edges of
+   * (parent.arriveAt + WIRE_MS). This matches the wire-reveal animation
+   * (the downstream node only "lights up" once the wire from its slowest
+   * parent has fully traversed) and handles diamond DAGs correctly. The
+   * legacy fixed `depth * staggerMs` schedule fired downstream effects
+   * before upstream wires finished — see plan.md item J.
    */
-  playFlowFromNode(rootNodeId: string, staggerMs = 200): number {
+  playFlowFromNode(rootNodeId: string): number {
     const root = this.model.nodes.get(rootNodeId)
     if (!root) return 0
     // Build flow-only adjacency from the current edge map (kind === 'flow').
@@ -368,41 +572,108 @@ export class SceneRenderer {
       if (!list) { list = []; adj.set(e.from, list) }
       list.push({ to: e.to, edgeId: e.id })
     }
-    const visited = new Set<string>([rootNodeId])
-    const queue: { id: string; depth: number }[] = [{ id: rootNodeId, depth: 0 }]
     let started = 0
     const now = performance.now()
     // Wire reveal duration ports the legacy default (600 ms per hop).
     const WIRE_MS = 600
-    // Node highlight duration: at least one stagger, plus a tail so the
-    // ring lingers visibly after the next hop departs.
-    const NODE_HALO_MS = Math.max(staggerMs * 1.5, 500)
-    while (queue.length > 0) {
-      const { id, depth } = queue.shift()!
-      const node = this.model.nodes.get(id)
-      if (!node) continue
-      const arriveAt = now + depth * staggerMs
-      // Light up the node itself even if it has no attached effects, so the
-      // cascade is visible end-to-end.
-      this.playActiveNodes.set(id, { startMs: arriveAt, durMs: NODE_HALO_MS })
-      for (const eff of node.flowEffects ?? []) {
-        if (eff.alwaysPlay) continue
-        // Stagger by wrapping the effect in a delayed run start. The runtime
-        // doesn't expose a start-delay parameter, so we model it here by
-        // shifting `startedAt` forward via a clock offset.
-        const runId = this.flow.start(id, eff, now - depth * staggerMs)
-        if (runId) { this.playRuns.add(runId); started++ }
-      }
-      for (const next of adj.get(id) ?? []) {
-        // Schedule the wire reveal even if the downstream node was already
-        // visited from another path — the wire still belongs to the cascade
-        // and should animate.
-        this.playWires.set(next.edgeId, { startMs: arriveAt, durMs: WIRE_MS })
-        if (visited.has(next.to)) continue
-        visited.add(next.to)
-        queue.push({ id: next.to, depth: depth + 1 })
+    // Node highlight duration: lingers past the next hop's departure.
+    const NODE_HALO_MS = Math.max(WIRE_MS * 1.5, 800)
+
+    // 1. Compute arrival[node] via repeated relaxation. For acyclic graphs
+    //    this converges in <= depth iterations; we cap at nodes.size to
+    //    bail out cleanly on cycles (back-edges are dropped at first
+    //    relaxation since the parent's arrival never improves the child).
+    const arrival = new Map<string, number>()
+    arrival.set(rootNodeId, now)
+    const maxIter = Math.max(1, this.model.nodes.size)
+    let changed = true
+    let iter = 0
+    while (changed && iter < maxIter) {
+      changed = false
+      iter++
+      for (const [from, outs] of adj) {
+        const fromArr = arrival.get(from)
+        if (fromArr === undefined) continue
+        for (const out of outs) {
+          const candidate = fromArr + WIRE_MS
+          const existing = arrival.get(out.to)
+          if (existing === undefined || candidate > existing) {
+            arrival.set(out.to, candidate)
+            changed = true
+          }
+        }
       }
     }
+
+    // 2. For every reachable node, schedule the halo + start its one-shot
+    //    effects at the computed arrival time. The runtime treats a future
+    //    `startedAt` as a deferred start (elapsed < 0 → no contribution
+    //    until the clock catches up).
+    //
+    //    Linked-peer parity (Tier 3 I): when a node fires, every node in
+    //    its `linkedNodeIds` glows in lock-step. We schedule the same
+    //    halo + effect runs on the peer at the same `arriveAt` so the
+    //    pair is visually inseparable. Wires are NOT mirrored — only the
+    //    DAG topology drives wire reveal.
+    //
+    //    Cross-links (`model.crossLinks`): when a host A fires an effect
+    //    with id E1, any cross-link `{from:{A,E1}, to:{B,E2}}` triggers
+    //    B's effect E2 at the same arriveAt. This lets users compose
+    //    multi-host effect graphs from the editor.
+    const crossIndex = new Map<string, Array<{ nodeId: string; effectId: string }>>()
+    for (const link of this.model.crossLinks ?? []) {
+      const key = `${link.from.nodeId}:${link.from.effectId}`
+      let list = crossIndex.get(key)
+      if (!list) { list = []; crossIndex.set(key, list) }
+      list.push(link.to)
+    }
+    const fireOnce = (nodeId: string, arriveAt: number, depth = 0) => {
+      // Depth-cap guards against pathological cross-link cycles (A.E1 →
+      // B.E2 → A.E1). The runtime would also drop duplicate runs but the
+      // wasted scheduling is avoided here.
+      if (depth > 8) return
+      const node = this.model.nodes.get(nodeId)
+      if (!node) return
+      this.playActiveNodes.set(nodeId, { startMs: arriveAt, durMs: NODE_HALO_MS })
+      for (const eff of node.flowEffects ?? []) {
+        if (eff.alwaysPlay) continue
+        const runId = this.flow.start(nodeId, eff, arriveAt)
+        if (runId) { this.playRuns.add(runId); started++ }
+        // Cross-link fan-out: schedule paired effects on partner hosts.
+        const targets = crossIndex.get(`${nodeId}:${eff.id}`)
+        if (targets) {
+          for (const t of targets) {
+            const peer = this.model.nodes.get(t.nodeId)
+            if (!peer) continue
+            const peerEff = (peer.flowEffects ?? []).find((e) => e.id === t.effectId)
+            if (!peerEff || peerEff.alwaysPlay) continue
+            this.playActiveNodes.set(t.nodeId, { startMs: arriveAt, durMs: NODE_HALO_MS })
+            const peerRunId = this.flow.start(t.nodeId, peerEff, arriveAt)
+            if (peerRunId) { this.playRuns.add(peerRunId); started++ }
+          }
+        }
+      }
+      // Linked-peer fan-out (whole-effect mirror).
+      for (const peerId of node.linkedNodeIds ?? []) {
+        if (arrival.has(peerId)) continue // already scheduled by the DAG walk
+        if (this.playActiveNodes.has(peerId)) continue // already mirrored
+        fireOnce(peerId, arriveAt, depth + 1)
+      }
+    }
+    for (const [id, arriveAt] of arrival) {
+      fireOnce(id, arriveAt)
+    }
+
+    // 3. Schedule wire reveals at the parent's arrival (wire fires as the
+    //    parent finishes lighting up, traverses to the child).
+    for (const [from, outs] of adj) {
+      const fromArr = arrival.get(from)
+      if (fromArr === undefined) continue
+      for (const out of outs) {
+        this.playWires.set(out.edgeId, { startMs: fromArr, durMs: WIRE_MS })
+      }
+    }
+
     // Force a redraw next tick so the overlay appears even when no effects
     // attached produced any node-override changes.
     this.dirty = true
@@ -607,7 +878,8 @@ export class SceneRenderer {
       this.viewport.height !== this.app.screen.height
     ) {
       this.viewport = { width: this.app.screen.width, height: this.app.screen.height }
-      this.particleLayer.setViewport(this.viewport.width, this.viewport.height)
+      // Particle wrap region stays anchored to the virtual scene; do not
+      // resync to the screen viewport on resize.
       this.dirty = true
     }
     if (this.dirty) {
@@ -633,6 +905,16 @@ export class SceneRenderer {
       // Ensure the overlay is cleared once the cascade ends.
       this.flowOverlayGfx.clear()
     }
+    // Camera-tracking lerp: keep ticking while either an active cameraTracked
+    // halo exists or the offset hasn't fully eased back to zero.
+    if (
+      this.playActiveNodes.size > 0 ||
+      this.cameraTrackOffsetX !== 0 ||
+      this.cameraTrackOffsetY !== 0
+    ) {
+      // applyCameraTransform handles the lerp + writes to world.x/y.
+      this.applyCameraTransform()
+    }
     // Text-generator: progressively reveals labels in-place. When characters
     // advance we mark dirty and redraw so the new label is baked into Pixi.
     if (this.textGen.hasActiveRuns) {
@@ -641,6 +923,8 @@ export class SceneRenderer {
     }
     // MPD curtain animates each frame; runs only when active.
     if (this.curtainDurationMs > 0) this.tickMpdCurtain()
+    // Ephemeral spawn fade in/out animation.
+    if (this.ephemeralSpawns.size > 0) this.tickEphemeralSpawns()
     // Particle simulation (no-op when no preset is set).
     if (this.particlePresetId) {
       // Convert deltaMS to "frames" (1.0 = 16.67 ms) so legacy preset tuning
@@ -673,14 +957,63 @@ export class SceneRenderer {
     const dPanX = camOv?.dPanX ?? 0
     const dPanY = camOv?.dPanY ?? 0
     const camScaleMul = camOv?.scaleMul ?? 1
+    // Camera-tracked-node compensation: ease the world toward placing any
+    // active cameraTracked node at viewport centre. Computed per call so
+    // node motion (drag, flow override) is followed live.
+    this.tickCameraTracking()
     // Effective scale composes user free-zoom with RMM cameraScale and any
     // flow camera scale override.
     this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale * camScaleMul
     // Scene coords are signed percent around (0,0) = viewport center.
     // World children draw at scene-pixel positions (scene% / 100 * SCENE_W).
     this.world.scale.set(this.effectiveScale)
-    this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX) * this.effectiveScale
-    this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY) * this.effectiveScale
+    this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX + this.cameraTrackOffsetX) * this.effectiveScale
+    this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY + this.cameraTrackOffsetY) * this.effectiveScale
+  }
+
+  /**
+   * Update the cameraTrackOffset by lerping toward the desired value.
+   *
+   * Desired offset = position of the *most recently activated* cameraTracked
+   * node ("top of the flow") whose Play-halo is currently visible. Tracking
+   * a single leading node instead of the centroid avoids the jump that
+   * happens when a new node activates (the centroid would shift abruptly
+   * by half the inter-node distance). With no active tracked targets the
+   * offset eases back to (0, 0).
+   */
+  private tickCameraTracking(): void {
+    let targetX = 0
+    let targetY = 0
+    let leader: { id: string; startMs: number } | null = null
+    if (this.playActiveNodes.size > 0) {
+      const now = performance.now()
+      for (const [id, halo] of this.playActiveNodes) {
+        if (now < halo.startMs) continue
+        const node = this.model.nodes.get(id)
+        if (!node || !node.cameraTracked) continue
+        if (!leader || halo.startMs > leader.startMs) {
+          leader = { id, startMs: halo.startMs }
+        }
+      }
+    }
+    if (leader) {
+      const node = this.model.nodes.get(leader.id)
+      if (node) {
+        const cxPx = ((node.x + node.w / 2) / 100) * SCENE_W
+        const cyPx = ((node.y + node.h / 2) / 100) * SCENE_H
+        targetX = -cxPx - this.camera.panX
+        targetY = -cyPx - this.camera.panY
+      }
+    }
+    // Lerp factor 0.08 matches legacy flowCameraRef tuning. Small enough to
+    // avoid jitter on sub-pixel node moves, large enough to track a 60 FPS
+    // flow override without visible lag.
+    const k = 0.08
+    this.cameraTrackOffsetX += (targetX - this.cameraTrackOffsetX) * k
+    this.cameraTrackOffsetY += (targetY - this.cameraTrackOffsetY) * k
+    // Snap to zero when very close to avoid lingering sub-pixel offsets.
+    if (!leader && Math.abs(this.cameraTrackOffsetX) < 0.05) this.cameraTrackOffsetX = 0
+    if (!leader && Math.abs(this.cameraTrackOffsetY) < 0.05) this.cameraTrackOffsetY = 0
   }
 
   /**
@@ -1335,6 +1668,108 @@ export class SceneRenderer {
       cb?.()
     }
   }
+
+  // ---- ephemeral spawn helpers --------------------------------------------
+
+  private startEphemeralSpawn(
+    targetId: string,
+    params: Record<string, number>,
+    layout: 'random' | 'circular',
+  ): void {
+    const node = this.model.nodes.get(targetId)
+    if (!node) return
+    const count = Math.max(1, Math.min(64, Math.floor(params.count ?? 6)))
+    const radiusPct = Math.max(0.5, params.radius ?? 8)
+    const fadeMs = Math.max(50, params.fadeMs ?? 300)
+    const radiusPx = (radiusPct / 100) * SCENE_W
+    // Host center in world coords.
+    const cx = (node.x / 100) * SCENE_W
+    const cy = (node.y / 100) * SCENE_H
+    const items: { gfx: Graphics }[] = []
+    for (let i = 0; i < count; i++) {
+      const angle =
+        layout === 'circular'
+          ? (i / count) * Math.PI * 2
+          : Math.random() * Math.PI * 2
+      const dist =
+        layout === 'circular' ? radiusPx : radiusPx * (0.4 + Math.random() * 0.6)
+      const px = cx + Math.cos(angle) * dist
+      const py = cy + Math.sin(angle) * dist
+      const r = Math.max(2, radiusPx * 0.06)
+      const g = new Graphics()
+      g.circle(0, 0, r).fill({ color: 0x6ca8ff, alpha: 0.85 })
+      g.x = px
+      g.y = py
+      g.alpha = 0
+      g.scale.set(0.2)
+      this.ephemeralLayer.addChild(g)
+      items.push({ gfx: g })
+    }
+    const group: EphemeralSpawnGroup = {
+      kind: layout === 'random' ? 'spawn' : 'spawn-circular',
+      items,
+      startedAt: performance.now(),
+      fadeInMs: fadeMs,
+      fadeOutMs: fadeMs,
+      fadeOutStartedAt: null,
+    }
+    const list = this.ephemeralSpawns.get(targetId) ?? []
+    list.push(group)
+    this.ephemeralSpawns.set(targetId, list)
+  }
+
+  private beginEphemeralFadeOut(targetId: string, kind: 'spawn' | 'spawn-circular'): void {
+    const list = this.ephemeralSpawns.get(targetId)
+    if (!list) return
+    const now = performance.now()
+    for (const g of list) {
+      if (g.kind === kind && g.fadeOutStartedAt === null) g.fadeOutStartedAt = now
+    }
+  }
+
+  private tickEphemeralSpawns(): void {
+    const now = performance.now()
+    for (const [hostId, list] of [...this.ephemeralSpawns]) {
+      const surviving: EphemeralSpawnGroup[] = []
+      for (const g of list) {
+        let alpha = 1
+        let scale = 1
+        // Fade in.
+        const inT = Math.min(1, (now - g.startedAt) / g.fadeInMs)
+        alpha = inT
+        scale = 0.2 + 0.8 * inT
+        // Fade out (overrides if active).
+        if (g.fadeOutStartedAt !== null) {
+          const outT = Math.min(1, (now - g.fadeOutStartedAt) / g.fadeOutMs)
+          alpha = (1 - outT) * inT
+          scale = 0.2 + 0.8 * (1 - outT)
+          if (outT >= 1) {
+            for (const it of g.items) {
+              this.ephemeralLayer.removeChild(it.gfx)
+              it.gfx.destroy()
+            }
+            continue
+          }
+        }
+        for (const it of g.items) {
+          it.gfx.alpha = alpha
+          it.gfx.scale.set(scale)
+        }
+        surviving.push(g)
+      }
+      if (surviving.length === 0) this.ephemeralSpawns.delete(hostId)
+      else this.ephemeralSpawns.set(hostId, surviving)
+    }
+  }
+}
+
+interface EphemeralSpawnGroup {
+  kind: 'spawn' | 'spawn-circular'
+  items: { gfx: Graphics }[]
+  startedAt: number
+  fadeInMs: number
+  fadeOutMs: number
+  fadeOutStartedAt: number | null
 }
 
 function nodeAabb(n: ModelNode) {
@@ -1365,4 +1800,30 @@ function pointSegmentDistance(
   const cx = ax + t * dx
   const cy = ay + t * dy
   return Math.hypot(px - cx, py - cy)
+}
+
+/**
+ * Read OBS WebSocket settings from `localStorage`. Prompts the user once
+ * (and persists) when no value is stored. Returns `null` when the user
+ * cancels the prompt or `localStorage` is unavailable (SSR / tests).
+ */
+function readObsSettings(): { host: string; port: number; password: string } | null {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return null
+  const RAW = localStorage.getItem('omnigram-obs')
+  if (RAW) {
+    try {
+      const parsed = JSON.parse(RAW)
+      if (parsed && typeof parsed.host === 'string') return parsed
+    } catch { /* fall through to prompt */ }
+  }
+  // First-time prompt — UX parity with the legacy toolbar dialog. Stored so
+  // the recording flow effect runs unattended on subsequent plays.
+  const hostPort = window.prompt('OBS host:port (e.g. 127.0.0.1:4455)?', '127.0.0.1:4455')
+  if (!hostPort) return null
+  const password = window.prompt('OBS WebSocket password (blank if none):', '') ?? ''
+  const [host, portStr] = hostPort.split(':')
+  const port = Number(portStr) || 4455
+  const settings = { host, port, password }
+  try { localStorage.setItem('omnigram-obs', JSON.stringify(settings)) } catch { /* ignore */ }
+  return settings
 }

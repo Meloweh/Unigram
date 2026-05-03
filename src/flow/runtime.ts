@@ -84,6 +84,35 @@ export class FlowRuntime {
    */
   onTextGen: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
   onTextGenStop: ((targetNodeId: string) => void) | null = null
+  /**
+   * Recording side-effects — mirror the text-generator pattern. The renderer
+   * owns the actual `MediaRecorder` / OBS-WebSocket session; the runtime only
+   * fires start/stop on the task lifecycle.
+   */
+  onRecord: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onRecordStop: ((targetNodeId: string) => void) | null = null
+  onObsRecord: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onObsRecordStop: ((targetNodeId: string) => void) | null = null
+  /**
+   * Handoff side-effects. These mutate global navigation state (the RMM
+   * zoom stack and the MPD active dimension) so they live entirely in the
+   * renderer/store layer; the runtime just signals start. There is no
+   * meaningful `stop` semantic for navigation — handoffs are one-shot
+   * transitions — so only a fire-once start callback is exposed.
+   */
+  onHandoffRmm: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onReturnRmm: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onHandoffMpd: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  /**
+   * Spawn side-effects — emit ephemeral decorative children around the
+   * host node. The renderer owns the actual sprites; the runtime only
+   * fires start/stop on the task lifecycle so the renderer can fade them
+   * in (start) and fade them out + dispose (stop).
+   */
+  onSpawn: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onSpawnStop: ((targetNodeId: string) => void) | null = null
+  onSpawnCircular: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onSpawnCircularStop: ((targetNodeId: string) => void) | null = null
 
   /** Returns the run id, or null if the graph was empty / cyclic. */
   start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
@@ -286,6 +315,14 @@ export class FlowRuntime {
           // Side-effect tasks: fire stop on completion.
           if (t.node.kind === 'text-generator' && t.sideEffectFired) {
             this.onTextGenStop?.(run.targetNodeId)
+          } else if (t.node.kind === 'record' && t.sideEffectFired) {
+            this.onRecordStop?.(run.targetNodeId)
+          } else if (t.node.kind === 'obs-record' && t.sideEffectFired) {
+            this.onObsRecordStop?.(run.targetNodeId)
+          } else if (t.node.kind === 'spawn' && t.sideEffectFired) {
+            this.onSpawnStop?.(run.targetNodeId)
+          } else if (t.node.kind === 'spawn-circular' && t.sideEffectFired) {
+            this.onSpawnCircularStop?.(run.targetNodeId)
           }
           // Capture final value for permanent-flagged kinds.
           if ((t.node.params.permanent ?? 0) !== 0) {
@@ -324,6 +361,33 @@ export class FlowRuntime {
           t.sideEffectFired = true
           this.onTextGen?.(run.targetNodeId, t.node.params)
         }
+      } else if (t.node.kind === 'record') {
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          this.onRecord?.(run.targetNodeId, t.node.params)
+        }
+      } else if (t.node.kind === 'obs-record') {
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          this.onObsRecord?.(run.targetNodeId, t.node.params)
+        }
+      } else if (
+        t.node.kind === 'handoff-rmm' ||
+        t.node.kind === 'return-rmm' ||
+        t.node.kind === 'handoff-mpd'
+      ) {
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          if (t.node.kind === 'handoff-rmm') this.onHandoffRmm?.(run.targetNodeId, t.node.params)
+          else if (t.node.kind === 'return-rmm') this.onReturnRmm?.(run.targetNodeId, t.node.params)
+          else this.onHandoffMpd?.(run.targetNodeId, t.node.params)
+        }
+      } else if (t.node.kind === 'spawn' || t.node.kind === 'spawn-circular') {
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          if (t.node.kind === 'spawn') this.onSpawn?.(run.targetNodeId, t.node.params)
+          else this.onSpawnCircular?.(run.targetNodeId, t.node.params)
+        }
       } else {
         const contrib = contribution(t.node, ratio, localElapsed)
         if (contrib) merged = merged ? mergeOverride(merged, contrib) : contrib
@@ -349,11 +413,13 @@ export class FlowRuntime {
    * on cancel even when no side effects ran.
    */
   private fireSideEffectStops(run: Run): void {
-    if (!this.onTextGenStop) return
     for (const t of run.tasks.values()) {
-      if (t.node.kind === 'text-generator' && t.sideEffectFired && t.endedAt < 0) {
-        this.onTextGenStop(run.targetNodeId)
-      }
+      if (!t.sideEffectFired || t.endedAt >= 0) continue
+      if (t.node.kind === 'text-generator') this.onTextGenStop?.(run.targetNodeId)
+      else if (t.node.kind === 'record') this.onRecordStop?.(run.targetNodeId)
+      else if (t.node.kind === 'obs-record') this.onObsRecordStop?.(run.targetNodeId)
+      else if (t.node.kind === 'spawn') this.onSpawnStop?.(run.targetNodeId)
+      else if (t.node.kind === 'spawn-circular') this.onSpawnCircularStop?.(run.targetNodeId)
     }
   }
 }
@@ -364,6 +430,22 @@ function durationOf(n: EffectNode): number {
     // Side-effect tasks need a duration so the runtime can fire `onTextGenStop`
     // on completion. Default 1.5 s is enough for short labels at 24 cps;
     // editor exposes `ms` for longer text.
+    return Math.max(0, n.params.ms ?? 1500)
+  }
+  if (n.kind === 'record' || n.kind === 'obs-record') {
+    // Recording side-effects also rely on `ms` to schedule the stop callback.
+    return Math.max(0, n.params.ms ?? 5000)
+  }
+  if (n.kind === 'handoff-rmm' || n.kind === 'return-rmm' || n.kind === 'handoff-mpd') {
+    // Navigation side-effects — `ms` gates how long the task occupies the
+    // run before downstream effects fire. Default tracks the curtain/zoom
+    // animation budget (~600 ms).
+    return Math.max(0, n.params.ms ?? 600)
+  }
+  if (n.kind === 'spawn' || n.kind === 'spawn-circular') {
+    // Spawn side-effects: `ms` is the on-screen lifetime of the ephemeral
+    // children. After completion the runtime fires the stop callback and
+    // the renderer fades them out.
     return Math.max(0, n.params.ms ?? 1500)
   }
   return Math.max(0, n.params.ms ?? 0)
@@ -392,6 +474,20 @@ function contribution(
     }
     case 'scale': {
       const target = n.params.mul ?? 1
+      const scaleMul = 1 + (target - 1) * ratio
+      return { scaleMul }
+    }
+    case 'expand': {
+      // Grow from current size toward `mul` (default 1.5×). Scale-only;
+      // alpha stays at 1 so the node doesn't fade. `permanent` holds final.
+      const target = n.params.mul ?? 1.5
+      const scaleMul = 1 + (target - 1) * ratio
+      return { scaleMul }
+    }
+    case 'collapse': {
+      // Shrink toward `1/mul` (default 1/1.5 ≈ 0.67×). Symmetrical inverse
+      // of expand so a paired expand→collapse returns to identity.
+      const target = 1 / Math.max(0.001, n.params.mul ?? 1.5)
       const scaleMul = 1 + (target - 1) * ratio
       return { scaleMul }
     }
@@ -468,6 +564,22 @@ function contribution(
     case 'text-generator':
       // Side-effect kind: bridged via `onTextGen` / `onTextGenStop`. No
       // per-frame override contribution.
+      return null
+    case 'record':
+    case 'obs-record':
+      // Side-effect kinds: bridged via `onRecord` / `onObsRecord`. No
+      // per-frame override contribution.
+      return null
+    case 'handoff-rmm':
+    case 'return-rmm':
+    case 'handoff-mpd':
+      // Navigation side-effects: bridged via `onHandoffRmm` / `onReturnRmm`
+      // / `onHandoffMpd`. No per-frame override contribution.
+      return null
+    case 'spawn':
+    case 'spawn-circular':
+      // Spawn side-effects: bridged via `onSpawn` / `onSpawnCircular`.
+      // Spawned ephemerals live entirely in the renderer.
       return null
   }
 }

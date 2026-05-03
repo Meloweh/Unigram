@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useOmniStore } from '../model/store'
 import { exportBundle, importBundle } from '../model/projectBundle'
 import { importLegacyBundle, type LegacyFetcher } from '../model/legacyImport'
+import { computeUntangledPositions } from '../viewport/untangle'
 import type { SceneRenderer } from '../scene/SceneRenderer'
 
 interface EditorToolbarProps {
@@ -128,9 +129,22 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
         </ToolbarButton>
       )}
       <Separator />
-      <SaveLoadButtons />
+      <ToolbarButton
+        onClick={() => {
+          const cur = useOmniStore.getState()
+          if (cur.model.nodes.size === 0) return
+          const targets = computeUntangledPositions(cur.model.nodes.values(), cur.model.edges.values())
+          const updates: { id: string; x: number; y: number }[] = []
+          for (const [id, p] of targets) updates.push({ id, x: p.x, y: p.y })
+          cur.moveNodes(updates)
+        }}
+        disabled={s.model.nodes.size === 0 || isPlaying}
+        title="Auto-arrange nodes to reduce edge crossings (force-directed)"
+      >
+        🪢 Untangle
+      </ToolbarButton>
       <Separator />
-      <RecordingButtons renderer={renderer} />
+      <SaveLoadButtons />
     </div>
   )
 }
@@ -266,98 +280,27 @@ function SaveLoadButtons() {
   )
 }
 
-function RecordingButtons({ renderer }: { renderer: SceneRenderer | null }) {
-  const [recording, setRecording] = useState<{ stop: () => Promise<Blob>; cancel: () => void } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [obs, setObs] = useState<import('../recording/obsClient').ObsConnection | null>(null)
+// Recording is now exposed as `record` and `obs-record` flow effect kinds
+// (legacy Unigram parity) — the renderer handles the side-effects via
+// `FlowRuntime.onRecord` / `onObsRecord`. The previous toolbar buttons were
+// removed so recording is always tied to a deterministic flow trigger.
 
-  // Stop OBS connection on unmount so we don't leak the websocket.
-  useEffect(() => () => { obs?.close() }, [obs])
-
-  const onStart = async () => {
-    if (!renderer || busy) return
-    const canvas = renderer.getCanvas()
-    if (!canvas) return
-    setBusy(true)
-    try {
-      const { startCanvasRecording, isRecordingSupported } = await import('../recording/canvasRecorder')
-      if (!isRecordingSupported()) {
-        alert('Recording is not supported in this browser.')
-        return
-      }
-      setRecording(startCanvasRecording(canvas, 30))
-    } finally {
-      setBusy(false)
-    }
-  }
-  const onStop = async () => {
-    if (!recording || busy) return
-    setBusy(true)
-    try {
-      const blob = await recording.stop()
-      const { downloadBlob } = await import('../recording/canvasRecorder')
-      const ext = blob.type.includes('mp4') ? 'mp4' : 'webm'
-      downloadBlob(blob, `omnigram-${Date.now()}.${ext}`)
-    } finally {
-      setRecording(null)
-      setBusy(false)
-    }
-  }
-  const onObsToggle = async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      if (obs) {
-        const { obsStopRecord } = await import('../recording/obsClient')
-        try { await obsStopRecord(obs) } catch { /* ignore */ }
-        obs.close()
-        setObs(null)
-        return
-      }
-      const host = window.prompt('OBS host:port (e.g. 127.0.0.1:4455)?', '127.0.0.1:4455')
-      if (!host) return
-      const password = window.prompt('OBS WebSocket password (blank if none):', '') ?? ''
-      const [h, portStr] = host.split(':')
-      const port = Number(portStr) || 4455
-      const { connectObs, obsStartRecord } = await import('../recording/obsClient')
-      const conn = await connectObs(h, port, password)
-      await obsStartRecord(conn)
-      setObs(conn)
-    } catch (err) {
-      alert('OBS error: ' + (err instanceof Error ? err.message : String(err)))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <>
-      {recording ? (
-        <ToolbarButton onClick={onStop} disabled={busy} title="Stop recording and download" danger>
-          ⏹ Stop rec
-        </ToolbarButton>
-      ) : (
-        <ToolbarButton onClick={onStart} disabled={busy || !renderer} title="Record canvas to .webm">
-          ⏺ Record
-        </ToolbarButton>
-      )}
-      <ToolbarButton onClick={onObsToggle} disabled={busy} title="Toggle OBS recording via WebSocket">
-        {obs ? '⏹ OBS' : '◉ OBS'}
-      </ToolbarButton>
-    </>
-  )
-}
+const scaled = (px: number) => `calc(${px}px * var(--ug-ui-scale))`
 
 const barStyle: React.CSSProperties = {
   position: 'absolute',
-  top: 8,
-  left: 264,
+  // Bottom-centred (legacy Unigram parity). `translateX(-50%)` recentres
+  // after `left:50%` so the bar is anchored from its own midpoint.
+  bottom: scaled(8),
+  left: '50%',
+  transform: 'translateX(-50%)',
   display: 'flex',
   alignItems: 'stretch',
-  gap: 4,
-  padding: 4,
+  gap: scaled(4),
+  padding: scaled(4),
   background: 'var(--ug-glass)',
   border: '1px solid var(--ug-border)',
-  borderRadius: 6,
+  borderRadius: scaled(6),
   boxShadow: '0 2px 8px var(--ug-shadow)',
   backdropFilter: 'blur(6px)',
   zIndex: 10,
@@ -365,8 +308,8 @@ const barStyle: React.CSSProperties = {
 
 const buttonStyle: React.CSSProperties = {
   border: '1px solid var(--ug-border)',
-  borderRadius: 3,
-  padding: '4px 10px',
-  font: '12px system-ui, sans-serif',
+  borderRadius: scaled(3),
+  padding: `${scaled(4)} ${scaled(10)}`,
+  font: `${scaled(12)} system-ui, sans-serif`,
   cursor: 'pointer',
 }

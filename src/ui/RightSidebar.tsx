@@ -13,7 +13,7 @@ import { useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import { useOmniStore } from '../model/store'
 import type { ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
-import { collapsedStripStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
+import { animatedContentStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
 import { ALL_THEME_OPTIONS } from '../theme/themes'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
 import { PARTICLE_PRESETS } from '../theme/particles'
@@ -65,18 +65,34 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
     if (n) nodes.push(n)
   }
 
-  if (collapsed) {
-    return (
-      <button
-        onClick={() => setCollapsed(false)}
-        title="Expand inspector"
-        style={collapsedStripStyle('right')}
-      >
-        <span style={{ font: 'bold 14px system-ui, sans-serif', color: 'var(--ug-text)' }}>‹</span>
-      </button>
-    )
-  }
+  // Single persistent shell so the collapse/expand animation runs on the
+  // outer width transition (the previous code returned different DOM trees
+  // for collapsed vs expanded, which prevented React from animating).
+  const inner = collapsed ? null : renderInner(nodes, state, renderer ?? null)
 
+  return (
+    <div style={shellStyle('right', collapsed)}>
+      <div style={animatedContentStyle(collapsed)}>{inner}</div>
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        title={collapsed ? 'Expand inspector' : 'Collapse panel'}
+        style={toggleColumnStyle('right')}
+      >
+        {collapsed ? '‹' : '›'}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Build the inspector body for the current selection. Extracted from
+ * `RightSidebar` so the outer collapsible shell stays single-rooted.
+ */
+function renderInner(
+  nodes: ModelNode[],
+  state: ReturnType<typeof useOmniStore.getState>,
+  renderer: import('../scene/SceneRenderer').SceneRenderer | null,
+): React.ReactNode {
   if (nodes.length === 0) {
     // Edge inspector takes precedence over the diagram panel.
     const edgeIds = state.selectedEdgeIds
@@ -90,7 +106,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
         const arrow: ConnectionArrowStyle = edge.arrowStyle ?? 'standard'
         const kind: ConnectionKind = edge.kind ?? 'default'
         return (
-          <Panel onCollapse={() => setCollapsed(true)}>
+          <>
             <Title>Connection</Title>
             <Hint>
               {fromNode?.label || edge.from} → {toNode?.label || edge.to}
@@ -189,21 +205,19 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
             >
               Delete connection
             </button>
-          </Panel>
+          </>
         )
       }
     }
     const grid = state.model.grid ?? { enabled: false, snap: false, sizePercent: 4 }
     return (
-      <Panel onCollapse={() => setCollapsed(true)}>
+      <>
         <Title>Diagram</Title>
         <Field label="Name">
           <input
             type="text"
             value={state.model.name}
             onChange={(e) => {
-              // Lightweight rename — bypass undo for the model name; not yet
-              // patch-modeled. Stage 4 promotes diagram metadata into patches.
               useOmniStore.setState((s) => ({
                 model: { ...s.model, name: e.target.value },
                 rev: s.rev + 1,
@@ -242,7 +256,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
         </div>
         <CosmeticsControls />
         <Hint>Click or box-select a node to edit it.</Hint>
-      </Panel>
+      </>
     )
   }
 
@@ -259,32 +273,23 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
   }
 
   return (
-    <Panel onCollapse={() => setCollapsed(true)}>
+    <>
       <Title>{isMulti ? `${nodes.length} nodes` : 'Node'}</Title>
 
-      <Field label="Shape">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4 }}>
-          {ALL_SHAPES.map((s) => {
-            const active = shape === s
-            return (
-              <button
-                key={s}
-                onClick={() => updateAll({ shape: s })}
-                style={{
-                  ...buttonStyle,
-                  background: active ? 'var(--ug-primary)' : 'var(--ug-surface-raised)',
-                  color: active ? 'var(--ug-text-on-primary)' : 'var(--ug-text)',
-                  borderColor: active ? 'var(--ug-primary-light)' : 'var(--ug-border)',
-                }}
-                title={SHAPE_LABEL[s]}
-              >
-                {SHAPE_LABEL[s]}
-              </button>
-            )
-          })}
-        </div>
-        {shape === MIXED && <Mixed />}
+      <Field label="Node shape">
+        <select
+          value={shape === MIXED ? '' : (shape as NodeShape)}
+          onChange={(e) => updateAll({ shape: e.target.value as NodeShape })}
+          style={inputStyle}
+        >
+          {shape === MIXED && <option value="">(mixed)</option>}
+          {ALL_SHAPES.map((s) => (
+            <option key={s} value={s}>{SHAPE_LABEL[s]}</option>
+          ))}
+        </select>
       </Field>
+
+      {!isMulti && <MediaSection node={nodes[0]} />}
 
       <Field label="Label">
         <textarea
@@ -346,8 +351,10 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
       <BehaviourFlags nodes={nodes} updateAll={updateAll} />
 
       {!isMulti && <MpdSection node={nodes[0]} />}
+      {!isMulti && <RmmSection node={nodes[0]} />}
+      {!isMulti && <LinkedNodesSection node={nodes[0]} />}
       {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
-    </Panel>
+    </>
   )
 }
 
@@ -429,33 +436,6 @@ function hexOf(v: string): string {
 
 // ---- minimal layout primitives -------------------------------------------
 
-function Panel({ children, onCollapse }: { children: React.ReactNode; onCollapse: () => void }) {
-  return (
-    <div style={shellStyle('right')}>
-      <button
-        onClick={onCollapse}
-        title="Collapse panel"
-        style={toggleColumnStyle('right')}
-      >
-        ›
-      </button>
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-          overflowY: 'auto',
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
-
 function Title({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -483,10 +463,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Row({ children }: { children: React.ReactNode }) {
   return <div style={{ display: 'flex', gap: 8 }}>{children}</div>
-}
-
-function Mixed() {
-  return <span style={{ fontSize: 10, color: 'var(--ug-text-muted)' }}>(mixed across selection)</span>
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
@@ -817,71 +793,191 @@ function MpdSection({ node }: { node: ModelNode }) {
   )
 }
 
-const FLOW_PRESETS: { id: string; label: string; effect: import('../flow/types').FlowEffect }[] = [
-  {
-    id: 'pulse',
-    label: 'Pulse',
-    effect: {
-      id: 'pulse',
-      label: 'Pulse',
-      graph: {
-        nodes: [{ id: 's', kind: 'scale', x: 0, y: 0, params: { mul: 1.3, ms: 250 } }],
-        edges: [],
-      },
-    },
-  },
-  {
-    id: 'shake',
-    label: 'Shake',
-    effect: {
-      id: 'shake',
-      label: 'Shake',
-      graph: {
-        nodes: [{ id: 'j', kind: 'jitter', x: 0, y: 0, params: { amp: 0.4, ms: 600 } }],
-        edges: [],
-      },
-    },
-  },
-  {
-    id: 'flash',
-    label: 'Flash red',
-    effect: {
-      id: 'flash',
-      label: 'Flash',
-      graph: {
-        nodes: [{ id: 'c', kind: 'color', x: 0, y: 0, params: { tint: 0xff5555, ms: 500 } }],
-        edges: [],
-      },
-    },
-  },
-  {
-    id: 'nudge',
-    label: 'Nudge right',
-    effect: {
-      id: 'nudge',
-      label: 'Nudge',
-      graph: {
-        nodes: [{ id: 'm', kind: 'move', x: 0, y: 0, params: { dx: 4, dy: 0, ms: 400 } }],
-        edges: [],
-      },
-    },
-  },
-  {
-    id: 'pulse-then-flash',
-    label: 'Pulse → flash',
-    effect: {
-      id: 'pulse-then-flash',
-      label: 'Pulse → flash',
-      graph: {
-        nodes: [
-          { id: 's', kind: 'scale', x: 0, y: 0, params: { mul: 1.4, ms: 250 } },
-          { id: 'c', kind: 'color', x: 0, y: 0, params: { tint: 0x55ff55, ms: 400 } },
-        ],
-        edges: [{ from: 's', to: 'c' }],
-      },
-    },
-  },
-]
+/**
+ * RMM (recursive-model-model) child link editor. A node can act as a
+ * portal into a child model: zooming the dial fully in re-roots the
+ * scene at the child. This panel surfaces the link state with three
+ * actions:
+ *  - "+ Add" creates a fresh empty model and links it.
+ *  - "Open" zooms the renderer into the child via the existing RMM stack.
+ *  - "Remove" unlinks (the child model stays registered so undo restores).
+ *
+ * Mirrors legacy [src/old/ui/NodeSettingsPanel.tsx](../old/ui/NodeSettingsPanel.tsx)
+ * `addRmm()` parity. The `Open` action selects the node and triggers
+ * `rmmZoomStep('in')` repeatedly until the handoff fires (handoff happens
+ * at the dial boundary inside `rmmZoomStep`).
+ */
+function RmmSection({ node }: { node: ModelNode }) {
+  const linkedId = node.childModelId
+  const linkedModel = useOmniStore((s) => (linkedId ? s.models.get(linkedId) : undefined))
+  const handleAdd = () => {
+    useOmniStore.getState().addChildModel(node.id)
+  }
+  const handleRemove = () => {
+    useOmniStore.getState().removeChildModel(node.id)
+  }
+  const handleOpen = () => {
+    const s = useOmniStore.getState()
+    s.selectMany([node.id])
+    // Step in until the handoff fires (rmmZoomStep is a no-op once the dial
+    // hits its inner boundary on the same model).
+    for (let i = 0; i < 8; i++) {
+      s.rmmZoomStep('in')
+      if (useOmniStore.getState().model.id === linkedId) break
+    }
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Child model (RMM)</span>
+      {linkedId ? (
+        <>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={linkedModel?.name ?? linkedId}
+              disabled={!linkedModel}
+              onChange={(e) => {
+                const target = useOmniStore.getState().models.get(linkedId)
+                if (!target) return
+                useOmniStore.setState((s) => {
+                  const models = new Map(s.models)
+                  const updated = { ...target, name: e.target.value }
+                  models.set(linkedId, updated)
+                  const isActive = s.model.id === linkedId
+                  return {
+                    models,
+                    model: isActive ? updated : s.model,
+                    rev: s.rev + 1,
+                  }
+                })
+              }}
+              style={{ ...inputStyle, flex: 1 }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button onClick={handleOpen} style={{ ...buttonStyle, flex: 1 }} disabled={!linkedModel}>Open</button>
+            <button onClick={handleRemove} style={{ ...buttonStyle, flex: 1 }}>Remove</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <span style={{ fontSize: 11, color: '#576278' }}>None — add a child to enable recursive zoom.</span>
+          <button onClick={handleAdd} style={buttonStyle}>+ Add child model</button>
+        </>
+      )}
+    </div>
+  )
+}
+
+/* ---- MediaSection -------------------------------------------------------
+ *
+ * Surfaces the special node-type metadata: a label badge for the chosen
+ * `mediaType` and (for the binary kinds) a file picker that stashes the
+ * dropped file through `storeMediaBlob` and writes the resulting object
+ * URL back to the node's `mediaSrc`. Markdown / math editing UI is left
+ * for Phase E (needs a markdown + KaTeX rendering pipeline that is not
+ * yet wired into the scene).
+ */
+function MediaSection({ node }: { node: ModelNode }) {
+  const update = (patch: Partial<ModelNode>) => useOmniStore.getState().updateNode(node.id, patch)
+  const mediaType = node.mediaType
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Media</span>
+      <select
+        value={mediaType ?? ''}
+        onChange={(e) => {
+          const v = e.target.value as ModelNode['mediaType'] | ''
+          update({ mediaType: v === '' ? undefined : v })
+        }}
+        style={{ ...buttonStyle, padding: '4px 6px', fontSize: 11 }}
+      >
+        <option value="">— none —</option>
+        <option value="image">Image</option>
+        <option value="gif">GIF</option>
+        <option value="audio">Audio</option>
+        <option value="video">Video</option>
+        <option value="markdown">Markdown</option>
+        <option value="math">Math</option>
+      </select>
+      {mediaType && mediaType !== 'markdown' && mediaType !== 'math' && (
+        <>
+          <input
+            type="file"
+            accept={
+              mediaType === 'image' || mediaType === 'gif' ? 'image/*' :
+              mediaType === 'audio' ? 'audio/*' : 'video/*'
+            }
+            onChange={async (e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              const { storeMediaBlob } = await import('../media/mediaStore')
+              const url = await storeMediaBlob(f)
+              update({ mediaSrc: url, mediaFileName: f.name })
+            }}
+            style={{ fontSize: 11, color: 'var(--ug-text)' }}
+          />
+          {node.mediaFileName && (
+            <span style={{ fontSize: 11, color: '#576278' }}>{node.mediaFileName}</span>
+          )}
+        </>
+      )}
+      {(mediaType === 'markdown' || mediaType === 'math') && (
+        <textarea
+          value={(node.extra?.contentSource as string | undefined) ?? ''}
+          onChange={(e) => update({ extra: { ...(node.extra ?? {}), contentSource: e.target.value } })}
+          rows={4}
+          placeholder={mediaType === 'markdown' ? '# Heading\n\nText…' : 'a^2 + b^2 = c^2'}
+          style={{
+            font: '12px ui-monospace, monospace',
+            color: 'var(--ug-text)',
+            background: 'var(--ug-surface)',
+            border: '1px solid var(--ug-border-light)',
+            borderRadius: 3,
+            padding: 4,
+            resize: 'vertical',
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ---- LinkedNodesSection -------------------------------------------------
+ *
+ * UI for parity item I — paired effect-graph editing. Lists the node's
+ * symmetric link peers and exposes Add / Remove. The actual cross-graph
+ * authoring lives inside FlowEffectEditor (which renders one column per
+ * linked host once opened). "Add" is a one-click flow: the user toggles
+ * `pickMode = 'link-node'` and the next selected node is paired.
+ */
+function LinkedNodesSection({ node }: { node: ModelNode }) {
+  const links = node.linkedNodeIds ?? []
+  const allNodes = useOmniStore((s) => s.model.nodes)
+  // Hide the section entirely when nothing is linked — the empty-state
+  // copy was confusing because the only way to add a link is from inside
+  // the effect-graph editor (the inspector has no entry point).
+  if (links.length === 0) return null
+  const labelFor = (id: string) => allNodes.get(id)?.label || id
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Linked nodes (paired effects)</span>
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {links.map((peerId) => (
+          <li key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: 'var(--ug-text)' }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{labelFor(peerId)}</span>
+            <button
+              style={{ ...buttonStyle, padding: '2px 6px', fontSize: 11 }}
+              onClick={() => useOmniStore.getState().unlinkNodes(node.id, peerId)}
+            >
+              Unlink
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 function FlowEffectsSection({
   node,
@@ -890,23 +986,7 @@ function FlowEffectsSection({
   node: ModelNode
   renderer: import('../scene/SceneRenderer').SceneRenderer
 }) {
-  const [selected, setSelected] = useState<string>(FLOW_PRESETS[0].id)
   const [editing, setEditing] = useState<import('../flow/types').FlowEffect | null>(null)
-  const play = () => {
-    const preset = FLOW_PRESETS.find((p) => p.id === selected)
-    if (!preset) return
-    renderer.playFlowEffect(node.id, preset.effect)
-  }
-  const attachLoop = () => {
-    const preset = FLOW_PRESETS.find((p) => p.id === selected)
-    if (!preset) return
-    attachEffect(node.id, { ...preset.effect, alwaysPlay: true }, node.flowEffects)
-  }
-  const attachOneShot = () => {
-    const preset = FLOW_PRESETS.find((p) => p.id === selected)
-    if (!preset) return
-    attachEffect(node.id, { ...preset.effect, alwaysPlay: false }, node.flowEffects)
-  }
   const detach = (effectId: string) => {
     const existing = node.flowEffects ?? []
     useOmniStore
@@ -917,6 +997,7 @@ function FlowEffectsSection({
   const editor = editing ? (
     <FlowEffectEditor
       initial={editing}
+      hostNodeId={node.id}
       onPreview={(eff) => renderer.playFlowEffect(node.id, eff)}
       onSave={(eff) => {
         const existing = node.flowEffects ?? []
@@ -943,41 +1024,8 @@ function FlowEffectsSection({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
       <span style={{ fontSize: 11, color: 'var(--ug-text-muted)' }}>Flow effects</span>
-      <select
-        value={selected}
-        onChange={(e) => setSelected(e.target.value)}
-        style={inputStyle}
-      >
-        {FLOW_PRESETS.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.label}
-          </option>
-        ))}
-      </select>
-      <Row>
-        <button onClick={play} style={buttonStyle} title="Play this preset once on this node">
-          ▶ Preview
-        </button>
-        <button
-          onClick={attachOneShot}
-          style={buttonStyle}
-          title="Attach as one-shot — runs when global Play is pressed"
-        >
-          + One-shot
-        </button>
-        <button
-          onClick={attachLoop}
-          style={buttonStyle}
-          title="Attach as always-play loop — runs continuously"
-        >
-          ∞ Loop
-        </button>
-      </Row>
-      <button
-        onClick={() => setEditing(emptyEffect())}
-        style={buttonStyle}
-      >
-        + New custom effect
+      <button onClick={() => setEditing(emptyEffect())} style={buttonStyle}>
+        Open effect graph
       </button>
       {oneShots.length > 0 && (
         <>
@@ -1048,21 +1096,6 @@ function FlowEffectsSection({
       {editor}
     </div>
   )
-}
-
-function attachEffect(
-  nodeId: string,
-  effect: import('../flow/types').FlowEffect,
-  existing: import('../flow/types').FlowEffect[] | undefined,
-) {
-  // Stable per-attachment id so always-play reconciliation works.
-  const attached: import('../flow/types').FlowEffect = {
-    ...effect,
-    id: `${effect.id}-${Date.now().toString(36)}`,
-  }
-  useOmniStore
-    .getState()
-    .updateNode(nodeId, { flowEffects: [...(existing ?? []), attached] })
 }
 
 // (TextGenSection removed — text-generator is exposed as a Flow Effect kind

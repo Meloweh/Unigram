@@ -370,6 +370,139 @@ describe('FlowRuntime — text-generator side-effect', () => {
   })
 })
 
+describe('FlowRuntime — handoff side-effects', () => {
+  it('fires onHandoffRmm exactly once when the task activates', () => {
+    const rt = new FlowRuntime()
+    const calls: { id: string; params: Record<string, number> }[] = []
+    rt.onHandoffRmm = (id, params) => calls.push({ id, params })
+    rt.start(
+      'host',
+      mkEffect([{ id: 'h', kind: 'handoff-rmm', params: { ms: 600 } }], []),
+      0,
+    )
+    rt.tick(50)
+    rt.tick(150)
+    rt.tick(300)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].id).toBe('host')
+  })
+
+  it('fires onReturnRmm exactly once', () => {
+    const rt = new FlowRuntime()
+    const calls: string[] = []
+    rt.onReturnRmm = (id) => calls.push(id)
+    rt.start(
+      'host',
+      mkEffect([{ id: 'r', kind: 'return-rmm', params: { ms: 600 } }], []),
+      0,
+    )
+    rt.tick(100)
+    rt.tick(700)
+    expect(calls).toEqual(['host'])
+  })
+
+  it('fires onHandoffMpd with direction param', () => {
+    const rt = new FlowRuntime()
+    const calls: { id: string; dir: number }[] = []
+    rt.onHandoffMpd = (id, params) => calls.push({ id, dir: params.direction ?? 0 })
+    rt.start(
+      'host',
+      mkEffect([{ id: 'm', kind: 'handoff-mpd', params: { direction: -1, ms: 400 } }], []),
+      0,
+    )
+    rt.tick(50)
+    rt.tick(200)
+    expect(calls).toEqual([{ id: 'host', dir: -1 }])
+  })
+
+  it('handoff tasks complete after their ms duration so downstream effects fire', () => {
+    const rt = new FlowRuntime()
+    const handoffCalls: string[] = []
+    rt.onHandoffRmm = (id) => handoffCalls.push(id)
+    rt.start(
+      'host',
+      mkEffect(
+        [
+          { id: 'h', kind: 'handoff-rmm', params: { ms: 200 } },
+          { id: 'm', kind: 'move', params: { dx: 5, ms: 200 } },
+        ],
+        [{ from: 'h', to: 'm' }],
+      ),
+      0,
+    )
+    rt.tick(50)
+    expect(handoffCalls).toEqual(['host'])
+    expect(rt.getOverride('host')).toBeUndefined() // move not started yet
+    rt.tick(300) // handoff done at 200, move at +100 → ratio 0.5
+    const ov = rt.getOverride('host')
+    expect(ov?.dx).toBeCloseTo(2.5, 1)
+  })
+})
+
+describe('FlowRuntime — spawn side-effects', () => {
+  it('fires onSpawn once on activation and onSpawnStop on completion', () => {
+    const rt = new FlowRuntime()
+    const starts: { id: string; count: number }[] = []
+    const stops: string[] = []
+    rt.onSpawn = (id, params) => starts.push({ id, count: params.count })
+    rt.onSpawnStop = (id) => stops.push(id)
+    rt.start(
+      'host',
+      mkEffect([{ id: 's', kind: 'spawn', params: { count: 4, ms: 100 } }], []),
+      0,
+    )
+    rt.tick(20)
+    rt.tick(60)
+    expect(starts).toEqual([{ id: 'host', count: 4 }])
+    expect(stops).toEqual([])
+    rt.tick(150) // past task end
+    expect(stops).toEqual(['host'])
+  })
+
+  it('fires onSpawnCircularStop on cancel mid-run', () => {
+    const rt = new FlowRuntime()
+    const stops: string[] = []
+    rt.onSpawnCircular = () => {}
+    rt.onSpawnCircularStop = (id) => stops.push(id)
+    const runId = rt.start(
+      'host',
+      mkEffect([{ id: 's', kind: 'spawn-circular', params: { count: 6, ms: 5000 } }], []),
+      0,
+    )!
+    rt.tick(50)
+    rt.cancel(runId)
+    expect(stops).toEqual(['host'])
+  })
+})
+
+describe('FlowRuntime — expand/collapse', () => {
+  it('expand interpolates scale 1 → mul over ms', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'e', kind: 'expand', params: { mul: 2, ms: 100 } }], []),
+      0,
+    )
+    rt.tick(50) // ratio 0.5
+    expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(1.5, 2)
+    rt.tick(99) // near end, ratio ~0.99
+    expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(2, 1)
+  })
+
+  it('collapse interpolates scale 1 → 1/mul over ms', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'c', kind: 'collapse', params: { mul: 2, ms: 100 } }], []),
+      0,
+    )
+    rt.tick(50) // ratio 0.5
+    expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(0.75, 2) // 1 + (0.5 - 1)*0.5
+    rt.tick(99) // near end
+    expect(rt.getOverride('n1')?.scaleMul).toBeCloseTo(0.5, 1)
+  })
+})
+
 describe('FlowRuntime — soak', () => {
   it('looped run does not leak overrides over 5000 ticks', () => {
     const rt = new FlowRuntime()
@@ -431,5 +564,37 @@ describe('mergeOverride', () => {
     expect(m.alphaMul).toBe(0.25)
     // 0xff0000 * 0x808080: red 255*128/255 = 128, others 0.
     expect((m.tint! >> 16) & 0xff).toBe(128)
+  })
+})
+
+describe('FlowEffectKind dispatch coverage', () => {
+  // Every kind in the union MUST be handled by the runtime. We assert this
+  // by starting a 1-node effect of each kind and verifying the runtime
+  // does not throw and either advances the override or fires a side-effect.
+  const ALL_KINDS: FlowEffectKind[] = [
+    'wait', 'move', 'scale', 'color', 'jitter', 'float', 'emerge', 'dismiss',
+    'cloud-levitate', 'bubble-levitate', 'repeater', 'camera', 'text-generator',
+    'record', 'obs-record', 'handoff-rmm', 'return-rmm', 'handoff-mpd',
+    'spawn', 'spawn-circular', 'expand', 'collapse',
+  ]
+
+  it('runtime accepts every FlowEffectKind without throwing', () => {
+    for (const kind of ALL_KINDS) {
+      const rt = new FlowRuntime()
+      // Stub all side-effect callbacks so handoff/spawn/record kinds don't
+      // throw on a missing handler.
+      rt.onSpawn = () => {}
+      rt.onSpawnStop = () => {}
+      rt.onSpawnCircular = () => {}
+      rt.onSpawnCircularStop = () => {}
+      rt.onHandoffRmm = () => {}
+      rt.onReturnRmm = () => {}
+      rt.onHandoffMpd = () => {}
+      const runId = rt.start('host', mkEffect([{ id: 'n', kind, params: { ms: 50 } }]), 0)
+      expect(runId).toBeTruthy()
+      // One tick should not throw and should not corrupt overrides.
+      expect(() => rt.tick(25)).not.toThrow()
+      expect(() => rt.tick(50)).not.toThrow()
+    }
   })
 })

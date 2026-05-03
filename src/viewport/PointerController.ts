@@ -150,6 +150,22 @@ export class PointerController {
       const store = useOmniStore.getState()
       const node = store.model.nodes.get(hitId)
       if (!node) return
+      // One-shot pick mode — used by the inspector "Link to node…" button.
+      // The previously-selected node becomes the link source; this hit is
+      // the peer. Pick mode auto-clears regardless of outcome.
+      if (store.pickMode === 'link-node') {
+        const source = store.selectedIds.size === 1
+          ? (store.selectedIds.values().next().value as string)
+          : null
+        store.setPickMode(null)
+        if (source && source !== hitId) {
+          store.linkNodes(source, hitId)
+          // Restore the source as the active selection so the inspector
+          // shows the new link immediately.
+          store.select(source, false)
+          return
+        }
+      }
       // Selection rules:
       //   shift + click → toggle membership in current selection
       //   click on already-selected node → keep selection (start multi-drag)

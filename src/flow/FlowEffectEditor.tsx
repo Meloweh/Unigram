@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
+import { useOmniStore } from '../model/store'
 
 const KINDS: FlowEffectKind[] = [
   'wait',
@@ -25,6 +26,15 @@ const KINDS: FlowEffectKind[] = [
   'repeater',
   'camera',
   'text-generator',
+  'record',
+  'obs-record',
+  'handoff-rmm',
+  'return-rmm',
+  'handoff-mpd',
+  'spawn',
+  'spawn-circular',
+  'expand',
+  'collapse',
 ]
 
 const NODE_W = 140
@@ -44,6 +54,15 @@ const KIND_COLORS: Record<FlowEffectKind, string> = {
   repeater: '#5b3a7a',
   camera: '#3a6b5e',
   'text-generator': '#7a4a8a',
+  record: '#7a3030',
+  'obs-record': '#a04040',
+  'handoff-rmm': '#3a6b8a',
+  'return-rmm': '#5a8a6b',
+  'handoff-mpd': '#8a6b3a',
+  spawn: '#3a8a8a',
+  'spawn-circular': '#5b8a3a',
+  expand: '#5a7a3d',
+  collapse: '#7a5a3d',
 }
 
 const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
@@ -59,7 +78,29 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   'bubble-levitate': ['ampY', 'scaleAmp', 'freq', 'ms'],
   repeater: ['times'],
   camera: ['panX', 'panY', 'zoom', 'ms', 'permanent'],
-  'text-generator': ['charsPerSec', 'loop', 'endHoldMs', 'ms'],
+  'text-generator': ['charsPerSec', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms'],
+  record: ['ms', 'fps'],
+  'obs-record': ['ms'],
+  // RMM handoff drives `useOmniStore.rmmZoomStep('in')` until the dial
+  // reaches handoff (i.e. swap to host node's child model). `ms` is the
+  // visual budget; the renderer steps the dial at ~60 Hz inside it.
+  'handoff-rmm': ['ms'],
+  // RMM return walks the dial back out, popping one frame off the stack.
+  'return-rmm': ['ms'],
+  // MPD handoff cycles to the next/previous MPD dimension on the host
+  // node. `direction` is +1 (next) or -1 (previous). `ms` controls the
+  // curtain animation length.
+  'handoff-mpd': ['direction', 'ms'],
+  // Spawn N decorative children at random offsets around the host within
+  // `radius` (scene-percent). They fade in over `fadeMs`, hold, then fade
+  // out when the task ends. `ms` is on-screen lifetime.
+  spawn: ['count', 'radius', 'ms', 'fadeMs'],
+  // Same as spawn but children land on a regular circle.
+  'spawn-circular': ['count', 'radius', 'ms', 'fadeMs'],
+  // Grow node by `mul` over `ms` (defaults to 1.5×). `permanent` holds final.
+  expand: ['mul', 'ms', 'permanent'],
+  // Shrink node by 1/mul over `ms`. `permanent` holds final.
+  collapse: ['mul', 'ms', 'permanent'],
 }
 
 const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
@@ -75,7 +116,20 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, freq: 1, ms: 3000 },
   repeater: { times: 1 },
   camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
-  'text-generator': { charsPerSec: 24, loop: 0, endHoldMs: 1000, ms: 1500 },
+  'text-generator': { charsPerSec: 24, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
+  // Record canvas to .webm for `ms` while task is active. `fps` is the
+  // capture frame rate; defaults to 30. The recording downloads on stop.
+  record: { ms: 5000, fps: 30 },
+  // Tell OBS (via WebSocket) to start recording for `ms` while active. The
+  // OBS host/port/password are read from the renderer's stored settings.
+  'obs-record': { ms: 5000 },
+  'handoff-rmm': { ms: 600 },
+  'return-rmm': { ms: 600 },
+  'handoff-mpd': { direction: 1, ms: 500 },
+  spawn: { count: 6, radius: 8, ms: 1500, fadeMs: 300 },
+  'spawn-circular': { count: 8, radius: 8, ms: 1500, fadeMs: 300 },
+  expand: { mul: 1.5, ms: 400, permanent: 0 },
+  collapse: { mul: 1.5, ms: 400, permanent: 0 },
 }
 
 /**
@@ -114,6 +168,7 @@ function withEntryNode(effect: FlowEffect): FlowEffect {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- helper exported alongside editor component
 export function emptyEffect(): FlowEffect {
   return {
     id: `eff_${Date.now().toString(36)}`,
@@ -127,9 +182,17 @@ interface Props {
   onPreview: (effect: FlowEffect) => void
   onSave: (effect: FlowEffect) => void
   onClose: () => void
+  /**
+   * Optional host node id this effect graph belongs to. When provided the
+   * editor surfaces a "Link to node …" picker so the user can pair other
+   * model nodes with this one (parity item I). The picker reads the model
+   * node list directly from the store; the canvas remains untouched while
+   * the modal is open, so we cannot reuse the canvas-side `pickMode`.
+   */
+  hostNodeId?: string
 }
 
-export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props) {
+export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId }: Props) {
   const [effect, setEffect] = useState<FlowEffect>(() => withEntryNode(deepClone(initial)))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingFromId, setPendingFromId] = useState<string | null>(null)
@@ -152,10 +215,26 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
 
   const selected = selectedId ? effect.graph.nodes.find((n) => n.id === selectedId) ?? null : null
 
-  const addNode = (kind: FlowEffectKind) => {
+  const addNode = (kind: FlowEffectKind, atX?: number, atY?: number) => {
     const id = `n_${Date.now().toString(36)}_${effect.graph.nodes.length}`
-    const x = 60 + (effect.graph.nodes.length % 4) * (NODE_W + 30)
-    const y = 60 + Math.floor(effect.graph.nodes.length / 4) * (NODE_H + 40)
+    let x: number
+    let y: number
+    if (atX != null && atY != null) {
+      // Drop position from sidebar drag — snap to grid so the dropped node
+      // lines up with existing wires.
+      x = snapToGrid(atX - NODE_W / 2)
+      y = snapToGrid(atY - NODE_H / 2)
+    } else {
+      // Vertical layout: stack new nodes top-to-bottom in a single column
+      // (legacy Unigram parity). Wraps to a second column once the column
+      // would extend past ~6 rows.
+      const ROW = NODE_H + GRID * 2
+      const COL = NODE_W + GRID * 2
+      const PER_COL = 6
+      const idx = effect.graph.nodes.length
+      x = GRID + Math.floor(idx / PER_COL) * COL
+      y = GRID + ((idx % PER_COL) + 1) * ROW
+    }
     const node: EffectNode = { id, kind, x, y, params: { ...DEFAULT_PARAMS[kind] } }
     setEffect((e) => ({ ...e, graph: { ...e.graph, nodes: [...e.graph.nodes, node] } }))
     setSelectedId(id)
@@ -281,7 +360,7 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
             placeholder="Effect name"
           />
           <div style={{ flex: 1 }} />
-          <button onClick={() => onPreview(effect)} style={btnStyle}>▶ Preview</button>
+          {hostNodeId && <LinkPicker hostNodeId={hostNodeId} />}
           <button onClick={() => onSave(effect)} style={{ ...btnStyle, background: '#2f5a32' }}>Save</button>
           <button onClick={onClose} style={btnStyle}>✕</button>
         </header>
@@ -292,7 +371,15 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
               <button
                 key={k}
                 onClick={() => addNode(k)}
-                style={{ ...btnStyle, justifyContent: 'flex-start', background: KIND_COLORS[k] }}
+                draggable
+                onDragStart={(e) => {
+                  // Carry the kind through dataTransfer so the canvas
+                  // drop handler can spawn the matching node at the
+                  // pointer location.
+                  e.dataTransfer.setData('application/omnigram-effect-kind', k)
+                  e.dataTransfer.effectAllowed = 'copy'
+                }}
+                style={{ ...btnStyle, justifyContent: 'flex-start', background: KIND_COLORS[k], cursor: 'grab' }}
               >
                 + {k}
               </button>
@@ -328,6 +415,9 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                 )
               </div>
             )}
+            {hostNodeId && (
+              <CrossLinkPanel hostNodeId={hostNodeId} effectId={effect.id} />
+            )}
           </aside>
           <svg
             ref={svgRef}
@@ -338,14 +428,28 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
               setSelectedId(null)
               cancelEdge()
             }}
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes('application/omnigram-effect-kind')) {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'copy'
+              }
+            }}
+            onDrop={(e) => {
+              const kind = e.dataTransfer.getData('application/omnigram-effect-kind') as FlowEffectKind | ''
+              if (!kind) return
+              e.preventDefault()
+              const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
+              addNode(kind, pt.x, pt.y)
+            }}
           >
             {/* Edges */}
             {effect.graph.edges.map((e) => {
               const a = nodeIndex.get(e.from)
               const b = nodeIndex.get(e.to)
               if (!a || !b) return null
-              const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2
-              const x2 = b.x, y2 = b.y + NODE_H / 2
+              // Vertical wires: bottom of `a` → top of `b`.
+              const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
+              const x2 = b.x + NODE_W / 2, y2 = b.y
               return (
                 <g key={`${e.from}->${e.to}`}>
                   <path
@@ -363,8 +467,8 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
             {pendingFromId && cursor && nodeIndex.get(pendingFromId) && (
               <path
                 d={curvePath(
-                  nodeIndex.get(pendingFromId)!.x + NODE_W,
-                  nodeIndex.get(pendingFromId)!.y + NODE_H / 2,
+                  nodeIndex.get(pendingFromId)!.x + NODE_W / 2,
+                  nodeIndex.get(pendingFromId)!.y + NODE_H,
                   cursor.x,
                   cursor.y,
                 )}
@@ -375,6 +479,13 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                 pointerEvents="none"
               />
             )}
+            {/* Cross-link indicators — dashed wires anchored at the right
+                edge of the canvas that name the peer host + effect they
+                pair this effect with. The editor doesn't render peer
+                columns inline (the per-effect state model would need a
+                rewrite); these dashed stubs are the visual parity for
+                "cross-link wires" while the runtime drives peer firing. */}
+            {hostNodeId && <CrossLinkOverlay hostNodeId={hostNodeId} effectId={effect.id} />}
             {/* Nodes */}
             {effect.graph.nodes.map((n) => (
               <g
@@ -404,19 +515,19 @@ export function FlowEffectEditor({ initial, onPreview, onSave, onClose }: Props)
                 <text x={10} y={42} fill="#cde" fontSize={11}>
                   {n.id === ENTRY_NODE_ID ? '(signal source)' : summariseParams(n)}
                 </text>
-                {/* Output port */}
+                {/* Output port (bottom edge) */}
                 <circle
-                  cx={NODE_W}
-                  cy={NODE_H / 2}
+                  cx={NODE_W / 2}
+                  cy={NODE_H}
                   r={6}
                   fill="#cfe"
                   stroke="#456"
                   onPointerDown={(e) => beginEdge(e, n.id)}
                   style={{ cursor: 'crosshair' }}
                 />
-                {/* Input port (visual only) — entry node has no input. */}
+                {/* Input port (top edge; visual only) — entry node has no input. */}
                 {n.id !== ENTRY_NODE_ID && (
-                  <circle cx={0} cy={NODE_H / 2} r={4} fill="#456" stroke="#cfe" />
+                  <circle cx={NODE_W / 2} cy={0} r={4} fill="#456" stroke="#cfe" />
                 )}              </g>
             ))}
           </svg>
@@ -477,8 +588,10 @@ function summariseParams(n: EffectNode): string {
 }
 
 function curvePath(x1: number, y1: number, x2: number, y2: number): string {
-  const dx = Math.max(40, Math.abs(x2 - x1) * 0.4)
-  return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
+  // Vertical S-curve: pull control points along the y-axis so wires read
+  // top-to-bottom. Falls back to a small offset for near-zero spans.
+  const dy = Math.max(40, Math.abs(y2 - y1) * 0.4)
+  return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`
 }
 
 function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
@@ -506,8 +619,10 @@ const overlayStyle: React.CSSProperties = {
 }
 
 const modalStyle: React.CSSProperties = {
-  width: 'min(1100px, 90vw)',
-  height: 'min(700px, 85vh)',
+  // Doubled relative to the previous min(1100,90vw) / min(700,85vh) sizing so
+  // the editor canvas has enough room for vertical-stacked graphs.
+  width: 'min(2200px, 95vw)',
+  height: 'min(1400px, 95vh)',
   background: '#1a1f2a',
   border: '1px solid #2f3a4a',
   borderRadius: 8,
@@ -534,7 +649,9 @@ const bodyStyle: React.CSSProperties = {
 }
 
 const sidebarStyle: React.CSSProperties = {
-  width: 200,
+  // Widened proportionally to the doubled modal so the kind buttons +
+  // param fields still breathe.
+  width: 320,
   padding: 12,
   borderRight: '1px solid #2f3a4a',
   display: 'flex',
@@ -581,4 +698,161 @@ const fieldStyle: React.CSSProperties = {
   borderRadius: 3,
   fontSize: 12,
   width: 70,
+}
+
+/**
+ * Inline picker shown in the editor header. Lists all model nodes (minus
+ * the host and any already-linked peers) in a select; choosing one calls
+ * `linkNodes` directly. Lives inside the editor (not the right inspector)
+ * because parity item I requires the link UX to be discovered while
+ * authoring an effect graph.
+ */
+function LinkPicker({ hostNodeId }: { hostNodeId: string }) {
+  const allNodes = useOmniStore((s) => s.model.nodes)
+  const host = allNodes.get(hostNodeId)
+  const linked = new Set(host?.linkedNodeIds ?? [])
+  const candidates: Array<{ id: string; label: string }> = []
+  for (const [id, n] of allNodes) {
+    if (id === hostNodeId || linked.has(id)) continue
+    candidates.push({ id, label: n.label || id })
+  }
+  return (
+    <select
+      value=""
+      onChange={(e) => {
+        const peer = e.target.value
+        if (!peer) return
+        useOmniStore.getState().linkNodes(hostNodeId, peer)
+        e.currentTarget.value = ''
+      }}
+      style={{ ...btnStyle, padding: '4px 8px' }}
+      title="Link this node to another node so they share an effect graph"
+    >
+      <option value="">+ Link to node…</option>
+      {candidates.map((c) => (
+        <option key={c.id} value={c.id}>{c.label}</option>
+      ))}
+    </select>
+  )
+}
+
+/**
+ * Cross-link manager shown in the editor sidebar. Lists every cross-link
+ * that originates from the current `(hostNodeId, effectId)` pair and lets
+ * the user create new ones. New links target a peer host (must already be
+ * in `host.linkedNodeIds`) + one of that peer's effects, mirroring the
+ * `model.crossLinks` schema 1:1.
+ */
+function CrossLinkPanel({ hostNodeId, effectId }: { hostNodeId: string; effectId: string }) {
+  const nodes = useOmniStore((s) => s.model.nodes)
+  const crossLinks = useOmniStore((s) => s.model.crossLinks ?? [])
+  const host = nodes.get(hostNodeId)
+  const peers = (host?.linkedNodeIds ?? []).map((id) => nodes.get(id)).filter((n): n is NonNullable<typeof n> => !!n)
+  const outgoing = crossLinks.filter(
+    (l) => l.from.nodeId === hostNodeId && l.from.effectId === effectId,
+  )
+  // Collapse the new-link form into a single row of selects so it stays
+  // narrow inside the sidebar.
+  const [peerId, setPeerId] = useState('')
+  const [peerEffectId, setPeerEffectId] = useState('')
+  const peer = peerId ? nodes.get(peerId) : null
+  const peerEffects = peer?.flowEffects ?? []
+  const add = () => {
+    if (!peerId || !peerEffectId) return
+    useOmniStore.getState().addCrossLink(
+      { nodeId: hostNodeId, effectId },
+      { nodeId: peerId, effectId: peerEffectId },
+    )
+    setPeerId('')
+    setPeerEffectId('')
+  }
+  return (
+    <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #2f3a4a' }}>
+      <div style={{ fontSize: 11, color: '#7a8aa0', marginBottom: 4 }}>Cross-links from this effect</div>
+      {outgoing.length === 0 && (
+        <div style={{ fontSize: 11, color: '#556677', fontStyle: 'italic' }}>None.</div>
+      )}
+      {outgoing.map((l) => {
+        const peerNode = nodes.get(l.to.nodeId)
+        const peerEff = peerNode?.flowEffects?.find((e) => e.id === l.to.effectId)
+        return (
+          <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+            <span style={{ flex: 1, fontSize: 11, color: '#cfe', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              → {peerNode?.label || l.to.nodeId} · {peerEff?.label || l.to.effectId}
+            </span>
+            <button
+              onClick={() => useOmniStore.getState().removeCrossLink(l.id)}
+              style={{ ...btnStyle, padding: '2px 6px', fontSize: 11 }}
+              title="Remove cross-link"
+            >
+              ✕
+            </button>
+          </div>
+        )
+      })}
+      {peers.length > 0 && (
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <select value={peerId} onChange={(e) => { setPeerId(e.target.value); setPeerEffectId('') }} style={fieldStyle}>
+            <option value="">— peer host —</option>
+            {peers.map((p) => (
+              <option key={p.id} value={p.id}>{p.label || p.id}</option>
+            ))}
+          </select>
+          {peer && (
+            <select value={peerEffectId} onChange={(e) => setPeerEffectId(e.target.value)} style={fieldStyle}>
+              <option value="">— peer effect —</option>
+              {peerEffects.map((e) => (
+                <option key={e.id} value={e.id}>{e.label || e.id}</option>
+              ))}
+            </select>
+          )}
+          <button onClick={add} disabled={!peerId || !peerEffectId} style={{ ...btnStyle, opacity: peerId && peerEffectId ? 1 : 0.5 }}>
+            + Add cross-link
+          </button>
+        </div>
+      )}
+      {peers.length === 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: '#556677', fontStyle: 'italic' }}>
+          Link this node to another via the header picker first.
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Renders dashed stubs along the right edge of the editor canvas, one per
+ * outgoing cross-link from the active effect. Pure visual aid — clicking
+ * does nothing (manage links from the sidebar panel).
+ */
+function CrossLinkOverlay({ hostNodeId, effectId }: { hostNodeId: string; effectId: string }) {
+  const nodes = useOmniStore((s) => s.model.nodes)
+  const crossLinks = useOmniStore((s) => s.model.crossLinks ?? [])
+  const outgoing = crossLinks.filter(
+    (l) => l.from.nodeId === hostNodeId && l.from.effectId === effectId,
+  )
+  if (outgoing.length === 0) return null
+  // Anchor stubs at a pinned x just inside the canvas right edge so they
+  // remain visible at any scroll position. The viewBox is the SVG's
+  // intrinsic coords which we don't strictly know here; pick a generous x
+  // that still works on the doubled-size modal.
+  const x = 1900
+  return (
+    <g pointerEvents="none">
+      {outgoing.map((l, i) => {
+        const peer = nodes.get(l.to.nodeId)
+        const peerEff = peer?.flowEffects?.find((e) => e.id === l.to.effectId)
+        const y = 60 + i * 28
+        return (
+          <g key={l.id} transform={`translate(${x},${y})`}>
+            <line x1={-80} y1={0} x2={0} y2={0} stroke="#cfa544" strokeWidth={2} strokeDasharray="6 4" />
+            <circle cx={0} cy={0} r={5} fill="#cfa544" />
+            <text x={-86} y={4} fill="#cfa544" fontSize={11} textAnchor="end" fontWeight={600}>
+              {peer?.label || l.to.nodeId} · {peerEff?.label || l.to.effectId}
+            </text>
+          </g>
+        )
+      })}
+    </g>
+  )
 }

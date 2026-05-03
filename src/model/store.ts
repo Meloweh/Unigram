@@ -66,6 +66,14 @@ export interface OmniState {
   /** Bumps any time the RMM zoom snapshot or focused node changes. */
   zoomRev: number
   undoStack: UndoStack
+  /**
+   * In-memory clipboard for copy/paste. NOT persisted; survives only for
+   * the lifetime of the page. Edges are only included when *both* endpoints
+   * are also in `nodes`. Null when nothing has been copied yet.
+   */
+  clipboard: { nodes: ModelNode[]; edges: Connection[] } | null
+  /** Wall-clock ms of the last paste, used to throttle key-repeat. */
+  lastPasteAt: number
   /** Active RMM zoom state. `progress === 0` means we're at rest (free zoom). */
   zoom: HybridZoomSnapshot
   /** Node currently being inflated; null when zoom is at rest. */
@@ -80,6 +88,16 @@ export interface OmniState {
    * (UI preference). Default `'default'`.
    */
   defaultConnectionKind: ConnectionKind
+
+  /**
+   * One-shot pointer mode used by inspector flows that need a follow-up
+   * canvas click. Currently:
+   *   - `'link-node'` — the next node clicked is paired with the
+   *     currently-selected node (see RightSidebar `LinkedNodesSection`).
+   * The PointerController consumes and clears this on the next select.
+   * NOT undoable (UI state).
+   */
+  pickMode: 'link-node' | null
 }
 
 interface Actions {
@@ -101,6 +119,9 @@ interface Actions {
   /** Sticky kind applied to connections drawn via the canvas (NOT undoable). */
   setDefaultConnectionKind(kind: ConnectionKind): void
 
+  /** Set the one-shot pointer mode (NOT undoable). Pass null to clear. */
+  setPickMode(mode: 'link-node' | null): void
+
   // Entity authoring (each is one undoable transaction).
   addNode(partial: Partial<ModelNode> & Pick<ModelNode, 'x' | 'y'>): string
   removeNodes(ids: Iterable<string>): void
@@ -113,6 +134,23 @@ interface Actions {
 
   // Multi-step transaction support for drag commits.
   applyTransaction(patches: Patch[]): void
+
+  /**
+   * Snapshot the current node selection (and any edges whose endpoints are
+   * both inside the selection) into the in-memory clipboard. NOT undoable
+   * (clipboard is purely UI state). No-op when nothing is selected.
+   */
+  copySelection(): void
+
+  /**
+   * Paste the clipboard contents back into the active model with fresh ids.
+   * The new nodes are offset by `(offsetX, offsetY)` scene-percent units
+   * (default `+4`, matching `DEFAULT_GRID_SNAP`). Calls within `throttleMs`
+   * (default 500 ms) of the last paste are dropped to avoid OOM on key
+   * repeat. Pasted nodes become the new selection. One undoable
+   * transaction. Returns the new node ids (empty when nothing pasted).
+   */
+  pasteClipboard(offsetX?: number, offsetY?: number, throttleMs?: number): string[]
 
   /**
    * Commit a drag/move whose intermediate frames were applied directly to the
@@ -147,6 +185,46 @@ interface Actions {
    */
   addMpdDimension(nodeId: string, label?: string): string | null
 
+  /**
+   * Create a fresh empty child model and link it to `nodeId.childModelId`.
+   * Returns the new model id, or null when the node doesn't exist or
+   * already has a child model. The model registration is NOT undoable but
+   * the node update is (so undo will unlink, not delete the model — the
+   * registry is a project-level resource).
+   */
+  addChildModel(nodeId: string, name?: string): string | null
+
+  /**
+   * Unlink `nodeId.childModelId` (does NOT delete the registered model so
+   * undo + re-link round-trips work). One undoable transaction.
+   */
+  removeChildModel(nodeId: string): void
+
+  /**
+   * Symmetrically link two nodes for paired effect-graph editing. Adds
+   * each id to the other's `linkedNodeIds`. Idempotent. Single undoable
+   * transaction. No-op when either node is missing or `a === b`.
+   */
+  linkNodes(a: string, b: string): void
+
+  /**
+   * Symmetrically unlink two nodes. Removes each id from the other's
+   * `linkedNodeIds`, and prunes any cross-effect links between them from
+   * `model.crossLinks`. Single undoable transaction.
+   */
+  unlinkNodes(a: string, b: string): void
+
+  /**
+   * Add a wire between two effect graphs. `from`/`to` reference the host
+   * node and the in-graph effect id. The store enforces that both hosts
+   * are linked (returns null otherwise) and rejects duplicates. Returns
+   * the new link id.
+   */
+  addCrossLink(from: { nodeId: string; effectId: string }, to: { nodeId: string; effectId: string }): string | null
+
+  /** Remove a cross-effect link by id. Undoable. */
+  removeCrossLink(id: string): void
+
   // RMM zoom (hot-path; NOT undoable per specification.md §4.7).
   /** Step the zoom snapshot in/out by one notch. Performs handoff/return at the boundaries. */
   rmmZoomStep(direction: 'in' | 'out', step?: number): void
@@ -173,11 +251,14 @@ export const useOmniStore = create<Store>((set, get) => ({
   selRev: 0,
   zoomRev: 0,
   undoStack: new UndoStack(),
+  clipboard: null,
+  lastPasteAt: 0,
   zoom: createInitialSnapshot(),
   focusedNodeId: null,
   zoomStack: [],
   editingNodeId: null,
   defaultConnectionKind: 'default',
+  pickMode: null,
 
   setCamera(c) {
     set((s) => ({ camera: { ...s.camera, ...c } }))
@@ -334,6 +415,71 @@ export const useOmniStore = create<Store>((set, get) => ({
     })
   },
 
+  copySelection() {
+    const s = get()
+    if (s.selectedIds.size === 0) return
+    const nodes: ModelNode[] = []
+    for (const id of s.selectedIds) {
+      const node = s.model.nodes.get(id)
+      // Shallow clone is enough — node fields are primitives, small arrays,
+      // and a shape string. Deep structures (`flowEffects`, `mpdDimensions`)
+      // are re-created at paste time.
+      if (node) nodes.push({ ...node })
+    }
+    const edges: Connection[] = []
+    for (const edge of s.model.edges.values()) {
+      if (s.selectedIds.has(edge.from) && s.selectedIds.has(edge.to)) {
+        edges.push({ ...edge })
+      }
+    }
+    set({ clipboard: { nodes, edges } })
+  },
+
+  pasteClipboard(offsetX = 4, offsetY = 4, throttleMs = 500) {
+    const s = get()
+    const clip = s.clipboard
+    if (!clip || clip.nodes.length === 0) return []
+    const now = Date.now()
+    if (now - s.lastPasteAt < throttleMs) return []
+    // Map old node ids → new node ids so cloned edges stay internally
+    // consistent. Edges referencing nodes outside the clipboard are dropped.
+    const idMap = new Map<string, string>()
+    const tx: Patch[] = []
+    const newIds: string[] = []
+    for (const src of clip.nodes) {
+      const id = newId('n')
+      idMap.set(src.id, id)
+      newIds.push(id)
+      // Fresh references for any array fields so undo/edits on the paste
+      // don't touch the clipboard original.
+      const node: ModelNode = {
+        ...src,
+        id,
+        x: src.x + offsetX,
+        y: src.y + offsetY,
+        flowEffects: src.flowEffects ? src.flowEffects.map((e) => ({ ...e })) : undefined,
+        mpdDimensions: src.mpdDimensions ? [...src.mpdDimensions] : undefined,
+      }
+      tx.push({ kind: 'node', op: 'add', node })
+    }
+    for (const src of clip.edges) {
+      const from = idMap.get(src.from)
+      const to = idMap.get(src.to)
+      if (!from || !to) continue
+      const edge: Connection = { ...src, id: newId('e'), from, to }
+      tx.push({ kind: 'edge', op: 'add', edge })
+    }
+    if (tx.length === 0) return []
+    get().applyTransaction(tx)
+    set((cur) => ({
+      lastPasteAt: now,
+      selectedIds: new Set(newIds),
+      selectedEdgeIds: new Set(),
+      selRev: cur.selRev + 1,
+    }))
+    return newIds
+  },
+
   commitDrag(baselines) {
     const { model } = get()
     const tx: Patch[] = []
@@ -434,6 +580,10 @@ export const useOmniStore = create<Store>((set, get) => ({
     set({ defaultConnectionKind: kind })
   },
 
+  setPickMode(mode) {
+    set({ pickMode: mode })
+  },
+
   setCosmetics(patch) {
     set((s) => {
       const cur = s.model.cosmetics ?? {}
@@ -517,6 +667,130 @@ export const useOmniStore = create<Store>((set, get) => ({
       }
     })
     return newId
+  },
+
+  addChildModel(nodeId, name) {
+    const s = get()
+    const node = s.model.nodes.get(nodeId)
+    if (!node) return null
+    if (node.childModelId) return null
+    const newModelId = `model_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`
+    const child: Model = {
+      id: newModelId,
+      name: name ?? `${node.label || node.id} · child`,
+      nodes: new Map(),
+      edges: new Map(),
+    }
+    // Register the model first (non-undoable; the registry is project-level).
+    set((cur) => {
+      const models = new Map(cur.models)
+      models.set(newModelId, child)
+      return { models }
+    })
+    // Link via an undoable update so toggling the link via undo/redo works.
+    get().updateNode(nodeId, { childModelId: newModelId })
+    return newModelId
+  },
+
+  removeChildModel(nodeId) {
+    const node = get().model.nodes.get(nodeId)
+    if (!node?.childModelId) return
+    // Patch only the field to keep the patch payload minimal; we deliberately
+    // leave the registered child model in place (re-link with undo restores
+    // the previous reference).
+    get().updateNode(nodeId, { childModelId: undefined })
+  },
+
+  /**
+   * Link two nodes symmetrically. Implemented as two node-update patches
+   * inside one transaction so undo unlinks both ends in lock-step.
+   */
+  linkNodes(a, b) {
+    if (a === b) return
+    const s = get()
+    const na = s.model.nodes.get(a)
+    const nb = s.model.nodes.get(b)
+    if (!na || !nb) return
+    const aLinks = na.linkedNodeIds ?? []
+    const bLinks = nb.linkedNodeIds ?? []
+    const tx: Patch[] = []
+    if (!aLinks.includes(b)) {
+      const after = { ...na, linkedNodeIds: [...aLinks, b] }
+      tx.push({ kind: 'node', op: 'update', id: a, before: na, after })
+    }
+    if (!bLinks.includes(a)) {
+      const after = { ...nb, linkedNodeIds: [...bLinks, a] }
+      tx.push({ kind: 'node', op: 'update', id: b, before: nb, after })
+    }
+    if (tx.length === 0) return
+    get().applyTransaction(tx)
+  },
+
+  unlinkNodes(a, b) {
+    if (a === b) return
+    const s = get()
+    const na = s.model.nodes.get(a)
+    const nb = s.model.nodes.get(b)
+    if (!na || !nb) return
+    const tx: Patch[] = []
+    if (na.linkedNodeIds?.includes(b)) {
+      const after = { ...na, linkedNodeIds: na.linkedNodeIds.filter((x) => x !== b) }
+      tx.push({ kind: 'node', op: 'update', id: a, before: na, after })
+    }
+    if (nb.linkedNodeIds?.includes(a)) {
+      const after = { ...nb, linkedNodeIds: nb.linkedNodeIds.filter((x) => x !== a) }
+      tx.push({ kind: 'node', op: 'update', id: b, before: nb, after })
+    }
+    if (tx.length > 0) get().applyTransaction(tx)
+    // Prune any cross-effect links that span the two nodes. Cross-links
+    // are NOT undoable (see addCrossLink contract) so we drop them
+    // outside the transaction.
+    const links = s.model.crossLinks ?? []
+    const keep = links.filter(
+      (l) => !((l.from.nodeId === a && l.to.nodeId === b) || (l.from.nodeId === b && l.to.nodeId === a)),
+    )
+    if (keep.length !== links.length) {
+      set((cur) => ({ model: { ...cur.model, crossLinks: keep }, rev: cur.rev + 1 }))
+    }
+  },
+
+  /**
+   * Cross-graph links are stored on `model.crossLinks` and treated like
+   * sidebar/clipboard state — they record authoring intent rather than a
+   * mutation of the active scene, and they are NOT routed through the
+   * undo stack. (Spec §4.7 reserves undo for first-class node/edge
+   * mutations; cross-links can be re-added cheaply via the FlowEffectEditor.)
+   */
+  addCrossLink(from, to) {
+    const s = get()
+    const a = s.model.nodes.get(from.nodeId)
+    const b = s.model.nodes.get(to.nodeId)
+    if (!a || !b) return null
+    if (!a.linkedNodeIds?.includes(to.nodeId)) return null
+    const links = s.model.crossLinks ?? []
+    const dup = links.find(
+      (l) =>
+        (l.from.nodeId === from.nodeId && l.from.effectId === from.effectId &&
+          l.to.nodeId === to.nodeId && l.to.effectId === to.effectId) ||
+        (l.from.nodeId === to.nodeId && l.from.effectId === to.effectId &&
+          l.to.nodeId === from.nodeId && l.to.effectId === from.effectId),
+    )
+    if (dup) return dup.id
+    const id = newId('xl')
+    const link = { id, from: { ...from }, to: { ...to } }
+    set((cur) => ({
+      model: { ...cur.model, crossLinks: [...(cur.model.crossLinks ?? []), link] },
+      rev: cur.rev + 1,
+    }))
+    return id
+  },
+
+  removeCrossLink(id) {
+    const s = get()
+    const links = s.model.crossLinks ?? []
+    const next = links.filter((l) => l.id !== id)
+    if (next.length === links.length) return
+    set((cur) => ({ model: { ...cur.model, crossLinks: next }, rev: cur.rev + 1 }))
   },
 
   rmmZoomStep(direction, step) {

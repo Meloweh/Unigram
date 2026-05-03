@@ -7,6 +7,14 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
+  /*
+   * Global UI scale multiplier applied to chrome (sidebars, toolbar,
+   * inspector). Default 1.5 — legacy Unigram chrome was uncomfortably
+   * small at 1.0. Scene rendering is unaffected (it draws to its own
+   * canvas in scene-percent units, not CSS pixels).
+   */
+  --ug-ui-scale: 1.5;
+
   /* Theme palette — light defaults (overridden by applyThemeToDOM) */
   --ug-bg: #f8fbff;
   --ug-viewport-bg: radial-gradient(circle at 30% 20%, #f5f9ff, #dfebf8);

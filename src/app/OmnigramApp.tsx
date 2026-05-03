@@ -25,6 +25,7 @@ import { FpsOverlay } from './FpsOverlay'
 import { LeftSidebar, DRAG_MIME_SHAPE } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
 import { EditorToolbar } from '../ui/EditorToolbar'
+import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { NodeShape } from '../model/types'
@@ -47,6 +48,16 @@ export function OmnigramApp() {
       delete document.documentElement.dataset.theme
     }
   }, [themeMode])
+
+  // Push the resolved palette into the renderer so default-coloured nodes
+  // recolour with the theme. Per-node user-chosen colours are preserved.
+  useEffect(() => {
+    if (!renderer) return
+    const p = resolvePalette(themeMode)
+    const labelHex = p.nodeLabel.startsWith('#') ? p.nodeLabel : '#132949'
+    const labelNum = parseInt(labelHex.replace('#', '').padEnd(6, '0').slice(0, 6), 16)
+    renderer.setThemePalette({ cell: p.nodeCell, membrane: p.nodeMembrane, label: labelNum })
+  }, [renderer, themeMode])
 
   useEffect(() => {
     const host = hostRef.current
@@ -135,6 +146,7 @@ export function OmnigramApp() {
       <DevPanel renderer={renderer} />
       <LeftSidebar />
       <RightSidebar renderer={renderer} />
+      <ConnectionReferencePopup renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
       <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
     </div>
@@ -194,11 +206,12 @@ function DevPanel({ renderer }: { renderer: SceneRenderer | null }) {
     <div
       style={{
         position: 'absolute',
-        top: 52,
-        left: 264,
+        top: 8,
+        left: '50%',
+        transform: 'translateX(-50%)',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         gap: 6,
         zIndex: 9,
       }}

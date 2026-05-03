@@ -29,6 +29,15 @@ export type FlowEffectKind =
   | 'repeater'
   | 'camera'
   | 'text-generator'
+  | 'record'
+  | 'obs-record'
+  | 'handoff-rmm'
+  | 'return-rmm'
+  | 'handoff-mpd'
+  | 'spawn'
+  | 'spawn-circular'
+  | 'expand'
+  | 'collapse'
 
 export interface EffectNode {
   id: string

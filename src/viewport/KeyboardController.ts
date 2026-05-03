@@ -32,6 +32,20 @@ export class KeyboardController {
       useOmniStore.getState().redo()
       return
     }
+    if (ctrl && (e.key === 'c' || e.key === 'C')) {
+      const s = useOmniStore.getState()
+      if (s.selectedIds.size === 0) return
+      e.preventDefault()
+      s.copySelection()
+      return
+    }
+    if (ctrl && (e.key === 'v' || e.key === 'V')) {
+      const s = useOmniStore.getState()
+      if (!s.clipboard) return
+      e.preventDefault()
+      s.pasteClipboard()
+      return
+    }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const s = useOmniStore.getState()
       const nodeSel = s.selectedIds

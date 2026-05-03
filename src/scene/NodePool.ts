@@ -9,7 +9,7 @@
 
 import { Container, Graphics, Text } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
-import type { ModelNode } from '../model/types'
+import { DEFAULT_NODE, type ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 import { drawNodeShape } from './shapes'
 import {
@@ -25,6 +25,33 @@ import {
 /** LOD presented to the pool when a node becomes (re)visible. */
 export type Lod = 'full' | 'simple' | 'dot'
 
+/**
+ * Theme-driven defaults that override `DEFAULT_NODE`-coloured nodes when
+ * the user has not explicitly customised that node's colours. Set by the
+ * renderer via {@link NodePool.setThemePalette}; null means "use the raw
+ * `cellColor` / `membraneColor` exactly as stored on the node".
+ */
+export interface ThemeColors {
+  cell: string
+  membrane: string
+  label: number
+}
+
+/**
+ * Return the cell colour to draw with: if the node still carries the
+ * factory default colour and a theme override is active, swap in the
+ * palette colour so dark / sepia / contrast modes recolour the canvas.
+ * Otherwise the user explicitly chose this colour — leave it alone.
+ */
+function effectiveCellColor(n: ModelNode, theme: ThemeColors | null): string {
+  if (theme && n.cellColor === DEFAULT_NODE.cellColor) return theme.cell
+  return n.cellColor
+}
+function effectiveMembraneColor(n: ModelNode, theme: ThemeColors | null): string {
+  if (theme && n.membraneColor === DEFAULT_NODE.membraneColor) return theme.membrane
+  return n.membraneColor
+}
+
 interface PooledNode {
   container: Container
   shape: Graphics
@@ -39,15 +66,17 @@ const TEXT_INSET = 0.82
 /** Extra scene-percent padding around the text bounding box. */
 const TEXT_PAD_PCT = 1.0
 
-const dirtyKeyOf = (n: ModelNode, lod: Lod): string =>
-  `${lod}|${n.shape}|${n.w}|${n.h}|${n.cellColor}|${n.membraneColor}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}`
+const dirtyKeyOf = (n: ModelNode, lod: Lod, theme: ThemeColors | null): string =>
+  `${lod}|${n.shape}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}`
 
 const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' ? n.label : '')
 
-function drawShape(g: Graphics, n: ModelNode, lod: Lod): void {
+function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | null): void {
   g.clear()
+  const cell = effectiveCellColor(n, theme)
+  const membrane = effectiveMembraneColor(n, theme)
   if (lod === 'dot') {
-    g.rect(-2, -2, 4, 4).fill({ color: n.cellColor })
+    g.rect(-2, -2, 4, 4).fill({ color: cell })
     return
   }
   // Convert percent → pixels using SCENE_W/H for stable proportions.
@@ -58,12 +87,12 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod): void {
     : undefined
   // `simple` LOD draws a flat fill (cheap); `full` uses the cached gradient
   // for the legacy 145° cell→darker look.
-  const fill = lod === 'simple' ? n.cellColor : nodeFillGradient(n.cellColor)
+  const fill = lod === 'simple' ? cell : nodeFillGradient(cell)
   drawNodeShape(g, n.shape, {
     w: wPx,
     h: hPx,
     fill,
-    stroke: n.membraneColor,
+    stroke: membrane,
     strokeWidth: NODE_STROKE_WIDTH,
     tip,
   })
@@ -83,6 +112,13 @@ export class NodePool {
   private readonly layer: Container
   /** Optional hook the renderer registers to grow the node + quadtree entry. */
   onNodeFit?: NodeFitCallback
+  /**
+   * Active theme override. When set, nodes that still carry the factory
+   * default colours render with the palette colours instead so the canvas
+   * follows light/dark/sepia/contrast mode. Per-node user-chosen colours
+   * are never overridden.
+   */
+  private theme: ThemeColors | null = null
 
   constructor(layer: Container) {
     this.layer = layer
@@ -129,9 +165,9 @@ export class NodePool {
       if (pn.container.alpha !== 1) pn.container.alpha = 1
       if (pn.container.tint !== 0xffffff) pn.container.tint = 0xffffff
     }
-    const key = dirtyKeyOf(n, lod)
+    const key = dirtyKeyOf(n, lod, this.theme)
     if (key !== pn.dirtyKey) {
-      drawShape(pn.shape, n, lod)
+      drawShape(pn.shape, n, lod, this.theme)
       setLabel(pn.label, n, lod)
       pn.dirtyKey = key
       pn.lod = lod
@@ -177,6 +213,22 @@ export class NodePool {
   /** Currently visible ids (for diffing). */
   forEachVisible(cb: (id: string) => void): void {
     for (const id of this.active.keys()) cb(id)
+  }
+
+  /**
+   * Set or clear the theme override. Invalidates every active node's dirty
+   * key and updates label tints so the next draw recolours the canvas.
+   * Cheap (O(active)); palette changes are user-driven, not per frame.
+   */
+  setThemePalette(theme: ThemeColors | null): void {
+    this.theme = theme
+    for (const pn of this.active.values()) {
+      pn.dirtyKey = ''
+      pn.label.style.fill = theme?.label ?? NODE_LABEL_FILL
+    }
+    for (const pn of this.free) {
+      pn.label.style.fill = theme?.label ?? NODE_LABEL_FILL
+    }
   }
 
   destroy(): void {

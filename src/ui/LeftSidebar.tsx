@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- co-located style helpers used by LeftSidebar and RightSidebar */
 /**
  * LeftSidebar — build palette.
  *
@@ -37,14 +38,48 @@ const COSMETIC: ShapeEntry[] = [
   { id: 'thinking-cloud', label: 'Thinking Cloud', icon: '💭' },
 ]
 
+/**
+ * Media node "types" — each entry spawns a regular rectangular node with
+ * the matching `mediaType` flag set. Renderer presentation arrives in a
+ * later phase; for now the badge in the right inspector confirms the type.
+ */
+type MediaKind = NonNullable<import('../model/types').ModelNode['mediaType']>
+interface MediaEntry { id: MediaKind; label: string; icon: string }
+const MEDIA: MediaEntry[] = [
+  { id: 'image', label: 'Image', icon: '🖼' },
+  { id: 'gif', label: 'GIF', icon: '🎞' },
+  { id: 'audio', label: 'Audio', icon: '🔊' },
+  { id: 'video', label: 'Video', icon: '🎬' },
+  { id: 'markdown', label: 'Markdown', icon: 'M↓' },
+  { id: 'math', label: 'Math', icon: '√' },
+]
+
 export function LeftSidebar() {
   const [collapsed, setCollapsed] = useState(false)
-  const [openSection, setOpenSection] = useState<'nodes' | 'cosmetic' | 'connections' | null>('nodes')
+  // Open sections are tracked as a Set so toggling one section never closes
+  // another (parity with legacy: each header is independently expandable).
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(['nodes']))
+  const isOpen = (id: string) => openSections.has(id)
+  const toggleSection = (id: string) =>
+    setOpenSections((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   const connKind = useOmniStore((s) => s.defaultConnectionKind)
 
   const spawn = (shape: NodeShape) => {
     const store = useOmniStore.getState()
     const id = store.addNode({ x: 50, y: 50, shape, label: '' })
+    store.select(id)
+  }
+
+  const spawnMedia = (mediaType: MediaKind) => {
+    const store = useOmniStore.getState()
+    // Use a rectangle with the media-type flag set; the inspector will
+    // surface a file picker to populate `mediaSrc`.
+    const id = store.addNode({ x: 50, y: 50, shape: 'rounded-rect', label: mediaType, mediaType })
     store.select(id)
   }
 
@@ -59,26 +94,15 @@ export function LeftSidebar() {
     window.setTimeout(() => preview.remove(), 0)
   }
 
-  if (collapsed) {
-    return (
-      <button
-        onClick={() => setCollapsed(false)}
-        title="Expand build palette"
-        style={collapsedStripStyle('left')}
-      >
-        <span style={collapsedChevronStyle}>›</span>
-      </button>
-    )
-  }
-
+  // Single persistent shell so the collapse/expand width transition runs.
   return (
-    <div style={shellStyle('left')}>
-      <div style={contentStyle}>
+    <div style={shellStyle('left', collapsed)}>
+      <div style={animatedContentStyle(collapsed)}>
         <div style={titleStyle}>Components</div>
         <Section
           title="Nodes"
-          open={openSection === 'nodes'}
-          onToggle={() => setOpenSection(openSection === 'nodes' ? null : 'nodes')}
+          open={isOpen('nodes')}
+          onToggle={() => toggleSection('nodes')}
         >
           {STANDARD.map((s) => (
             <PaletteItem
@@ -91,8 +115,8 @@ export function LeftSidebar() {
         </Section>
         <Section
           title="Cosmetic"
-          open={openSection === 'cosmetic'}
-          onToggle={() => setOpenSection(openSection === 'cosmetic' ? null : 'cosmetic')}
+          open={isOpen('cosmetic')}
+          onToggle={() => toggleSection('cosmetic')}
         >
           {COSMETIC.map((s) => (
             <PaletteItem
@@ -104,9 +128,28 @@ export function LeftSidebar() {
           ))}
         </Section>
         <Section
+          title="Media"
+          open={isOpen('media')}
+          onToggle={() => toggleSection('media')}
+        >
+          {MEDIA.map((m) => (
+            <PaletteItem
+              key={m.id}
+              entry={{ id: 'rounded-rect' as NodeShape, label: m.label, icon: m.icon }}
+              onClick={() => spawnMedia(m.id)}
+              onDragStart={(e) => {
+                // Re-use the shape drag protocol; the inspector will offer
+                // a file picker once the dropped node is selected.
+                e.dataTransfer.setData(DRAG_MIME_SHAPE, 'rounded-rect')
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+            />
+          ))}
+        </Section>
+        <Section
           title="Connection Types"
-          open={openSection === 'connections'}
-          onToggle={() => setOpenSection(openSection === 'connections' ? null : 'connections')}
+          open={isOpen('connections')}
+          onToggle={() => toggleSection('connections')}
         >
           <ConnectionKindRadio
             value={connKind}
@@ -116,11 +159,11 @@ export function LeftSidebar() {
         <div style={hintStyle}>Click to add at centre · drag to position.</div>
       </div>
       <button
-        onClick={() => setCollapsed(true)}
-        title="Collapse panel"
+        onClick={() => setCollapsed((c) => !c)}
+        title={collapsed ? 'Expand build palette' : 'Collapse panel'}
         style={toggleColumnStyle('left')}
       >
-        ‹
+        {collapsed ? '›' : '‹'}
       </button>
     </div>
   )
@@ -261,45 +304,69 @@ function Section({
 
 // ---- shared sidebar shell styles ------------------------------------------
 
-export function shellStyle(side: 'left' | 'right'): React.CSSProperties {
+/**
+ * Width of the expanded panel at scale=1. Actual rendered width is this
+ * multiplied by `--ug-ui-scale` (default 1.5 — see [src/index.css](../index.css)).
+ */
+export const SIDEBAR_EXPANDED_W = 240
+/** Width of the collapsed strip at scale=1 (also the width of the
+ *  expand/collapse toggle column — widened from 18 → 27 (×1.5) so the
+ *  arrow target is comfortably clickable on touch displays). */
+export const SIDEBAR_COLLAPSED_W = 27
+/** Collapse / expand transition duration (ms). */
+export const SIDEBAR_TRANSITION_MS = 180
+
+/** Helper: scale a pixel literal by the global UI scale variable. */
+const scaled = (px: number) => `calc(${px}px * var(--ug-ui-scale))`
+
+/**
+ * Outer shell — flush against the screen edge (legacy parity), with rounded
+ * corners only on the inner side. Animates `width` so collapse/expand feels
+ * connected instead of abruptly swapping DOM trees. Toggle column lives on
+ * the inner edge: render order is content → toggle for both sides via the
+ * `flex-direction` trick (left = row, right = row-reverse).
+ */
+export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSSProperties {
   return {
     position: 'absolute',
-    [side]: 8,
-    top: 8,
-    bottom: 8,
-    width: 240,
+    [side]: 0,
+    top: scaled(8),
+    bottom: scaled(8),
+    width: collapsed ? scaled(SIDEBAR_COLLAPSED_W) : scaled(SIDEBAR_EXPANDED_W),
     background: 'var(--ug-glass)',
     color: 'var(--ug-text)',
-    font: '12px system-ui, sans-serif',
-    borderRadius: 6,
+    font: `${scaled(12)} system-ui, sans-serif`,
+    borderRadius: side === 'left' ? `0 ${scaled(6)} ${scaled(6)} 0` : `${scaled(6)} 0 0 ${scaled(6)}`,
     border: '1px solid var(--ug-border)',
+    [side === 'left' ? 'borderLeft' : 'borderRight']: 'none',
     display: 'flex',
     flexDirection: side === 'left' ? 'row' : 'row-reverse',
     overflow: 'hidden',
     zIndex: 5,
+    transition: `width ${SIDEBAR_TRANSITION_MS}ms ease`,
   }
 }
 
 const contentStyle: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
-  padding: 12,
+  padding: scaled(12),
   display: 'flex',
   flexDirection: 'column',
-  gap: 10,
+  gap: scaled(10),
   overflowY: 'auto',
 }
 
 const titleStyle: React.CSSProperties = {
   fontWeight: 600,
-  fontSize: 13,
+  fontSize: scaled(13),
   color: 'var(--ug-text-heading)',
   borderBottom: '1px solid var(--ug-border-light)',
-  paddingBottom: 6,
+  paddingBottom: scaled(6),
 }
 
 const hintStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: scaled(11),
   color: 'var(--ug-text-muted)',
   fontStyle: 'italic',
   marginTop: 'auto',
@@ -308,17 +375,36 @@ const hintStyle: React.CSSProperties = {
 export function toggleColumnStyle(side: 'left' | 'right'): React.CSSProperties {
   return {
     flexShrink: 0,
-    width: 18,
+    width: scaled(SIDEBAR_COLLAPSED_W),
     background: 'var(--ug-surface-raised)',
     color: 'var(--ug-text-muted)',
     border: 'none',
     borderLeft: side === 'left' ? '1px solid var(--ug-border-light)' : 'none',
     borderRight: side === 'right' ? '1px solid var(--ug-border-light)' : 'none',
     cursor: 'pointer',
-    font: '14px system-ui, sans-serif',
+    font: `${scaled(14)} system-ui, sans-serif`,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+  }
+}
+
+/**
+ * Animated content wrapper — fades + clips body when the parent shell is
+ * collapsed so width-animation reveals the body smoothly. `pointer-events`
+ * are dropped while collapsed so hidden buttons don't intercept clicks
+ * meant for the toggle. When collapsed we also zero out the flex basis +
+ * padding so the toggle column is not pushed outside the (narrow) shell
+ * and clipped by `overflow: hidden`.
+ */
+export function animatedContentStyle(collapsed: boolean): React.CSSProperties {
+  return {
+    ...contentStyle,
+    flex: collapsed ? '0 0 0px' : 1,
+    padding: collapsed ? 0 : scaled(12),
+    opacity: collapsed ? 0 : 1,
+    pointerEvents: collapsed ? 'none' : 'auto',
+    transition: `opacity ${SIDEBAR_TRANSITION_MS}ms ease`,
   }
 }
 
@@ -326,8 +412,10 @@ export function collapsedStripStyle(side: 'left' | 'right'): React.CSSProperties
   return {
     position: 'absolute',
     [side]: 0,
-    top: '20%',
-    bottom: '20%',
+    // Reduce strip height to ~40 % of the viewport so it reads as a tab,
+    // not a full-height panel (legacy Unigram parity).
+    top: '30%',
+    bottom: '30%',
     width: 16,
     background: 'var(--ug-glass)',
     color: 'var(--ug-text-muted)',
@@ -341,9 +429,4 @@ export function collapsedStripStyle(side: 'left' | 'right'): React.CSSProperties
     justifyContent: 'center',
     zIndex: 5,
   }
-}
-
-const collapsedChevronStyle: React.CSSProperties = {
-  font: 'bold 14px system-ui, sans-serif',
-  color: '#cfe',
 }

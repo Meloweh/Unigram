@@ -55,6 +55,32 @@ export interface ModelNode {
   hideDuringFlow?: boolean
   /** When true, viewport `move`/`camera` flow effects keep this node in view. */
   cameraTracked?: boolean
+  /**
+   * Optional media payload kind. When set, the node renders the matching
+   * asset (`mediaSrc`) instead of (or in addition to) its label. Mirrors
+   * legacy `MediaNodeType`. Foundation only — full image/video/markdown/
+   * math compositing arrives with Phase E.
+   */
+  mediaType?: 'image' | 'gif' | 'audio' | 'video' | 'markdown' | 'math'
+  /**
+   * Source URL or data-URI for the media payload (used when `mediaType` is
+   * one of the binary kinds). For `markdown` / `math` the textual source
+   * lives in `extra.contentSource` since strings are passed through the
+   * label/extra channels rather than a media URL.
+   */
+  mediaSrc?: string
+  /**
+   * Optional original filename of the media asset, used by the bundle
+   * exporter to round-trip the file extension and a stable display name.
+   */
+  mediaFileName?: string
+  /**
+   * Symmetric peer references for paired effect-graph editing. When this
+   * node is opened in the FlowEffectEditor, every linked peer's effect
+   * graph is rendered in a parallel column and cross-graph wires (stored
+   * on the `Model.crossLinks` registry) are honoured by the runtime.
+   */
+  linkedNodeIds?: string[]
   /** Forward-compat slot for fields owned by later stages. */
   extra?: Record<string, unknown>
 }
@@ -93,8 +119,21 @@ export interface Connection {
   labelFontSize?: number
   /** When set, this connection only appears once the named spawn effect runs. */
   dependsOnSpawn?: string
+  /**
+   * Citations / supporting references attached to this connection. Surfaced
+   * by the in-canvas reference popup that opens over a selected edge
+   * (legacy `unzipPopup` parity — the popup lives in `src/ui/`).
+   */
+  references?: ConnectionReference[]
   /** Forward-compat slot. */
   extra?: Record<string, unknown>
+}
+
+/** A single citation row attached to a connection. */
+export interface ConnectionReference {
+  title: string
+  citation: string
+  url: string
 }
 
 export interface GridSettings {
@@ -121,8 +160,26 @@ export interface Model {
   grid?: GridSettings
   /** Diagram-level cosmetics (theme, background, particles). */
   cosmetics?: import('../theme/types').ModelCosmetics
+  /**
+   * Cross-graph wires between two host nodes' flow effect graphs. Created
+   * by the FlowEffectEditor when the user drags a wire from one host's
+   * column into another linked host's column. Honoured by
+   * [src/flow/runtime.ts](../flow/runtime.ts) at playback.
+   */
+  crossLinks?: CrossEffectLink[]
   /** Forward-compat slot. */
   extra?: Record<string, unknown>
+}
+
+/**
+ * A wire that crosses from one node's effect graph into another's.
+ * Stored on the parent model (not on either node) so removal stays
+ * symmetric when either endpoint is deleted.
+ */
+export interface CrossEffectLink {
+  id: string
+  from: { nodeId: string; effectId: string }
+  to: { nodeId: string; effectId: string }
 }
 
 export interface Project {
@@ -136,8 +193,8 @@ export const DEFAULT_NODE: Pick<
   ModelNode,
   'w' | 'h' | 'shape' | 'cellColor' | 'membraneColor'
 > = {
-  w: 8,
-  h: 4,
+  w: 6,
+  h: 5,
   shape: 'rounded-rect',
   cellColor: '#f4f8fd',
   membraneColor: '#365f8f',

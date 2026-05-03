@@ -23,6 +23,16 @@ export interface TextGenConfig {
   loop?: boolean
   /** Time to hold the fully-typed string before looping (ms). Default: 1500. */
   endHoldMs?: number
+  /** First char index of the animated range (inclusive). Chars before this
+   *  are shown verbatim from the start. Default: 0. */
+  startIndex?: number
+  /** Last char index of the animated range (exclusive); -1 or undefined
+   *  means "to end of text". Chars after this appear once the range is
+   *  fully typed. Default: -1. */
+  endIndex?: number
+  /** When > 0, on `stop()` the runner un-types the animated range over
+   *  this duration before restoring `originalLabel`. Default: 0. */
+  degenerationMs?: number
 }
 
 interface RunState {
@@ -30,8 +40,17 @@ interface RunState {
   startedAt: number
   /** Original label restored on stop. */
   originalLabel: string
-  /** Last-emitted character index (so we know when to play sounds). */
+  /** Last-emitted character index within the animated range (so we know
+   *  when to play sounds and to seed degeneration). */
   lastIndex: number
+  /** Resolved animated-range bounds within `config.text`. */
+  rangeStart: number
+  rangeEnd: number
+  /** When set, the run is in degeneration phase: lastIndex is being lerped
+   *  back to 0. Stored so degeneration starts from the currently-visible
+   *  character count rather than restarting from full. */
+  degenStartedAt: number | null
+  degenFromIndex: number
 }
 
 export class TextGenRunner {
@@ -44,24 +63,45 @@ export class TextGenRunner {
     if (prev) {
       ;(node as { label: string }).label = prev.originalLabel
     }
+    const text = config.text
+    const rawStart = config.startIndex ?? 0
+    const rawEnd = config.endIndex ?? -1
+    const rangeStart = Math.max(0, Math.min(text.length, rawStart))
+    const rangeEnd =
+      rawEnd < 0 ? text.length : Math.max(rangeStart, Math.min(text.length, rawEnd))
     this.runs.set(node.id, {
       config: {
-        text: config.text,
+        text,
         charsPerSec: config.charsPerSec ?? 24,
         sound: config.sound ?? 'none',
         loop: config.loop ?? false,
         endHoldMs: config.endHoldMs ?? 1500,
+        startIndex: rangeStart,
+        endIndex: rangeEnd,
+        degenerationMs: Math.max(0, config.degenerationMs ?? 0),
       },
       startedAt: now,
       originalLabel: node.label,
       lastIndex: 0,
+      rangeStart,
+      rangeEnd,
+      degenStartedAt: null,
+      degenFromIndex: 0,
     })
-    ;(node as { label: string }).label = ''
+    // Initial display: prefix only — the animated range is blank.
+    ;(node as { label: string }).label = text.slice(0, rangeStart)
   }
 
   stop(node: ModelNode): void {
     const run = this.runs.get(node.id)
     if (!run) return
+    if (run.config.degenerationMs > 0 && run.degenStartedAt === null) {
+      // Begin un-typing rather than snapping back. The tick loop owns the
+      // restore once degeneration completes.
+      run.degenStartedAt = performance.now()
+      run.degenFromIndex = run.lastIndex
+      return
+    }
     ;(node as { label: string }).label = run.originalLabel
     this.runs.delete(node.id)
   }
@@ -87,22 +127,40 @@ export class TextGenRunner {
         this.runs.delete(id)
         continue
       }
-      const total = run.config.text.length
-      const cycleMs = (total / run.config.charsPerSec) * 1000
+      const text = run.config.text
+      const rangeLen = run.rangeEnd - run.rangeStart
+      // Degeneration phase: lerp lastIndex back to 0 over degenerationMs.
+      if (run.degenStartedAt !== null) {
+        const t = Math.min(
+          1,
+          (now - run.degenStartedAt) / Math.max(1, run.config.degenerationMs),
+        )
+        const desired = Math.max(0, Math.floor(run.degenFromIndex * (1 - t)))
+        if (desired !== run.lastIndex) {
+          ;(node as { label: string }).label = renderLabel(text, run.rangeStart, run.rangeEnd, desired)
+          run.lastIndex = desired
+          dirty = true
+        }
+        if (t >= 1) {
+          ;(node as { label: string }).label = run.originalLabel
+          this.runs.delete(id)
+          dirty = true
+        }
+        continue
+      }
+      const cycleMs = (rangeLen / run.config.charsPerSec) * 1000
       let elapsed = now - run.startedAt
       // Loop wrap.
       if (run.config.loop && elapsed > cycleMs + run.config.endHoldMs) {
         run.startedAt = now
         run.lastIndex = 0
-        ;(node as { label: string }).label = ''
+        ;(node as { label: string }).label = renderLabel(text, run.rangeStart, run.rangeEnd, 0)
         elapsed = 0
         dirty = true
       }
-      const desired = Math.min(total, Math.floor((elapsed / 1000) * run.config.charsPerSec))
+      const desired = Math.min(rangeLen, Math.floor((elapsed / 1000) * run.config.charsPerSec))
       if (desired !== run.lastIndex) {
-        ;(node as { label: string }).label = run.config.text.slice(0, desired)
-        // Play one sound per advancing character (capped to avoid floods on
-        // tab catch-up; one sound per tick is enough for the audible effect).
+        ;(node as { label: string }).label = renderLabel(text, run.rangeStart, run.rangeEnd, desired)
         if (desired > run.lastIndex && run.config.sound !== 'none') {
           playGenSound(run.config.sound, desired)
         }
@@ -111,7 +169,6 @@ export class TextGenRunner {
       }
       // Non-looping: stop once fully typed and held.
       if (!run.config.loop && elapsed > cycleMs + run.config.endHoldMs) {
-        // Leave the final text in place but drop the run so we stop ticking.
         this.runs.delete(id)
       }
     }
@@ -126,4 +183,19 @@ export class TextGenRunner {
       this.runs.delete(id)
     }
   }
+}
+
+/**
+ * Compose the visible label given the animated range and how many chars
+ * within that range have been revealed. Prefix (before rangeStart) is
+ * always shown; suffix (after rangeEnd) appears only once the range is
+ * fully typed (mirrors legacy substring behaviour where the surrounding
+ * static text snaps in once the animation completes).
+ */
+function renderLabel(text: string, rangeStart: number, rangeEnd: number, typed: number): string {
+  const prefix = text.slice(0, rangeStart)
+  const rangeLen = rangeEnd - rangeStart
+  const animated = text.slice(rangeStart, rangeStart + Math.min(rangeLen, typed))
+  const suffix = typed >= rangeLen ? text.slice(rangeEnd) : ''
+  return prefix + animated + suffix
 }

@@ -9,6 +9,9 @@ beforeEach(() => {
     rev: 0,
     selRev: 0,
     defaultConnectionKind: 'default',
+    clipboard: null,
+    lastPasteAt: 0,
+    pickMode: null,
   })
   useOmniStore.getState().undoStack.clear()
 })
@@ -115,5 +118,121 @@ describe('store', () => {
     const id = useOmniStore.getState().addEdge(a, b, { kind: 'flow' })!
     const e = useOmniStore.getState().model.edges.get(id)!
     expect(e.kind).toBe('flow')
+  })
+
+  it('copySelection captures selected nodes + only fully-internal edges', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const b = s.addNode({ x: 10, y: 0 })
+    const c = s.addNode({ x: 20, y: 0 })
+    s.addEdge(a, b)        // both endpoints in selection
+    s.addEdge(b, c)        // c is NOT selected — must be excluded
+    s.selectMany([a, b])
+    s.copySelection()
+    const clip = useOmniStore.getState().clipboard!
+    expect(clip).not.toBeNull()
+    expect(clip.nodes.map((n) => n.id).sort()).toEqual([a, b].sort())
+    expect(clip.edges).toHaveLength(1)
+    expect(clip.edges[0].from).toBe(a)
+    expect(clip.edges[0].to).toBe(b)
+  })
+
+  it('pasteClipboard creates new ids, offsets coords, and re-wires edges', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const b = s.addNode({ x: 10, y: 0 })
+    s.addEdge(a, b)
+    s.selectMany([a, b])
+    s.copySelection()
+    const newIds = useOmniStore.getState().pasteClipboard()
+    expect(newIds).toHaveLength(2)
+    expect(newIds.every((id) => id !== a && id !== b)).toBe(true)
+    const m = useOmniStore.getState().model
+    expect(m.nodes.size).toBe(4)
+    expect(m.edges.size).toBe(2)
+    // Pasted nodes are offset by +4/+4 (DEFAULT_GRID_SNAP).
+    const pasted = newIds.map((id) => m.nodes.get(id)!)
+    expect(pasted[0].x).toBe(4)
+    expect(pasted[1].x).toBe(14)
+    // The pasted edge references the new ids, not the originals.
+    const pastedEdge = [...m.edges.values()].find((e) => newIds.includes(e.from))!
+    expect(newIds).toContain(pastedEdge.from)
+    expect(newIds).toContain(pastedEdge.to)
+  })
+
+  it('pasteClipboard throttles back-to-back calls', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    s.selectMany([a])
+    s.copySelection()
+    const first = useOmniStore.getState().pasteClipboard()
+    const second = useOmniStore.getState().pasteClipboard()
+    expect(first).toHaveLength(1)
+    expect(second).toHaveLength(0) // throttled within 500 ms window
+  })
+
+  it('pasteClipboard with no clipboard is a no-op', () => {
+    const out = useOmniStore.getState().pasteClipboard()
+    expect(out).toEqual([])
+    expect(useOmniStore.getState().model.nodes.size).toBe(0)
+  })
+
+  it('addChildModel registers a fresh model and links it; removeChildModel unlinks but keeps the model', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const childId = s.addChildModel(a)!
+    expect(childId).toBeTruthy()
+    expect(useOmniStore.getState().model.nodes.get(a)?.childModelId).toBe(childId)
+    expect(useOmniStore.getState().models.get(childId)).toBeDefined()
+    // Idempotent: second call returns null since a child is already linked.
+    expect(useOmniStore.getState().addChildModel(a)).toBeNull()
+    useOmniStore.getState().removeChildModel(a)
+    expect(useOmniStore.getState().model.nodes.get(a)?.childModelId).toBeUndefined()
+    // Registered model survives so undo can re-link.
+    expect(useOmniStore.getState().models.get(childId)).toBeDefined()
+  })
+
+  it('linkNodes is symmetric and idempotent; unlinkNodes prunes both ends and any cross-links', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const b = s.addNode({ x: 10, y: 10 })
+    s.linkNodes(a, b)
+    expect(useOmniStore.getState().model.nodes.get(a)?.linkedNodeIds).toEqual([b])
+    expect(useOmniStore.getState().model.nodes.get(b)?.linkedNodeIds).toEqual([a])
+    // Idempotent — repeat link adds no patches and keeps lists at length 1.
+    const depthBefore = useOmniStore.getState().undoStack.depth
+    useOmniStore.getState().linkNodes(a, b)
+    expect(useOmniStore.getState().model.nodes.get(a)?.linkedNodeIds?.length).toBe(1)
+    expect(useOmniStore.getState().undoStack.depth).toBe(depthBefore)
+
+    const linkId = useOmniStore.getState().addCrossLink(
+      { nodeId: a, effectId: 'fx-a' },
+      { nodeId: b, effectId: 'fx-b' },
+    )!
+    expect(linkId).toBeTruthy()
+    expect(useOmniStore.getState().model.crossLinks?.length).toBe(1)
+    // Duplicate cross-link returns existing id, no new entry.
+    const dup = useOmniStore.getState().addCrossLink(
+      { nodeId: a, effectId: 'fx-a' },
+      { nodeId: b, effectId: 'fx-b' },
+    )
+    expect(dup).toBe(linkId)
+    expect(useOmniStore.getState().model.crossLinks?.length).toBe(1)
+
+    useOmniStore.getState().unlinkNodes(a, b)
+    expect(useOmniStore.getState().model.nodes.get(a)?.linkedNodeIds).toEqual([])
+    expect(useOmniStore.getState().model.nodes.get(b)?.linkedNodeIds).toEqual([])
+    expect(useOmniStore.getState().model.crossLinks?.length).toBe(0)
+  })
+
+  it('addCrossLink rejects when hosts are not linked', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const b = s.addNode({ x: 10, y: 10 })
+    const id = useOmniStore.getState().addCrossLink(
+      { nodeId: a, effectId: 'fx-a' },
+      { nodeId: b, effectId: 'fx-b' },
+    )
+    expect(id).toBeNull()
   })
 })
