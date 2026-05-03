@@ -160,7 +160,6 @@ export function LeftSidebar() {
             onChange={(k) => useOmniStore.getState().setDefaultConnectionKind(k)}
           />
         </Section>
-        <div style={hintStyle}>Click to add at centre · drag to position.</div>
       </div>
       <button
         onClick={() => setCollapsed((c) => !c)}
@@ -367,13 +366,6 @@ const titleStyle: React.CSSProperties = {
   color: 'var(--ug-text-heading)',
   borderBottom: '1px solid var(--ug-border-light)',
   paddingBottom: scaled(3),
-}
-
-const hintStyle: React.CSSProperties = {
-  fontSize: scaled(13),
-  color: 'var(--ug-text-muted)',
-  fontStyle: 'italic',
-  marginTop: 'auto',
 }
 
 export function toggleColumnStyle(side: 'left' | 'right'): React.CSSProperties {

@@ -72,7 +72,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
 
   return (
     <div style={shellStyle('right', collapsed)}>
-      <div style={animatedContentStyle(collapsed)}>{inner}</div>
+      <div style={rightInspectorContentStyle(collapsed)}>{inner}</div>
       <button
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? 'Expand inspector' : 'Collapse panel'}
@@ -82,6 +82,14 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
       </button>
     </div>
   )
+}
+
+function rightInspectorContentStyle(collapsed: boolean): React.CSSProperties {
+  return {
+    ...animatedContentStyle(collapsed),
+    gap: collapsed ? 0 : 2,
+    padding: collapsed ? 0 : 'calc(8px * var(--ug-ui-scale))',
+  }
 }
 
 /**
@@ -269,7 +277,6 @@ function renderInner(
           </Field>
         </div>
         <CosmeticsControls />
-        <Hint>Click or box-select a node to edit it.</Hint>
       </>
     )
   }
@@ -316,13 +323,13 @@ function renderInner(
       </Field>
 
       <Row>
-        <Field label="Fill">
+        <Field label="Fill" grow>
           <ColorField
             value={cellColor}
             onChange={(v) => updateAll({ cellColor: v })}
           />
         </Field>
-        <Field label="Border">
+        <Field label="Border" grow>
           <ColorField
             value={membraneColor}
             onChange={(v) => updateAll({ membraneColor: v })}
@@ -331,7 +338,7 @@ function renderInner(
       </Row>
 
       <Row>
-        <Field label="Width %">
+        <Field label="Width %" grow>
           <NumberField
             value={w}
             min={1}
@@ -340,7 +347,7 @@ function renderInner(
             onChange={(v) => updateAll({ w: v })}
           />
         </Field>
-        <Field label="Height %">
+        <Field label="Height %" grow>
           <NumberField
             value={h}
             min={1}
@@ -458,7 +465,7 @@ function Title({ children }: { children: React.ReactNode }) {
         fontSize: 14,
         color: 'var(--ug-text-heading)',
         borderBottom: '1px solid var(--ug-border-light)',
-        paddingBottom: 6,
+        paddingBottom: 3,
       }}
     >
       {children}
@@ -466,17 +473,17 @@ function Title({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, grow = false }: { label: string; children: React.ReactNode; grow?: boolean }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
-      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>{label}</span>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: grow ? 1 : '0 0 auto', minWidth: 0, margin: 0 }}>
+      <span style={{ fontSize: 13, color: 'var(--ug-text-muted)', lineHeight: 1.05 }}>{label}</span>
       {children}
     </label>
   )
 }
 
 function Row({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: 'flex', gap: 8 }}>{children}</div>
+  return <div style={{ display: 'flex', gap: 4 }}>{children}</div>
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
@@ -749,7 +756,7 @@ function CosmeticTipControls({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
       <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Tip / tail</span>
       <Row>
-        <Field label="Angle°">
+        <Field label="Angle°" grow>
           <NumberField
             value={Math.round(angDeg)}
             min={-180}
@@ -758,7 +765,7 @@ function CosmeticTipControls({
             onChange={(v) => setPolar(v, len || 60)}
           />
         </Field>
-        <Field label="Length %">
+        <Field label="Length %" grow>
           <NumberField
             value={Math.round(len * 10) / 10}
             min={0}
@@ -915,8 +922,8 @@ function MediaSection({ node }: { node: ModelNode }) {
   const update = (patch: Partial<ModelNode>) => useOmniStore.getState().updateNode(node.id, patch)
   const mediaType = node.mediaType
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Media</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: 0 }}>
+      <span style={{ fontSize: 13, color: 'var(--ug-text-muted)', lineHeight: 1.1 }}>Media</span>
       <select
         value={mediaType ?? ''}
         onChange={(e) => {

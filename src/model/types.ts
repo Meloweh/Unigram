@@ -212,7 +212,7 @@ export const DEFAULT_NODE: Pick<
   ModelNode,
   'w' | 'h' | 'shape' | 'cellColor' | 'membraneColor'
 > = {
-  w: 6,
+  w: 5.1,
   h: 5,
   shape: 'rounded-rect',
   cellColor: '#f4f8fd',
