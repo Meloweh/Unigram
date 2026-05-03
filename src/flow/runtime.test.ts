@@ -204,6 +204,32 @@ describe('FlowRuntime — extended kinds', () => {
     expect(ov.scaleMul).toBeLessThan(1.05)
   })
 
+  it('bubble-levitate can disable scale pulse', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampY: 1, scaleAmp: 0.2, scalePulse: 0, freq: 1, ms: 1000 } }]),
+      0,
+    )
+    rt.tick(250)
+    const ov = rt.getOverride('n1')!
+    expect(ov.dy).toBeCloseTo(1, 1)
+    expect(ov.scaleMul).toBe(1)
+  })
+
+  it('break shakes then falls along the selected axis', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'br', kind: 'break', params: { axis: 0, shakeIntensity: 0, shakeDurationMs: 100, fallDurationMs: 400, ms: 500 } }]),
+      0,
+    )
+    rt.tick(300)
+    const ov = rt.getOverride('n1')!
+    expect(ov.dy).toBeGreaterThan(0)
+    expect(ov.alphaMul).toBeLessThan(1)
+  })
+
   it('repeater rewinds the run a finite number of times', () => {
     const rt = new FlowRuntime()
     rt.start(

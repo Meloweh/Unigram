@@ -31,6 +31,7 @@ import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZo
 import { ParticleLayer } from '../theme/ParticleLayer'
 import { FlowRuntime } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
+import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import type { FlowEffect } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
 
@@ -358,6 +359,7 @@ export class SceneRenderer {
       const config: TextGenConfig = {
         text: node.label ?? '',
         charsPerSec: Math.max(1, params.charsPerSec ?? 24),
+        sound: TEXT_GEN_SOUND_PRESETS[Math.max(0, Math.round(params.soundPreset ?? 0))]?.id ?? 'none',
         loop: (params.loop ?? 0) !== 0,
         endHoldMs: Math.max(0, params.endHoldMs ?? 0),
         startIndex: Math.max(0, params.startIndex ?? 0),

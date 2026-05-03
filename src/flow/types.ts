@@ -28,6 +28,7 @@ export type FlowEffectKind =
   | 'bubble-levitate'
   | 'repeater'
   | 'camera'
+  | 'break'
   | 'text-generator'
   | 'record'
   | 'obs-record'
@@ -56,7 +57,8 @@ export interface EffectNode {
    *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
    *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
    *  - cloud-levitate:   { ampX, ampY, ms, freq? }    (X/Y phase-offset sin)
-   *  - bubble-levitate:  { ampY, scaleAmp, ms, freq? }(vertical sin + scale pulse)
+    *  - bubble-levitate:  { ampY, scaleAmp, ms, freq?, scalePulse? }
+    *                                                    (vertical sin + optional scale pulse)
    *  - repeater:         { times }                    (when reached, rewinds the run;
    *                                                    times<0 means infinite, otherwise
    *                                                    decrements until exhausted. 0 contribution.)
@@ -65,7 +67,9 @@ export interface EffectNode {
    *                                                    scene-percent deltas, zoom multiplicative.
    *                                                    permanent≠0 holds final values until the run
    *                                                    cancels. Does NOT mutate the store.)
-   *  - text-generator:   { charsPerSec?, sound?, loop?,(progressive label reveal on the target
+    *  - break:            { axis, shakeIntensity, shakeDurationMs, fallDurationMs, ms }
+    *                                                    (shake, then fall/fly apart)
+    *  - text-generator:   { charsPerSec?, sound?, loop?,(progressive label reveal on the target
    *                        endHoldMs? }                 node. Resolves text from the node's label.
    *                                                    `sound` is the index into TEXT_GEN_SOUND_PRESETS;
    *                                                    -1 = none. Bridged to TextGenRunner via the
@@ -73,6 +77,8 @@ export interface EffectNode {
    *                                                    owns the actual reveal state.)
    */
   params: Record<string, number>
+  /** Optional editor-visible label. Runtime ignores it. */
+  label?: string
 }
 
 export interface EffectEdge {

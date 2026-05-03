@@ -32,6 +32,7 @@ const KINDS: FlowEffectKind[] = [
   'bubble-levitate',
   'repeater',
   'camera',
+  'break',
   'text-generator',
   'record',
   'obs-record',
@@ -60,6 +61,7 @@ const KIND_COLORS: Record<FlowEffectKind, string> = {
   'bubble-levitate': '#7a5b3a',
   repeater: '#5b3a7a',
   camera: '#3a6b5e',
+  break: '#7a3840',
   'text-generator': '#7a4a8a',
   record: '#7a3030',
   'obs-record': '#a04040',
@@ -82,10 +84,11 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   emerge: ['ms', 'fromScale'],
   dismiss: ['ms', 'toScale'],
   'cloud-levitate': ['ampX', 'ampY', 'freq', 'ms'],
-  'bubble-levitate': ['ampY', 'scaleAmp', 'freq', 'ms'],
+  'bubble-levitate': ['ampY', 'scaleAmp', 'scalePulse', 'freq', 'ms'],
   repeater: ['times'],
   camera: ['panX', 'panY', 'zoom', 'ms', 'permanent'],
-  'text-generator': ['charsPerSec', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms'],
+  break: ['axis', 'shakeIntensity', 'shakeDurationMs', 'fallDurationMs', 'ms'],
+  'text-generator': ['charsPerSec', 'soundPreset', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms'],
   record: ['ms', 'fps'],
   'obs-record': ['ms'],
   // RMM handoff drives `useOmniStore.rmmZoomStep('in')` until the dial
@@ -120,10 +123,11 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   emerge: { ms: 400, fromScale: 0 },
   dismiss: { ms: 400, toScale: 0 },
   'cloud-levitate': { ampX: 0.6, ampY: 0.4, freq: 0.6, ms: 4000 },
-  'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, freq: 1, ms: 3000 },
+  'bubble-levitate': { ampY: 0.5, scaleAmp: 0.04, scalePulse: 1, freq: 1, ms: 3000 },
   repeater: { times: 1 },
   camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
-  'text-generator': { charsPerSec: 24, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
+  break: { axis: 0, shakeIntensity: 0.8, shakeDurationMs: 300, fallDurationMs: 600, ms: 900 },
+  'text-generator': { charsPerSec: 24, soundPreset: 0, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
   // Record canvas to .webm for `ms` while task is active. `fps` is the
   // capture frame rate; defaults to 30. The recording downloads on stop.
   record: { ms: 5000, fps: 30 },
@@ -171,6 +175,7 @@ const FIELD_META: Record<string, FieldMeta> = {
   ampY: { label: 'Amp Y', step: 0.1 },
   freq: { label: 'Frequency', unit: 'Hz', step: 0.1, min: 0 },
   scaleAmp: { label: 'Scale amp', step: 0.01 },
+  scalePulse: { label: 'Scale pulse', kind: 'bool' },
   fromScale: { label: 'From scale', step: 0.05, min: 0 },
   toScale: { label: 'To scale', step: 0.05, min: 0 },
   panX: { label: 'Pan X', unit: '%' },
@@ -180,6 +185,18 @@ const FIELD_META: Record<string, FieldMeta> = {
   roundtrip: { label: 'Round-trip', kind: 'bool', hint: 'Animate back to start.' },
   loop: { label: 'Loop', kind: 'bool' },
   charsPerSec: { label: 'Chars / sec', step: 1, min: 1 },
+  soundPreset: {
+    label: 'Sound',
+    kind: 'enum',
+    options: [
+      { value: 0, label: 'None' },
+      { value: 1, label: 'Undertale' },
+      { value: 2, label: 'Inscryption' },
+      { value: 3, label: 'Pokemon' },
+      { value: 4, label: 'Typewriter' },
+      { value: 5, label: 'Terminal' },
+    ],
+  },
   endHoldMs: { label: 'End hold', unit: 'ms', step: 50, min: 0 },
   startIndex: { label: 'Start index', step: 1, min: 0 },
   endIndex: { label: 'End index', step: 1, hint: '-1 = end of string.' },
@@ -189,6 +206,17 @@ const FIELD_META: Record<string, FieldMeta> = {
   radius: { label: 'Radius', unit: '%', step: 0.5, min: 0 },
   fadeMs: { label: 'Fade', unit: 'ms', step: 50, min: 0 },
   times: { label: 'Times', step: 1, min: 1 },
+  axis: {
+    label: 'Axis',
+    kind: 'enum',
+    options: [
+      { value: 0, label: 'Vertical' },
+      { value: 1, label: 'Horizontal' },
+    ],
+  },
+  shakeIntensity: { label: 'Shake', unit: '%', step: 0.1, min: 0 },
+  shakeDurationMs: { label: 'Shake time', unit: 'ms', step: 50, min: 0 },
+  fallDurationMs: { label: 'Fall time', unit: 'ms', step: 50, min: 0 },
   direction: {
     label: 'Direction',
     kind: 'enum',
@@ -213,6 +241,7 @@ const KIND_HINTS: Partial<Record<FlowEffectKind, string>> = {
   'bubble-levitate': 'Vertical bob with subtle scale pulse.',
   repeater: 'Re-fire the downstream graph N times.',
   camera: 'Pan + zoom the viewport.',
+  break: 'Shake, then fly apart along the chosen axis.',
   'text-generator': 'Reveal the node label one character at a time.',
   record: 'Capture the canvas to a .webm for `ms`.',
   'obs-record': 'Trigger OBS recording for `ms`.',
@@ -410,6 +439,15 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
     }
   }
 
+  const setNodeLabel = (label: string) => {
+    if (!selection || !selectedNode) return
+    if (selection.pane === 'primary') {
+      setEffect((cur) => setNodeLabelIn(cur, selection.id, label))
+    } else if (peerEffect) {
+      updatePeerEffect(setNodeLabelIn(peerEffect, selection.id, label))
+    }
+  }
+
   const deleteSelected = () => {
     if (!selection) return
     if (selection.pane === 'primary') {
@@ -493,6 +531,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
               <NodeSettingsPanel
                 node={selectedNode}
                 onChangeParam={setParam}
+                onChangeLabel={setNodeLabel}
                 onDelete={deleteSelected}
               />
             ) : (
@@ -559,6 +598,16 @@ function setParamIn(effect: FlowEffect, id: string, key: string, val: number): F
       nodes: effect.graph.nodes.map((n) =>
         n.id === id ? { ...n, params: { ...n.params, [key]: val } } : n,
       ),
+    },
+  }
+}
+
+function setNodeLabelIn(effect: FlowEffect, id: string, label: string): FlowEffect {
+  return {
+    ...effect,
+    graph: {
+      ...effect.graph,
+      nodes: effect.graph.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
     },
   }
 }
@@ -718,7 +767,7 @@ function CanvasPane({
             strokeWidth={selectedId === n.id ? 2 : 1}
           />
           <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
-            {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : n.kind}
+            {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : (n.label?.trim() || n.kind)}
           </text>
           {/* Output port (bottom edge) */}
           <circle
@@ -746,10 +795,12 @@ function CanvasPane({
 function NodeSettingsPanel({
   node,
   onChangeParam,
+  onChangeLabel,
   onDelete,
 }: {
   node: EffectNode
   onChangeParam: (key: string, value: number) => void
+  onChangeLabel: (label: string) => void
   onDelete: () => void
 }) {
   if (node.id === ENTRY_NODE_ID) {
@@ -772,6 +823,15 @@ function NodeSettingsPanel({
       {hint && (
         <div style={{ fontSize: 12, color: '#7a8aa0', marginTop: 2, marginBottom: 6 }}>{hint}</div>
       )}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+        <span style={{ fontSize: 13, color: '#bcd', width: 90 }}>Label</span>
+        <input
+          value={node.label ?? ''}
+          placeholder={node.kind}
+          onChange={(e) => onChangeLabel(e.target.value)}
+          style={fieldStyle}
+        />
+      </label>
       {fields.map((key) => (
         <ParamField
           key={key}
@@ -1097,7 +1157,7 @@ function CrossOverlay({
       const a = portPos(fromPane, fromNode, 'out')
       const b = portPos(toPane, toNode, 'in')
       if (!a || !b) continue
-      lines.push({ d: vCurvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#cfa544', dash: '6 4', arrow: true })
+      lines.push({ d: curvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#cfa544', dash: '6 4', arrow: true })
     }
   }
 
@@ -1109,7 +1169,7 @@ function CrossOverlay({
     if (a) {
       const cx = cursorClient.x - bodyRect.left
       const cy = cursorClient.y - bodyRect.top
-      lines.push({ d: vCurvePath(a.x, a.y, cx, cy), key: '__draft__', color: '#cfe', dash: '4 3' })
+      lines.push({ d: curvePath(a.x, a.y, cx, cy), key: '__draft__', color: '#cfe', dash: '4 3' })
     }
   }
 
@@ -1142,15 +1202,6 @@ function CrossOverlay({
       ))}
     </svg>
   )
-}
-
-/** Vertical-opening S-curve matching the in-pane edge style.
- *  Control-point offset uses the larger of the X / Y spans so the tangent
- *  stays vertical at both endpoints \u2014 otherwise wires that span panes
- *  arrive at the arrowhead diagonally. */
-function vCurvePath(x1: number, y1: number, x2: number, y2: number): string {
-  const dy = Math.max(40, Math.max(Math.abs(y2 - y1), Math.abs(x2 - x1)) * 0.5)
-  return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`
 }
 
 function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => void }) {

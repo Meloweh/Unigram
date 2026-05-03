@@ -546,12 +546,29 @@ function contribution(
       const ampY = n.params.ampY ?? 0.5
       const scaleAmp = n.params.scaleAmp ?? 0.04
       const freq = n.params.freq ?? 1
+      const scalePulse = (n.params.scalePulse ?? 1) !== 0
       const t = localElapsed / 1000
       const phase = Math.sin(t * 2 * Math.PI * freq)
       return {
         dy: phase * ampY,
-        scaleMul: 1 + scaleAmp * phase,
+        scaleMul: scalePulse ? 1 + scaleAmp * phase : 1,
       }
+    }
+    case 'break': {
+      const axis = n.params.axis ?? 0
+      const shakeIntensity = n.params.shakeIntensity ?? 0.8
+      const shakeDurationMs = Math.max(1, n.params.shakeDurationMs ?? 300)
+      const fallDurationMs = Math.max(1, n.params.fallDurationMs ?? 600)
+      const shakeRatio = Math.min(1, localElapsed / shakeDurationMs)
+      const fallRatio = Math.max(0, Math.min(1, (localElapsed - shakeDurationMs) / fallDurationMs))
+      const shakeFade = 1 - fallRatio
+      const shakeX = Math.sin(localElapsed * 0.11) * shakeIntensity * shakeFade
+      const shakeY = Math.cos(localElapsed * 0.13) * shakeIntensity * shakeFade
+      const fall = easeInCubic(fallRatio) * 10
+      const split = Math.sin(shakeRatio * Math.PI) * 1.5
+      return axis === 1
+        ? { dx: shakeX + fall, dy: shakeY + split, alphaMul: 1 - fallRatio * 0.35 }
+        : { dx: shakeX + split, dy: shakeY + fall, alphaMul: 1 - fallRatio * 0.35 }
     }
     case 'repeater':
       // Pure scheduling node — no per-frame contribution. Repeat semantics
@@ -605,4 +622,8 @@ function cameraContribution(n: EffectNode, ratio: number): CameraOverride | null
 
 function lerp(a: number, b: number, t: number): number {
   return Math.round(a + (b - a) * t)
+}
+
+function easeInCubic(t: number): number {
+  return t * t * t
 }
