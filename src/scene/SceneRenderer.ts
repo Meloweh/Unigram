@@ -78,8 +78,8 @@ export class SceneRenderer {
   /**
    * Aura container painted BELOW the nodes layer so the wavey illumination
    * bleeds outward from each silhouette without overpainting the node
-   * interior. Holds two filtered sub-containers (outer + inner glow) that
-   * each carry a single cached BlurFilter shared across nodes.
+  * interior. Holds two sub-containers (outer + inner glow) so the wave
+  * can breathe independently from the crisp ring.
    */
   private selectionAuraLayer!: Container
   private selectionAuraOuter!: Container
@@ -92,9 +92,6 @@ export class SceneRenderer {
    */
   private selectionAuraRing!: Container
   private selectionAuraRingPool: Graphics[] = []
-  /** Cached BlurFilter instances — never reconstructed per frame. */
-  private selectionAuraOuterBlur: BlurFilter | null = null
-  private selectionAuraInnerBlur: BlurFilter | null = null
   /**
    * Flow halo aura — also painted BELOW the nodes layer (parented to a
    * dedicated `flowAuraLayer` between particles and the edges). Wire core
@@ -259,16 +256,14 @@ export class SceneRenderer {
     this.selectionAuraLayer.eventMode = 'none'
     this.selectionAuraOuter = new Container()
     this.selectionAuraOuter.eventMode = 'none'
-    // High quality + larger kernel = the smoother wavey gradient that the
-    // legacy CSS box-shadow rendered. Quality 4 / kernel 9 is the highest
-    // sane preset before per-frame cost spikes; benched at >120 FPS with
-    // 50 selected nodes.
-    this.selectionAuraOuterBlur = new BlurFilter({ strength: 6, quality: 4, kernelSize: 9 })
-    this.selectionAuraOuter.filters = [this.selectionAuraOuterBlur]
+    // Selection aura uses unfiltered shape-following strokes. BlurFilter
+    // pads by an axis-aligned rectangle, which can show faint squared
+    // corners around rounded nodes; the stroke stack below keeps the glow
+    // rounded and GPU-cheap.
+    this.selectionAuraOuter.filters = []
     this.selectionAuraInner = new Container()
     this.selectionAuraInner.eventMode = 'none'
-    this.selectionAuraInnerBlur = new BlurFilter({ strength: 3, quality: 4, kernelSize: 7 })
-    this.selectionAuraInner.filters = [this.selectionAuraInnerBlur]
+    this.selectionAuraInner.filters = []
     this.selectionAuraLayer.addChild(this.selectionAuraOuter)
     this.selectionAuraLayer.addChild(this.selectionAuraInner)
     // Ring sub-container stays on `selectionLayer` (above nodes).
@@ -1009,32 +1004,27 @@ export class SceneRenderer {
       // remains accurate at any refresh rate.
       this.particleLayer.tick(ticker.deltaMS / 16.667)
     }
-    // Selection breathing animation: gentle alpha pulse on the ring layer
-    // (which now carries the entire stroke-stack halo). The legacy filled
-    // outer/inner silhouette layers are no longer drawn — their alpha is
-    // forced to 0 below.
+    // Selection breathing animation: the amber aura waves softly below the
+    // node while the blue membrane frame stays sharp above it.
     if (this.selectedIds.size > 0) {
       const p = pulse01(performance.now(), 1500)
-      this.selectionAuraOuter.alpha = 0
-      this.selectionAuraInner.alpha = 0
-      this.selectionAuraRing.alpha = 0.85 + 0.15 * p
-      // Subtle outward breath \u2014 4% on outer, 2% on inner. Layer-level
-      // scale is pivot-free which would drift; both layers are already
-      // centred at the world origin so scaling pulses around (0,0). To keep
-      // pulses centred on each node, drive a uniform per-pool scale via
-      // the layer's `scale` only when there is one selected node, and skip
-      // the scale pulse otherwise (alpha alone still reads as breathing).
+      this.selectionAuraOuter.alpha = 0.72 + 0.22 * p
+      this.selectionAuraInner.alpha = 0.68 + 0.2 * p
+      this.selectionAuraRing.alpha = 0.96
+      // Subtle outward breath — 3% on outer, 1.5% on inner. For multiple
+      // selections, keep scale fixed and let alpha carry the wave so each
+      // node remains accurately framed.
       if (this.selectedIds.size === 1) {
         const idIter = this.selectedIds.values().next()
         const node = idIter.value ? this.model.nodes.get(idIter.value) : null
         if (node) {
           const cx = (node.x / 100) * SCENE_W
           const cy = (node.y / 100) * SCENE_H
-          const k = 1 + 0.04 * p
+          const k = 1 + 0.03 * p
           this.selectionAuraOuter.pivot.set(cx, cy)
           this.selectionAuraOuter.position.set(cx, cy)
           this.selectionAuraOuter.scale.set(k)
-          const k2 = 1 + 0.02 * p
+          const k2 = 1 + 0.015 * p
           this.selectionAuraInner.pivot.set(cx, cy)
           this.selectionAuraInner.position.set(cx, cy)
           this.selectionAuraInner.scale.set(k2)
@@ -1263,20 +1253,29 @@ export class SceneRenderer {
   }
 
   private drawSelectionAndOverlays(): void {
-    // Selection halo, legacy-parity (Unigram CSS):
-    //   box-shadow: 0 0 0 3px var(--ug-flow-glow), 0 0 16px var(--ug-flow-glow)
-    // We stack three outside-aligned strokes on the shape-conforming ring
-    // (no blur filter, no inflated silhouette fill). This kills the
-    // BlurFilter’s axis-aligned rectangular padding that previously read
-    // as a faded envelope behind the node, and keeps the glow tight to
-    // the membrane the way the legacy app does.
+    // Selection halo, legacy-parity (Unigram CSS): a warm wave outside the
+    // membrane plus one crisp blue frame. The warm aura is drawn below the
+    // node as enlarged shape silhouettes; the node body covers the center,
+    // leaving a visible rounded band outside without painting the face.
     let used = 0
-    const HALO_COLOR = 0xf59e0b // intense saturated orange (legacy --ug-flow-glow)
-    const RING_COLOR = 0x4aa3ff // crisp blue selection anchor on top
+    const HALO_COLOR = 0xffb000
+    const RING_COLOR = 0x2478bd
     for (const id of this.selectedIds) {
       if (!this.prevVisibleNodes.has(id)) continue
       const node = this.model.nodes.get(id)
       if (!node) continue
+      let outer = this.selectionAuraOuterPool[used]
+      if (!outer) {
+        outer = new Graphics(); outer.eventMode = 'none'
+        this.selectionAuraOuter.addChild(outer)
+        this.selectionAuraOuterPool.push(outer)
+      }
+      let inner = this.selectionAuraInnerPool[used]
+      if (!inner) {
+        inner = new Graphics(); inner.eventMode = 'none'
+        this.selectionAuraInner.addChild(inner)
+        this.selectionAuraInnerPool.push(inner)
+      }
       let ring = this.selectionAuraRingPool[used]
       if (!ring) {
         ring = new Graphics(); ring.eventMode = 'none'
@@ -1290,29 +1289,29 @@ export class SceneRenderer {
       const tip = node.tip
         ? { x: (node.tip.x / 100) * SCENE_W, y: (node.tip.y / 100) * SCENE_H }
         : undefined
+      outer.visible = true
+      outer.x = xPx; outer.y = yPx
+      outer.clear()
+      drawNodeShapePath(outer, node.shape, wPx + 22, hPx + 22, tip)
+      outer.fill({ color: HALO_COLOR, alpha: 0.32 })
+      inner.visible = true
+      inner.x = xPx; inner.y = yPx
+      inner.clear()
+      drawNodeShapePath(inner, node.shape, wPx + 12, hPx + 12, tip)
+      inner.fill({ color: HALO_COLOR, alpha: 0.42 })
       ring.visible = true
       ring.x = xPx; ring.y = yPx
       ring.clear()
-      // Wide soft outer stroke (the "0 0 16px" half).
+      // Crisp blue membrane frame. The amber wave is below the node only,
+      // so it never paints an inner orange membrane over the node face.
       drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
-      ring.stroke({ color: HALO_COLOR, width: 18, alignment: 1, alpha: 0.18 })
-      // Mid stroke for the saturated body of the halo.
-      drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
-      ring.stroke({ color: HALO_COLOR, width: 10, alignment: 1, alpha: 0.55 })
-      // Crisp orange spread (the "0 0 0 3px" half).
-      drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
-      ring.stroke({ color: HALO_COLOR, width: 4, alignment: 1, alpha: 0.95 })
-      // Thin blue ring on the membrane for unambiguous selection anchor.
-      drawNodeShapePath(ring, node.shape, wPx, hPx, tip)
-      ring.stroke({ color: RING_COLOR, width: 2, alignment: 1, alpha: 0.95 })
+      ring.stroke({ color: RING_COLOR, width: 2.4, alignment: 1, alpha: 0.98 })
       used++
     }
-    // Hide unused pools (outer/inner silhouettes are no longer drawn but
-    // pools are retained to preserve scene-graph membership).
-    for (let i = 0; i < this.selectionAuraOuterPool.length; i++) {
+    for (let i = used; i < this.selectionAuraOuterPool.length; i++) {
       this.selectionAuraOuterPool[i].visible = false
     }
-    for (let i = 0; i < this.selectionAuraInnerPool.length; i++) {
+    for (let i = used; i < this.selectionAuraInnerPool.length; i++) {
       this.selectionAuraInnerPool[i].visible = false
     }
     for (let i = used; i < this.selectionAuraRingPool.length; i++) {
@@ -1570,13 +1569,13 @@ export class SceneRenderer {
       ring.x = cx; ring.y = cy
       ring.clear()
       drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
-      ring.stroke({ color: 0xffaa1f, width: 16, alignment: 1, alpha: alpha * 0.18 })
+      ring.stroke({ color: 0xffaa1f, width: 11, alignment: 1, alpha: alpha * 0.08 })
       drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
-      ring.stroke({ color: 0xffaa1f, width: 9, alignment: 1, alpha: alpha * 0.5 })
+      ring.stroke({ color: 0xffaa1f, width: 6, alignment: 1, alpha: alpha * 0.22 })
       drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
-      ring.stroke({ color: 0xffaa1f, width: 4, alignment: 1, alpha: alpha * 0.95 })
+      ring.stroke({ color: 0xffaa1f, width: 3, alignment: 1, alpha: alpha * 0.42 })
       drawNodeShapePath(ring, n.shape, wPx, hPx, tip)
-      ring.stroke({ color: 0xffd58a, width: 2, alignment: 1, alpha: alpha * 0.6 })
+      ring.stroke({ color: 0xffd58a, width: 1.5, alignment: 1, alpha: alpha * 0.28 })
       auraUsed++
     }
     for (let i = auraUsed; i < this.flowAuraPool.length; i++) {
