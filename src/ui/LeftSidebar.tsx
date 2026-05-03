@@ -25,7 +25,7 @@ interface ShapeEntry {
 
 const STANDARD: ShapeEntry[] = [
   { id: 'rectangle', label: 'Rectangle', icon: '▭' },
-  { id: 'rounded-rect', label: 'Rounded', icon: '▢' },
+  { id: 'rounded-rect', label: 'Rounded Rectangle', icon: '▢' },
   { id: 'oval', label: 'Oval', icon: '⬭' },
   { id: 'circle', label: 'Circle', icon: '●' },
   { id: 'diamond', label: 'Diamond', icon: '◆' },
@@ -47,12 +47,12 @@ const COSMETIC: ShapeEntry[] = [
 type MediaKind = NonNullable<import('../model/types').ModelNode['mediaType']>
 interface MediaEntry { id: MediaKind; label: string; icon: string }
 const MEDIA: MediaEntry[] = [
-  { id: 'image', label: 'Image', icon: '🖼' },
-  { id: 'gif', label: 'GIF', icon: '🎞' },
-  { id: 'audio', label: 'Audio', icon: '🔊' },
-  { id: 'video', label: 'Video', icon: '🎬' },
-  { id: 'markdown', label: 'Markdown', icon: 'M↓' },
-  { id: 'math', label: 'Math', icon: '√' },
+  { id: 'image', label: 'Image Node', icon: '🖼' },
+  { id: 'gif', label: 'Gif Node', icon: '🎞' },
+  { id: 'audio', label: 'Audio Node', icon: '🔊' },
+  { id: 'video', label: 'Video Node', icon: '🎬' },
+  { id: 'markdown', label: 'Markdown', icon: '𝕄' },
+  { id: 'math', label: 'Math', icon: '∑' },
 ]
 
 export function LeftSidebar() {
@@ -129,7 +129,7 @@ export function LeftSidebar() {
           ))}
         </Section>
         <Section
-          title="Media"
+          title="Node Types"
           open={isOpen('media')}
           onToggle={() => toggleSection('media')}
         >
@@ -164,7 +164,7 @@ export function LeftSidebar() {
       <button
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? 'Expand build palette' : 'Collapse panel'}
-        style={toggleColumnStyle('left')}
+        style={toggleColumnStyle()}
       >
         {collapsed ? '›' : '‹'}
       </button>
@@ -244,19 +244,20 @@ function PaletteItem({
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        background: 'var(--ug-surface-raised)',
+        background: 'transparent',
         color: 'var(--ug-text)',
-        border: '1px solid var(--ug-border-light)',
-        borderRadius: 4,
-        padding: '6px 8px',
-        font: '14px system-ui, sans-serif',
+        border: 'none',
+        borderRadius: 6,
+        padding: '5px 8px',
+        font: 'calc(13px * var(--ug-ui-scale) / 1.5) system-ui, sans-serif',
         cursor: 'pointer',
         textAlign: 'left',
         width: '100%',
+        minHeight: 28,
       }}
     >
-      <span style={{ fontSize: 16, width: 18, textAlign: 'center' }}>{entry.icon}</span>
-      <span>{entry.label}</span>
+      <span style={{ fontSize: 17, width: 22, textAlign: 'center', color: 'var(--ug-primary)' }}>{entry.icon}</span>
+      <span style={{ fontSize: '0.82em' }}>{entry.label}</span>
     </button>
   )
 }
@@ -273,18 +274,20 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginBottom: 8 }}>
       <button
         onClick={onToggle}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
+          gap: 4,
+          width: '100%',
           background: 'transparent',
           color: 'var(--ug-text-heading)',
           border: 'none',
-          padding: '4px 0',
-          font: '600 14px system-ui, sans-serif',
+          borderRadius: 6,
+          padding: '5px 4px',
+          font: '600 0.82rem system-ui, sans-serif',
           cursor: 'pointer',
           textAlign: 'left',
         }}
@@ -300,7 +303,7 @@ function Section({
         </span>
         {title}
       </button>
-      {open && <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</div>}
+      {open && <div style={{ display: 'flex', flexDirection: 'column', gap: 0, padding: '4px 0 4px 6px' }}>{children}</div>}
     </div>
   )
 }
@@ -311,7 +314,7 @@ function Section({
  * Width of the expanded panel at scale=1. Actual rendered width is this
  * multiplied by `--ug-ui-scale` (default 1.5 — see [src/index.css](../index.css)).
  */
-export const SIDEBAR_EXPANDED_W = 240
+export const SIDEBAR_EXPANDED_W = 160
 /** Width of the collapsed strip at scale=1 (also the width of the
  *  expand/collapse toggle column — widened from 18 → 27 (×1.5) so the
  *  arrow target is comfortably clickable on touch displays). */
@@ -330,55 +333,58 @@ const scaled = (px: number) => `calc(${px}px * var(--ug-ui-scale))`
  * `flex-direction` trick (left = row, right = row-reverse).
  */
 export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSSProperties {
+  const expandedW = side === 'left' ? 147 : SIDEBAR_EXPANDED_W
   return {
     position: 'absolute',
     [side]: 0,
-    top: scaled(8),
-    bottom: scaled(8),
-    width: collapsed ? scaled(SIDEBAR_COLLAPSED_W) : scaled(SIDEBAR_EXPANDED_W),
-    background: 'var(--ug-glass)',
+    top: 0,
+    bottom: 0,
+    width: collapsed ? scaled(19) : scaled(expandedW),
+    background: 'var(--ug-glass-strong)',
+    backdropFilter: 'blur(10px)',
     color: 'var(--ug-text)',
     font: `${scaled(14)} system-ui, sans-serif`,
-    borderRadius: side === 'left' ? `0 ${scaled(6)} ${scaled(6)} 0` : `${scaled(6)} 0 0 ${scaled(6)}`,
+    borderRadius: side === 'left' ? `0 ${scaled(8)} ${scaled(8)} 0` : `${scaled(8)} 0 0 ${scaled(8)}`,
     border: '1px solid var(--ug-border)',
     [side === 'left' ? 'borderLeft' : 'borderRight']: 'none',
+    boxShadow: '0 2px 16px var(--ug-shadow)',
     display: 'flex',
     flexDirection: side === 'left' ? 'row' : 'row-reverse',
-    overflow: 'hidden',
-    zIndex: 5,
-    transition: `width ${SIDEBAR_TRANSITION_MS}ms ease`,
+    overflow: collapsed ? 'hidden' : 'visible',
+    zIndex: 12,
+    transition: `width 250ms cubic-bezier(0.25, 0.1, 0.25, 1)`,
   }
 }
 
 const contentStyle: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
-  padding: scaled(10),
+  padding: '12px 10px',
   display: 'flex',
   flexDirection: 'column',
-  gap: scaled(3),
+  gap: 0,
   overflowY: 'auto',
 }
 
-const titleStyle: React.CSSProperties = {
-  fontWeight: 600,
-  fontSize: scaled(14),
-  color: 'var(--ug-text-heading)',
-  borderBottom: '1px solid var(--ug-border-light)',
-  paddingBottom: scaled(3),
+export const titleStyle: React.CSSProperties = {
+  fontWeight: 700,
+  fontSize: '0.78rem',
+  color: 'var(--ug-text)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+  marginBottom: 10,
+  padding: '0 2px',
 }
 
-export function toggleColumnStyle(side: 'left' | 'right'): React.CSSProperties {
+export function toggleColumnStyle(): React.CSSProperties {
   return {
     flexShrink: 0,
-    width: scaled(SIDEBAR_COLLAPSED_W),
-    background: 'var(--ug-surface-raised)',
-    color: 'var(--ug-text-muted)',
+    width: scaled(19),
+    background: 'transparent',
+    color: 'var(--ug-primary)',
     border: 'none',
-    borderLeft: side === 'left' ? '1px solid var(--ug-border-light)' : 'none',
-    borderRight: side === 'right' ? '1px solid var(--ug-border-light)' : 'none',
     cursor: 'pointer',
-    font: `${scaled(14)} system-ui, sans-serif`,
+    font: `700 ${scaled(15)} system-ui, sans-serif`,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

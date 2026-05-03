@@ -7,7 +7,7 @@
  * culling, and store mediation happen one layer up in `SceneRenderer`.
  */
 
-import { Container, Graphics, Text } from 'pixi.js'
+import { Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 import { DEFAULT_NODE, type ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
@@ -55,6 +55,9 @@ function effectiveMembraneColor(n: ModelNode, theme: ThemeColors | null): string
 interface PooledNode {
   container: Container
   shape: Graphics
+  mediaBg: Graphics
+  mediaSprite: Sprite
+  mediaText: Text
   label: Text
   /** Cheap dirty key to skip Graphics rebuilds on no-op updates. */
   dirtyKey: string
@@ -67,9 +70,9 @@ const TEXT_INSET = 0.82
 const TEXT_PAD_PCT = 1.0
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod, theme: ThemeColors | null): string =>
-  `${lod}|${n.shape}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}`
+  `${lod}|${n.shape}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
-const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' ? n.label : '')
+const labelKeyOf = (n: ModelNode, lod: Lod): string => (lod === 'full' && !n.mediaType ? n.label : '')
 
 function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | null): void {
   g.clear()
@@ -102,6 +105,53 @@ function setLabel(t: Text, n: ModelNode, lod: Lod): void {
   const text = labelKeyOf(n, lod)
   if (t.text !== text) t.text = text
   t.visible = text.length > 0
+}
+
+function setMediaPreview(pn: PooledNode, n: ModelNode, lod: Lod): void {
+  const visible = lod === 'full' && !!n.mediaType
+  pn.mediaBg.visible = visible
+  pn.mediaSprite.visible = false
+  pn.mediaText.visible = false
+  if (!visible) return
+
+  const wPx = (n.w / 100) * SCENE_W
+  const hPx = (n.h / 100) * SCENE_H
+  const pad = Math.min(14, Math.max(4, Math.min(wPx, hPx) * 0.08))
+  const innerW = Math.max(1, wPx - pad * 2)
+  const innerH = Math.max(1, hPx - pad * 2)
+  pn.mediaBg.clear()
+  pn.mediaBg.roundRect(-innerW / 2, -innerH / 2, innerW, innerH, Math.min(10, innerH * 0.2))
+    .fill({ color: 0xffffff, alpha: 0.32 })
+
+  const spriteSrc = n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc
+  if (spriteSrc && (n.mediaType === 'image' || n.mediaType === 'gif' || n.mediaType === 'video' || n.mediaType === 'audio')) {
+    pn.mediaSprite.texture = Texture.from(spriteSrc)
+    pn.mediaSprite.visible = true
+    pn.mediaSprite.width = innerW
+    pn.mediaSprite.height = innerH
+    pn.mediaSprite.x = -innerW / 2
+    pn.mediaSprite.y = -innerH / 2
+    pn.mediaSprite.alpha = n.mediaType === 'audio' ? 0.7 : 0.9
+  }
+
+  pn.mediaText.text = mediaPreviewText(n)
+  pn.mediaText.visible = pn.mediaText.text.length > 0
+  pn.mediaText.style.fontSize = Math.max(10, Math.min(18, innerH * 0.22))
+  pn.mediaText.x = 0
+  pn.mediaText.y = 0
+}
+
+function mediaPreviewText(n: ModelNode): string {
+  if (n.mediaType === 'markdown' || n.mediaType === 'math') {
+    const source = n.contentSource ?? (typeof n.extra?.contentSource === 'string' ? n.extra.contentSource : '')
+    if (!source) return n.mediaType === 'markdown' ? 'Empty markdown' : 'Empty formula'
+    const first = source.split('\n')[0]
+    return first.length > 42 ? `${first.slice(0, 42)}...` : first
+  }
+  if (n.mediaType === 'audio') return n.mediaFileName ? `Audio\n${n.mediaFileName}` : 'Audio'
+  if (!n.mediaSrc) return `Drop ${n.mediaType ?? 'media'} here`
+  if (n.mediaType === 'video') return n.mediaFileName ? `Video\n${n.mediaFileName}` : 'Video'
+  return ''
 }
 
 export type NodeFitCallback = (id: string, w: number, h: number) => void
@@ -168,6 +218,7 @@ export class NodePool {
     const key = dirtyKeyOf(n, lod, this.theme)
     if (key !== pn.dirtyKey) {
       drawShape(pn.shape, n, lod, this.theme)
+      setMediaPreview(pn, n, lod)
       setLabel(pn.label, n, lod)
       pn.dirtyKey = key
       pn.lod = lod
@@ -192,6 +243,7 @@ export class NodePool {
       }
     } else {
       // Label text can change while shape stays stable.
+      setMediaPreview(pn, n, lod)
       setLabel(pn.label, n, lod)
     }
   }
@@ -242,6 +294,28 @@ export class NodePool {
     container.eventMode = 'none'
     const shape = new Graphics()
     container.addChild(shape)
+    const mediaBg = new Graphics()
+    mediaBg.eventMode = 'none'
+    mediaBg.visible = false
+    container.addChild(mediaBg)
+    const mediaSprite = new Sprite()
+    mediaSprite.eventMode = 'none'
+    mediaSprite.visible = false
+    container.addChild(mediaSprite)
+    const mediaText = new Text({
+      text: '',
+      style: {
+        fontFamily: NODE_FONT_FAMILY,
+        fontSize: 14,
+        fill: NODE_LABEL_FILL,
+        align: 'center',
+        wordWrap: true,
+        wordWrapWidth: 180,
+      },
+    })
+    mediaText.anchor.set(0.5)
+    mediaText.visible = false
+    container.addChild(mediaText)
     const label = new Text({
       text: '',
       style: {
@@ -254,6 +328,6 @@ export class NodePool {
     label.anchor.set(0.5)
     label.visible = false
     container.addChild(label)
-    return { container, shape, label, dirtyKey: '', lod: 'full' }
+    return { container, shape, mediaBg, mediaSprite, mediaText, label, dirtyKey: '', lod: 'full' }
   }
 }

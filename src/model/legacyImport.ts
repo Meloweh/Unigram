@@ -38,6 +38,13 @@ interface LegacyNode {
   locked?: boolean
   hideDuringFlow?: boolean
   cameraTracked?: boolean
+  mediaType?: ModelNode['mediaType']
+  mediaFile?: string
+  mediaFileName?: string
+  audioCoverFile?: string
+  contentSource?: string
+  contentCollapsed?: boolean
+  contentFontSize?: number
 }
 
 interface LegacyConnection {
@@ -150,6 +157,13 @@ function translate(
       ...(ln.locked ? { locked: true } : {}),
       ...(ln.hideDuringFlow ? { hideDuringFlow: true } : {}),
       ...(ln.cameraTracked ? { cameraTracked: true } : {}),
+      ...(ln.mediaType ? { mediaType: ln.mediaType } : {}),
+      ...(ln.mediaFile ? { mediaSrc: resolveRef(ln.mediaFile, fileUrl) } : {}),
+      ...(ln.mediaFileName ? { mediaFileName: ln.mediaFileName } : {}),
+      ...(ln.audioCoverFile ? { audioCoverSrc: resolveRef(ln.audioCoverFile, fileUrl) } : {}),
+      ...(ln.contentSource !== undefined ? { contentSource: ln.contentSource } : {}),
+      ...(ln.contentCollapsed !== undefined ? { contentCollapsed: ln.contentCollapsed } : {}),
+      ...(ln.contentFontSize !== undefined ? { contentFontSize: ln.contentFontSize } : {}),
     }
     nodes.set(node.id, node)
   }

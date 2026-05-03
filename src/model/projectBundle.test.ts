@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { exportBundle, importBundle } from './projectBundle'
 import type { Model } from './types'
+import { clearMediaStore, getMediaBlob, storeMediaBlob } from '../media/mediaStore'
 
 const mkModel = (id: string, name: string): Model => ({
   id,
@@ -93,5 +94,43 @@ describe('projectBundle round-trip', () => {
     expect(r.cosmetics?.themeMode).toBe('sci-fi')
     expect(r.cosmetics?.background?.type).toBe('gradient')
     expect(r.cosmetics?.particleEffect).toBe('fireflies')
+  })
+
+  it('round-trips stored media blobs and first-class content fields', async () => {
+    clearMediaStore()
+    const imageUrl = await storeMediaBlob(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }))
+    const coverUrl = await storeMediaBlob(new Blob([new Uint8Array([4, 5, 6])], { type: 'image/jpeg' }))
+    const root = mkModel('root', 'Media')
+    root.nodes.set('media', {
+      id: 'media',
+      x: 10,
+      y: 10,
+      w: 8,
+      h: 8,
+      label: '',
+      shape: 'rounded-rect',
+      cellColor: '#fff',
+      membraneColor: '#000',
+      mediaType: 'image',
+      mediaSrc: imageUrl,
+      mediaFileName: 'photo.png',
+      audioCoverSrc: coverUrl,
+      contentSource: '# Hello',
+      contentCollapsed: false,
+      contentFontSize: 1.1,
+    })
+    const blob = await exportBundle({ rootModelId: 'root', models: new Map([['root', root]]) })
+    clearMediaStore()
+    const restored = await importBundle(blob)
+    const node = restored.models.get('root')!.nodes.get('media')!
+    expect(node.mediaType).toBe('image')
+    expect(node.mediaFileName).toBe('photo.png')
+    expect(node.contentSource).toBe('# Hello')
+    expect(node.contentCollapsed).toBe(false)
+    expect(node.contentFontSize).toBe(1.1)
+    expect(node.mediaSrc).toMatch(/^blob:/)
+    expect(node.audioCoverSrc).toMatch(/^blob:/)
+    expect(getMediaBlob(node.mediaSrc!)?.type).toBe('image/png')
+    expect(getMediaBlob(node.audioCoverSrc!)?.type).toBe('image/jpeg')
   })
 })

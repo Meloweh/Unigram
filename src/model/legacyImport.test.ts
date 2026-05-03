@@ -15,6 +15,19 @@ const FILES: Record<string, unknown> = {
         mpdModels: ['./alpha.json', './alpha-perf.json'],
       },
       { id: 'n2', label: 'Plain', x: 30, y: 30 },
+      {
+        id: 'n3',
+        label: 'Media',
+        x: 40,
+        y: 40,
+        mediaType: 'audio',
+        mediaFile: './audio/theme.mp3',
+        mediaFileName: 'theme.mp3',
+        audioCoverFile: './covers/theme.png',
+        contentSource: '# Notes',
+        contentCollapsed: false,
+        contentFontSize: 1.25,
+      },
     ],
     connections: [
       { from: 'n1', to: 'n2', strokeColor: '#ff0000', strokeWidth: 0.3, label: 'rel' },
@@ -70,6 +83,18 @@ describe('importLegacyBundle', () => {
   it('renames v0 `label` field to `name`', async () => {
     const snap = await importLegacyBundle('/models/root.json', fetcher)
     expect(snap.models.get('root')!.name).toBe('Root')
+  })
+
+  it('preserves legacy media and content fields', async () => {
+    const snap = await importLegacyBundle('/models/root.json', fetcher)
+    const n3 = snap.models.get('root')!.nodes.get('n3')!
+    expect(n3.mediaType).toBe('audio')
+    expect(n3.mediaSrc).toBe('/models/audio/theme.mp3')
+    expect(n3.mediaFileName).toBe('theme.mp3')
+    expect(n3.audioCoverSrc).toBe('/models/covers/theme.png')
+    expect(n3.contentSource).toBe('# Notes')
+    expect(n3.contentCollapsed).toBe(false)
+    expect(n3.contentFontSize).toBe(1.25)
   })
 
   it('rejects malformed files', async () => {

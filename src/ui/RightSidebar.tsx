@@ -76,7 +76,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
       <button
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? 'Expand inspector' : 'Collapse panel'}
-        style={toggleColumnStyle('right')}
+        style={toggleColumnStyle()}
       >
         {collapsed ? '‹' : '›'}
       </button>
@@ -87,8 +87,8 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
 function rightInspectorContentStyle(collapsed: boolean): React.CSSProperties {
   return {
     ...animatedContentStyle(collapsed),
-    gap: collapsed ? 0 : 2,
-    padding: collapsed ? 0 : 'calc(8px * var(--ug-ui-scale))',
+    gap: 0,
+    padding: collapsed ? 0 : '12px 10px',
   }
 }
 
@@ -461,11 +461,13 @@ function Title({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        fontWeight: 600,
-        fontSize: 14,
-        color: 'var(--ug-text-heading)',
-        borderBottom: '1px solid var(--ug-border-light)',
-        paddingBottom: 3,
+        fontWeight: 700,
+        fontSize: '0.78rem',
+        color: 'var(--ug-text)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        marginBottom: 10,
+        padding: '0 2px',
       }}
     >
       {children}
@@ -475,15 +477,28 @@ function Title({ children }: { children: React.ReactNode }) {
 
 function Field({ label, children, grow = false }: { label: string; children: React.ReactNode; grow?: boolean }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: grow ? 1 : '0 0 auto', minWidth: 0, margin: 0 }}>
-      <span style={{ fontSize: 13, color: 'var(--ug-text-muted)', lineHeight: 1.05 }}>{label}</span>
-      {children}
+    <label
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        flex: grow ? 1 : '0 0 auto',
+        minWidth: 0,
+        minHeight: 28,
+        margin: 0,
+        padding: '4px 8px',
+        fontSize: '0.8rem',
+      }}
+    >
+      <span style={{ color: 'var(--ug-text-secondary)', fontWeight: 500, whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>{children}</span>
     </label>
   )
 }
 
 function Row({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: 'flex', gap: 4 }}>{children}</div>
+  return <div style={{ display: 'flex', gap: 2 }}>{children}</div>
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
@@ -608,21 +623,23 @@ const inputStyle: React.CSSProperties = {
   background: 'var(--ug-surface)',
   color: 'var(--ug-text)',
   border: '1px solid var(--ug-border)',
-  borderRadius: 3,
-  padding: '4px 6px',
-  font: '12px system-ui, sans-serif',
+  borderRadius: 4,
+  padding: '2px 6px',
+  font: '0.78rem system-ui, sans-serif',
   width: '100%',
+  minHeight: 24,
   boxSizing: 'border-box',
 }
 
 const buttonStyle: React.CSSProperties = {
-  background: 'var(--ug-surface-raised)',
-  color: 'var(--ug-text)',
-  border: '1px solid var(--ug-border)',
-  borderRadius: 3,
-  padding: '4px 6px',
-  font: '14px system-ui, sans-serif',
+  background: 'var(--ug-accent-bg)',
+  color: 'var(--ug-accent)',
+  border: '1px solid var(--ug-accent-border)',
+  borderRadius: 4,
+  padding: '2px 10px',
+  font: '600 0.75rem system-ui, sans-serif',
   cursor: 'pointer',
+  whiteSpace: 'nowrap',
 }
 
 const checkboxStyle: React.CSSProperties = {
@@ -928,7 +945,10 @@ function MediaSection({ node }: { node: ModelNode }) {
         value={mediaType ?? ''}
         onChange={(e) => {
           const v = e.target.value as ModelNode['mediaType'] | ''
-          update({ mediaType: v === '' ? undefined : v })
+          update({
+            mediaType: v === '' ? undefined : v,
+            ...(v === 'markdown' || v === 'math' ? { contentSource: node.contentSource ?? '', contentCollapsed: node.contentCollapsed ?? true } : {}),
+          })
         }}
         style={inputStyle}
       >
@@ -960,24 +980,67 @@ function MediaSection({ node }: { node: ModelNode }) {
           {node.mediaFileName && (
             <span style={{ fontSize: 14, color: '#576278' }}>{node.mediaFileName}</span>
           )}
+          {node.mediaSrc && (
+            <button
+              type="button"
+              onClick={() => update({ mediaSrc: undefined, mediaFileName: undefined })}
+              style={buttonStyle}
+            >
+              Clear media
+            </button>
+          )}
+          {mediaType === 'audio' && (
+            <>
+              <span style={{ fontSize: 13, color: 'var(--ug-text-muted)', lineHeight: 1.1 }}>Cover</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0]
+                  if (!f) return
+                  const { storeMediaBlob } = await import('../media/mediaStore')
+                  update({ audioCoverSrc: await storeMediaBlob(f) })
+                }}
+                style={{ fontSize: 14, color: 'var(--ug-text)' }}
+              />
+              {node.audioCoverSrc && (
+                <button type="button" onClick={() => update({ audioCoverSrc: undefined })} style={buttonStyle}>
+                  Clear cover
+                </button>
+              )}
+            </>
+          )}
         </>
       )}
       {(mediaType === 'markdown' || mediaType === 'math') && (
-        <textarea
-          value={(node.extra?.contentSource as string | undefined) ?? ''}
-          onChange={(e) => update({ extra: { ...(node.extra ?? {}), contentSource: e.target.value } })}
-          rows={4}
-          placeholder={mediaType === 'markdown' ? '# Heading\n\nText…' : 'a^2 + b^2 = c^2'}
-          style={{
-            font: '12px ui-monospace, monospace',
-            color: 'var(--ug-text)',
-            background: 'var(--ug-surface)',
-            border: '1px solid var(--ug-border-light)',
-            borderRadius: 3,
-            padding: 4,
-            resize: 'vertical',
-          }}
-        />
+        <>
+          <textarea
+            value={node.contentSource ?? (typeof node.extra?.contentSource === 'string' ? node.extra.contentSource : '')}
+            onChange={(e) => update({ contentSource: e.target.value })}
+            rows={4}
+            placeholder={mediaType === 'markdown' ? '# Heading\n\nText...' : 'a^2 + b^2 = c^2'}
+            style={{
+              ...inputStyle,
+              font: '12px ui-monospace, monospace',
+              padding: 4,
+              resize: 'vertical',
+            }}
+          />
+          <Checkbox
+            label="Collapsed preview"
+            checked={node.contentCollapsed !== false}
+            onChange={(v) => update({ contentCollapsed: v })}
+          />
+          <Field label="Content size">
+            <NumberField
+              value={node.contentFontSize ?? 0.85}
+              min={0.5}
+              max={3}
+              step={0.05}
+              onChange={(v) => update({ contentFontSize: v })}
+            />
+          </Field>
+        </>
       )}
     </div>
   )

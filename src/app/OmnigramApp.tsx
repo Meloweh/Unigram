@@ -28,7 +28,7 @@ import { EditorToolbar } from '../ui/EditorToolbar'
 import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
-import type { NodeShape } from '../model/types'
+import type { ModelNode, NodeShape } from '../model/types'
 import { DEFAULT_NODE } from '../model/types'
 
 export function OmnigramApp() {
@@ -121,14 +121,20 @@ export function OmnigramApp() {
           cursor: pickMode === 'link-node' ? 'crosshair' : undefined,
         }}
         onDragOver={(e) => {
-          if (e.dataTransfer.types.includes(DRAG_MIME_SHAPE)) {
+          if (
+            e.dataTransfer.types.includes(DRAG_MIME_SHAPE) ||
+            e.dataTransfer.types.includes(DRAG_MIME_MEDIA) ||
+            e.dataTransfer.types.includes('Files')
+          ) {
             e.preventDefault()
             e.dataTransfer.dropEffect = 'copy'
           }
         }}
-        onDrop={(e) => {
+        onDrop={async (e) => {
           const shape = e.dataTransfer.getData(DRAG_MIME_SHAPE) as NodeShape | ''
-          if (!shape || !renderer) return
+          const files = e.dataTransfer.files
+          if (!renderer) return
+          if (!shape && files.length === 0) return
           e.preventDefault()
           const rect = e.currentTarget.getBoundingClientRect()
           const cam = renderer.getCamera()
@@ -142,24 +148,70 @@ export function OmnigramApp() {
           const store = useOmniStore.getState()
           const grid = store.model.grid
           const step = grid?.snap ? Math.max(0, grid.sizePercent) : 0
-          // Corner-to-corner snap: align the new node's top-left corner to
-          // the grid (node x/y is the centre, so subtract w/2, snap, add back).
-          const w = DEFAULT_NODE.w
-          const h = DEFAULT_NODE.h
-          const sx = step > 0 ? Math.round((x - w / 2) / step) * step + w / 2 : x
-          const sy = step > 0 ? Math.round((y - h / 2) / step) * step + h / 2 : y
+          const place = (w: number, h: number) => ({
+            x: step > 0 ? Math.round((x - w / 2) / step) * step + w / 2 : x,
+            y: step > 0 ? Math.round((y - h / 2) / step) * step + h / 2 : y,
+          })
+
+          if (files.length > 0) {
+            const file = files[0]
+            const mediaType = mimeToMediaType(file.type)
+            if (!mediaType) return
+            const { storeMediaBlob } = await import('../media/mediaStore')
+            const src = await storeMediaBlob(file)
+            const hitId = renderer.pickNode(x, y)
+            const hitNode = hitId ? store.model.nodes.get(hitId) : undefined
+            if (hitNode?.mediaType) {
+              if (hitNode.mediaType === 'audio' && (mediaType === 'image' || mediaType === 'gif')) {
+                store.updateNode(hitNode.id, { audioCoverSrc: src })
+              } else {
+                store.updateNode(hitNode.id, { mediaType, mediaSrc: src, mediaFileName: file.name })
+                scheduleMediaAutosize(hitNode.id, mediaType, src)
+              }
+              store.select(hitNode.id)
+              return
+            }
+
+            const size = defaultMediaSize(mediaType)
+            const pos = place(size.w, size.h)
+            const id = store.addNode({
+              x: pos.x,
+              y: pos.y,
+              w: size.w,
+              h: size.h,
+              shape: 'rounded-rect',
+              label: mediaType === 'markdown' ? 'Markdown' : mediaType === 'math' ? 'Math' : '',
+              mediaType,
+              mediaSrc: src,
+              mediaFileName: file.name,
+            })
+            store.select(id)
+            scheduleMediaAutosize(id, mediaType, src)
+            return
+          }
+
           // If a media kind was attached during dragstart, propagate it so
           // the inspector's Media dropdown shows the correct selection on
           // first focus (instead of "— none —").
           const mediaRaw = e.dataTransfer.getData(DRAG_MIME_MEDIA)
           const mediaType =
             mediaRaw === '' ? undefined : (mediaRaw as NonNullable<import('../model/types').ModelNode['mediaType']>)
+          const size = mediaType ? defaultMediaSize(mediaType) : { w: DEFAULT_NODE.w, h: DEFAULT_NODE.h }
+          const pos = place(size.w, size.h)
+          const nodeShape: NodeShape = shape || DEFAULT_NODE.shape
           const id = store.addNode({
-            x: sx,
-            y: sy,
-            shape,
-            label: mediaType ?? '',
-            ...(mediaType ? { mediaType } : {}),
+            x: pos.x,
+            y: pos.y,
+            w: size.w,
+            h: size.h,
+            shape: nodeShape,
+            label: mediaType === 'markdown' ? 'Markdown' : mediaType === 'math' ? 'Math' : '',
+            ...(mediaType ? {
+              mediaType,
+              ...(mediaType === 'markdown' || mediaType === 'math'
+                ? { contentSource: '', contentCollapsed: true }
+                : {}),
+            } : {}),
           })
           store.select(id)
         }}
@@ -175,6 +227,56 @@ export function OmnigramApp() {
       {pickMode === 'link-node' && <PickModeBanner />}
     </div>
   )
+}
+
+function mimeToMediaType(mime: string): ModelNode['mediaType'] | null {
+  if (mime === 'image/gif') return 'gif'
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('audio/')) return 'audio'
+  if (mime.startsWith('video/')) return 'video'
+  return null
+}
+
+function defaultMediaSize(mediaType: NonNullable<ModelNode['mediaType']>): { w: number; h: number } {
+  switch (mediaType) {
+    case 'audio': return pxSize(200, 80)
+    case 'video': return pxSize(200, 140)
+    case 'markdown': return pxSize(240, 60)
+    case 'math': return pxSize(200, 60)
+    case 'image':
+    case 'gif':
+      return pxSize(160, 120)
+  }
+}
+
+function pxSize(w: number, h: number): { w: number; h: number } {
+  return { w: (w / SCENE_W) * 100, h: (h / SCENE_H) * 100 }
+}
+
+function scheduleMediaAutosize(
+  nodeId: string,
+  mediaType: NonNullable<ModelNode['mediaType']>,
+  src: string,
+): void {
+  if (mediaType === 'image' || mediaType === 'gif') {
+    const img = new Image()
+    img.onload = () => fitMediaNode(nodeId, img.naturalWidth, img.naturalHeight, 60, 40)
+    img.src = src
+  } else if (mediaType === 'video') {
+    const video = document.createElement('video')
+    video.onloadedmetadata = () => fitMediaNode(nodeId, video.videoWidth, video.videoHeight, 100, 80)
+    video.src = src
+  }
+}
+
+function fitMediaNode(nodeId: string, naturalW: number, naturalH: number, minW: number, minH: number): void {
+  if (naturalW <= 0 || naturalH <= 0) return
+  const maxW = 400
+  const maxH = 400
+  const ratio = Math.min(1, maxW / naturalW, maxH / naturalH)
+  const w = Math.max(minW, Math.round(naturalW * ratio))
+  const h = Math.max(minH, Math.round(naturalH * ratio))
+  useOmniStore.getState().updateNode(nodeId, pxSize(w, h))
 }
 
 /**

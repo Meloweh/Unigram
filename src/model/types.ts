@@ -74,6 +74,14 @@ export interface ModelNode {
    * exporter to round-trip the file extension and a stable display name.
    */
   mediaFileName?: string
+  /** Optional cover image URL for audio nodes. */
+  audioCoverSrc?: string
+  /** Raw markdown / LaTeX source for content nodes. */
+  contentSource?: string
+  /** Whether markdown / math content renders in collapsed preview mode. */
+  contentCollapsed?: boolean
+  /** Content preview/body font size in rem-like units. */
+  contentFontSize?: number
   /**
    * Symmetric peer references for paired effect-graph editing. When this
    * node is opened in the FlowEffectEditor, every linked peer's effect
