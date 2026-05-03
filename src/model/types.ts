@@ -189,11 +189,16 @@ export interface Model {
  * A wire that crosses from one node's effect graph into another's.
  * Stored on the parent model (not on either node) so removal stays
  * symmetric when either endpoint is deleted.
+ *
+ * `effectNodeId` records the inner effect-graph node the user actually
+ * wired to, so the editor can anchor the visual at the right port. The
+ * runtime ignores this field today — cross-links still fire the entire
+ * peer effect — but storing it preserves authoring intent.
  */
 export interface CrossEffectLink {
   id: string
-  from: { nodeId: string; effectId: string }
-  to: { nodeId: string; effectId: string }
+  from: { nodeId: string; effectId: string; effectNodeId?: string }
+  to: { nodeId: string; effectId: string; effectNodeId?: string }
 }
 
 export interface Project {

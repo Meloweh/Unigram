@@ -220,7 +220,7 @@ interface Actions {
    * are linked (returns null otherwise) and rejects duplicates. Returns
    * the new link id.
    */
-  addCrossLink(from: { nodeId: string; effectId: string }, to: { nodeId: string; effectId: string }): string | null
+  addCrossLink(from: { nodeId: string; effectId: string; effectNodeId?: string }, to: { nodeId: string; effectId: string; effectNodeId?: string }): string | null
 
   /** Remove a cross-effect link by id. Undoable. */
   removeCrossLink(id: string): void
@@ -774,9 +774,13 @@ export const useOmniStore = create<Store>((set, get) => ({
     const dup = links.find(
       (l) =>
         (l.from.nodeId === from.nodeId && l.from.effectId === from.effectId &&
-          l.to.nodeId === to.nodeId && l.to.effectId === to.effectId) ||
+          l.from.effectNodeId === from.effectNodeId &&
+          l.to.nodeId === to.nodeId && l.to.effectId === to.effectId &&
+          l.to.effectNodeId === to.effectNodeId) ||
         (l.from.nodeId === to.nodeId && l.from.effectId === to.effectId &&
-          l.to.nodeId === from.nodeId && l.to.effectId === from.effectId),
+          l.from.effectNodeId === to.effectNodeId &&
+          l.to.nodeId === from.nodeId && l.to.effectId === from.effectId &&
+          l.to.effectNodeId === from.effectNodeId),
     )
     if (dup) return dup.id
     const id = newId('xl')

@@ -13,7 +13,9 @@ import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
 import { useOmniStore } from '../model/store'
 import type { CrossEffectLink } from '../model/types'
 
-/** Stable empty fallback for store selectors — see CrossLinkPanel for why. */
+/** Stable empty fallback for `linkedNodeIds` selector. */
+const EMPTY_LINKED: readonly string[] = []
+/** Stable empty fallback for `crossLinks` selector. */
 const EMPTY_CROSS_LINKS: readonly CrossEffectLink[] = []
 
 
@@ -292,167 +294,131 @@ interface Props {
 
 export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkPick }: Props) {
   const [effect, setEffect] = useState<FlowEffect>(() => withEntryNode(deepClone(initial)))
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [pendingFromId, setPendingFromId] = useState<string | null>(null)
-  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
-  const dragState = useRef<{ id: string; offX: number; offY: number; pointerId: number; capturedOn: Element | null } | null>(null)
-  const svgRef = useRef<SVGSVGElement | null>(null)
+  const [selection, setSelection] = useState<{ pane: PaneId; id: string } | null>(null)
+  // Shared cross-pane wire-draft state. Owned at the editor level so a wire
+  // started in one pane can be dropped onto a node in the other pane to
+  // create a cross-graph link.
+  const [wireDraft, setWireDraft] = useState<WireDraft | null>(null)
+  const [cursorClient, setCursorClient] = useState<{ x: number; y: number } | null>(null)
+  // SVG mount refs as state so the overlay re-renders once each pane is
+  // attached and we can read their bounding rects.
+  const [primarySvg, setPrimarySvg] = useState<SVGSVGElement | null>(null)
+  const [peerSvg, setPeerSvg] = useState<SVGSVGElement | null>(null)
+  // Body container ref-as-state for the overlay positioning.
+  const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null)
+  // Subscribe to cross-links from the store so newly-created links re-render.
+  const crossLinks = useOmniStore((s) => s.model.crossLinks ?? EMPTY_CROSS_LINKS)
 
-  // ESC closes.
+  // Peer pane state — read host's first linked peer + auto-create effect.
+  const linked = useOmniStore((s) => s.model.nodes.get(hostNodeId ?? '__none__')?.linkedNodeIds ?? EMPTY_LINKED)
+  const peerNodeId = linked[0] ?? null
+  const peerNode = useOmniStore((s) => (peerNodeId ? s.model.nodes.get(peerNodeId) : null))
+  const peerEffect = peerNode?.flowEffects?.[0] ?? null
+
+  // Auto-create an empty effect graph on the peer if it has none yet, so the
+  // split-screen pane is immediately editable instead of showing a "no
+  // effect graph yet" message.
+  useEffect(() => {
+    if (!peerNodeId || !peerNode) return
+    if (peerNode.flowEffects && peerNode.flowEffects.length > 0) return
+    const fresh = withEntryNode(emptyEffect())
+    useOmniStore.getState().updateNode(peerNodeId, { flowEffects: [fresh] })
+  }, [peerNodeId, peerNode])
+
+  const updatePeerEffect = useCallback((next: FlowEffect) => {
+    if (!peerNodeId || !peerNode) return
+    const list = peerNode.flowEffects ?? []
+    const head = list[0]
+    const replaced = head ? [next, ...list.slice(1)] : [next]
+    useOmniStore.getState().updateNode(peerNodeId, { flowEffects: replaced })
+  }, [peerNodeId, peerNode])
+
+  // ESC closes; Delete removes the selected node from whichever pane owns it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
-      else if (e.key === 'Delete' && selectedId) {
-        removeNode(selectedId)
+      else if (e.key === 'Delete' && selection) {
+        if (selection.pane === 'primary') {
+          setEffect((cur) => removeNodeFrom(cur, selection.id))
+        } else if (peerEffect) {
+          updatePeerEffect(removeNodeFrom(peerEffect, selection.id))
+        }
+        setSelection(null)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId])
+  }, [selection, onClose, peerEffect, updatePeerEffect])
 
-  const selected = selectedId ? effect.graph.nodes.find((n) => n.id === selectedId) ?? null : null
-
-  const addNode = (kind: FlowEffectKind, atX?: number, atY?: number) => {
-    const id = `n_${Date.now().toString(36)}_${effect.graph.nodes.length}`
-    let x: number
-    let y: number
-    if (atX != null && atY != null) {
-      // Drop position from sidebar drag — snap to grid so the dropped node
-      // lines up with existing wires.
-      x = snapToGrid(atX - NODE_W / 2)
-      y = snapToGrid(atY - NODE_H / 2)
-    } else {
-      // Vertical layout: stack new nodes top-to-bottom in a single column
-      // (legacy Unigram parity). Wraps to a second column once the column
-      // would extend past ~6 rows.
-      const ROW = NODE_H + GRID * 2
-      const COL = NODE_W + GRID * 2
-      const PER_COL = 6
-      const idx = effect.graph.nodes.length
-      x = GRID + Math.floor(idx / PER_COL) * COL
-      y = GRID + ((idx % PER_COL) + 1) * ROW
+  // Window-level pointerup listener while a wire is being dragged: resolves
+  // cross-pane drops by hit-testing the element under the cursor for our
+  // `data-effect-node-id` + `data-pane-id` markers.
+  useEffect(() => {
+    if (!wireDraft) return
+    const onMove = (e: PointerEvent) => setCursorClient({ x: e.clientX, y: e.clientY })
+    const onUp = (e: PointerEvent) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+      const target = el?.closest('[data-effect-node-id]') as HTMLElement | null
+      const toId = target?.getAttribute('data-effect-node-id') ?? null
+      const toPane = (target?.getAttribute('data-pane-id') as PaneId | null) ?? null
+      if (toId && toPane && toPane !== wireDraft.pane) {
+        // Cross-pane drop \u2192 create a CrossEffectLink (only succeeds if the
+        // hosts are linked, which they must be for the peer pane to exist).
+        if (hostNodeId && peerNodeId) {
+          const fromNodeId = wireDraft.pane === 'primary' ? hostNodeId : peerNodeId
+          const toNodeId = toPane === 'primary' ? hostNodeId : peerNodeId
+          const fromEffectId = wireDraft.pane === 'primary' ? effect.id : (peerEffect?.id ?? '')
+          const toEffectId = toPane === 'primary' ? effect.id : (peerEffect?.id ?? '')
+          if (fromEffectId && toEffectId) {
+            useOmniStore.getState().addCrossLink(
+              { nodeId: fromNodeId, effectId: fromEffectId, effectNodeId: wireDraft.fromId },
+              { nodeId: toNodeId, effectId: toEffectId, effectNodeId: toId },
+            )
+          }
+        }
+      } else if (toId && toPane === wireDraft.pane && toId !== wireDraft.fromId) {
+        // Same-pane drop \u2192 toggle a regular edge.
+        if (toPane === 'primary') {
+          setEffect((cur) => toggleEdgeIn(cur, wireDraft.fromId, toId))
+        } else if (peerEffect) {
+          updatePeerEffect(toggleEdgeIn(peerEffect, wireDraft.fromId, toId))
+        }
+      }
+      setWireDraft(null)
+      setCursorClient(null)
     }
-    const node: EffectNode = { id, kind, x, y, params: { ...DEFAULT_PARAMS[kind] } }
-    setEffect((e) => ({ ...e, graph: { ...e.graph, nodes: [...e.graph.nodes, node] } }))
-    setSelectedId(id)
-  }
-
-  const removeNode = (id: string) => {
-    if (id === ENTRY_NODE_ID) return // entry node is permanent
-    setEffect((e) => ({
-      ...e,
-      graph: {
-        nodes: e.graph.nodes.filter((n) => n.id !== id),
-        edges: e.graph.edges.filter((ed) => ed.from !== id && ed.to !== id),
-      },
-    }))
-    setSelectedId((s) => (s === id ? null : s))
-  }
-
-  const setParam = (id: string, key: string, val: number) => {
-    setEffect((e) => ({
-      ...e,
-      graph: {
-        ...e.graph,
-        nodes: e.graph.nodes.map((n) =>
-          n.id === id ? { ...n, params: { ...n.params, [key]: val } } : n,
-        ),
-      },
-    }))
-  }
-
-  const moveNode = (id: string, x: number, y: number) => {
-    // Snap to the editor grid so manually positioned nodes line up cleanly.
-    const sx = snapToGrid(x)
-    const sy = snapToGrid(y)
-    setEffect((e) => ({
-      ...e,
-      graph: {
-        ...e.graph,
-        nodes: e.graph.nodes.map((n) => (n.id === id ? { ...n, x: sx, y: sy } : n)),
-      },
-    }))
-  }
-
-  const toggleEdge = (from: string, to: string) => {
-    if (from === to) return
-    setEffect((e) => {
-      const exists = e.graph.edges.some((ed) => ed.from === from && ed.to === to)
-      const edges = exists
-        ? e.graph.edges.filter((ed) => !(ed.from === from && ed.to === to))
-        : [...e.graph.edges, { from, to }]
-      return { ...e, graph: { ...e.graph, edges } }
-    })
-  }
-
-  const onSvgPointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
-    if (dragState.current) {
-      const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-      moveNode(dragState.current.id, pt.x - dragState.current.offX, pt.y - dragState.current.offY)
-    } else if (pendingFromId) {
-      const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-      setCursor(pt)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
     }
-  }, [pendingFromId])
+  }, [wireDraft, hostNodeId, peerNodeId, effect.id, peerEffect, updatePeerEffect])
 
-  const onSvgPointerUp = (e?: React.PointerEvent<SVGSVGElement>) => {
-    const d = dragState.current
-    if (d) {
-      // Release capture on the *exact* element it was set on, with the real
-      // pointer id. Hardcoding either yields a no-op and leaks the capture
-      // to the node group, breaking subsequent drags ("drag but no drop").
-      try { d.capturedOn?.releasePointerCapture?.(d.pointerId) } catch { /* ignore */ }
-      dragState.current = null
-    }
-    // Wire-drop: when a wire is being drawn (pendingFromId) and the user
-    // releases the mouse with no node-up handler having claimed the event,
-    // cancel the pending wire (parity with task D — release attaches if
-    // over a node, else cancels).
-    if (pendingFromId && e) {
-      cancelEdge()
+  const selectedNode = selection
+    ? (selection.pane === 'primary'
+        ? effect.graph.nodes.find((n) => n.id === selection.id) ?? null
+        : peerEffect?.graph.nodes.find((n) => n.id === selection.id) ?? null)
+    : null
+
+  const setParam = (key: string, val: number) => {
+    if (!selection || !selectedNode) return
+    if (selection.pane === 'primary') {
+      setEffect((cur) => setParamIn(cur, selection.id, key, val))
+    } else if (peerEffect) {
+      updatePeerEffect(setParamIn(peerEffect, selection.id, key, val))
     }
   }
 
-  const startDrag = (e: React.PointerEvent, n: EffectNode) => {
-    if (pendingFromId) return // edge mode takes precedence
-    e.stopPropagation()
-    setSelectedId(n.id)
-    const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-    const target = e.currentTarget as Element
-    dragState.current = {
-      id: n.id,
-      offX: pt.x - n.x,
-      offY: pt.y - n.y,
-      pointerId: e.pointerId,
-      capturedOn: target,
+  const deleteSelected = () => {
+    if (!selection) return
+    if (selection.pane === 'primary') {
+      setEffect((cur) => removeNodeFrom(cur, selection.id))
+    } else if (peerEffect) {
+      updatePeerEffect(removeNodeFrom(peerEffect, selection.id))
     }
-    target.setPointerCapture(e.pointerId)
+    setSelection(null)
   }
-
-  const beginEdge = (e: React.PointerEvent, from: string) => {
-    e.stopPropagation()
-    setPendingFromId(from)
-    setCursor(svgPoint(svgRef.current!, e.clientX, e.clientY))
-  }
-
-  const completeEdge = (toId: string) => {
-    if (!pendingFromId) return
-    toggleEdge(pendingFromId, toId)
-    setPendingFromId(null)
-    setCursor(null)
-  }
-
-  const cancelEdge = () => {
-    setPendingFromId(null)
-    setCursor(null)
-  }
-
-  const nodeIndex = useMemo(() => {
-    const m = new Map<string, EffectNode>()
-    for (const n of effect.graph.nodes) m.set(n.id, n)
-    return m
-  }, [effect.graph.nodes])
 
   return (
     <div style={overlayStyle} onClick={onClose}>
@@ -469,18 +435,15 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
           <button onClick={() => onSave(effect)} style={{ ...btnStyle, background: '#2f5a32' }}>Save</button>
           <button onClick={onClose} style={btnStyle}>✕</button>
         </header>
-        <div style={bodyStyle}>
+        <div ref={setBodyEl} style={bodyStyle}>
           <aside style={sidebarStyle}>
             <div style={{ fontSize: 13, color: '#7a8aa0', marginBottom: 4 }}>Add node</div>
             {KINDS.map((k) => (
               <button
                 key={k}
-                onClick={() => addNode(k)}
+                onClick={() => setEffect((cur) => addNodeTo(cur, k))}
                 draggable
                 onDragStart={(e) => {
-                  // Carry the kind through dataTransfer so the canvas
-                  // drop handler can spawn the matching node at the
-                  // pointer location.
                   e.dataTransfer.setData('application/omnigram-effect-kind', k)
                   e.dataTransfer.effectAllowed = 'copy'
                 }}
@@ -489,129 +452,48 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
                 + {k}
               </button>
             ))}
-            {pendingFromId && (
+            {wireDraft && (
               <div style={{ marginTop: 12, fontSize: 13, color: '#cfe' }}>
-                Drag onto a node to connect (or
-                <button onClick={cancelEdge} style={{ ...btnStyle, marginLeft: 6, padding: '2px 6px' }}>
-                  cancel
-                </button>
-                )
+                Drop on a node to connect (drag across the divider for a
+                cross-link).
               </div>
             )}
           </aside>
-          <svg
-            ref={svgRef}
-            style={canvasStyle}
-            onPointerMove={onSvgPointerMove}
-            onPointerUp={onSvgPointerUp}
-            onPointerDown={() => {
-              setSelectedId(null)
-              cancelEdge()
+          <CanvasPane
+            paneId="primary"
+            effect={effect}
+            onChangeEffect={setEffect}
+            selectedId={selection?.pane === 'primary' ? selection.id : null}
+            onSelect={(id) => setSelection(id ? { pane: 'primary', id } : null)}
+            wireDraft={wireDraft}
+            onBeginWire={(fromId, x, y) => {
+              setWireDraft({ pane: 'primary', fromId })
+              setCursorClient({ x, y })
             }}
-            onDragOver={(e) => {
-              if (e.dataTransfer.types.includes('application/omnigram-effect-kind')) {
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'copy'
-              }
-            }}
-            onDrop={(e) => {
-              const kind = e.dataTransfer.getData('application/omnigram-effect-kind') as FlowEffectKind | ''
-              if (!kind) return
-              e.preventDefault()
-              const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-              addNode(kind, pt.x, pt.y)
-            }}
-          >
-            {/* Edges */}
-            {effect.graph.edges.map((e) => {
-              const a = nodeIndex.get(e.from)
-              const b = nodeIndex.get(e.to)
-              if (!a || !b) return null
-              // Vertical wires: bottom of `a` → top of `b`.
-              const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
-              const x2 = b.x + NODE_W / 2, y2 = b.y
-              return (
-                <g key={`${e.from}->${e.to}`}>
-                  <path
-                    d={curvePath(x1, y1, x2, y2)}
-                    fill="none"
-                    stroke="#88a"
-                    strokeWidth={2}
-                    onClick={() => toggleEdge(e.from, e.to)}
-                    style={{ cursor: 'pointer' }}
-                  />
-                </g>
-              )
-            })}
-            {/* Pending edge */}
-            {pendingFromId && cursor && nodeIndex.get(pendingFromId) && (
-              <path
-                d={curvePath(
-                  nodeIndex.get(pendingFromId)!.x + NODE_W / 2,
-                  nodeIndex.get(pendingFromId)!.y + NODE_H,
-                  cursor.x,
-                  cursor.y,
-                )}
-                fill="none"
-                stroke="#cfe"
-                strokeWidth={2}
-                strokeDasharray="4 3"
-                pointerEvents="none"
-              />
-            )}
-            {/* Nodes */}
-            {effect.graph.nodes.map((n) => (
-              <g
-                key={n.id}
-                transform={`translate(${n.x},${n.y})`}
-                onPointerDown={(e) => {
-                  // Wire-attach is now release-driven (task D); pointerdown
-                  // on a node always starts a drag.
-                  startDrag(e, n)
-                }}
-                onPointerUp={(e) => {
-                  // If a wire is being drawn, release-on-node attaches it.
-                  if (pendingFromId && pendingFromId !== n.id) {
-                    e.stopPropagation()
-                    completeEdge(n.id)
-                  }
-                }}
-                style={{ cursor: pendingFromId ? 'crosshair' : 'grab' }}
-              >
-                <rect
-                  width={NODE_W}
-                  height={NODE_H}
-                  rx={8}
-                  fill={KIND_COLORS[n.kind]}
-                  stroke={selectedId === n.id ? '#cfe' : '#456'}
-                  strokeWidth={selectedId === n.id ? 2 : 1}
-                />
-                <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
-                  {n.id === ENTRY_NODE_ID ? '▶ entry' : n.kind}
-                </text>
-                {/* Output port (bottom edge) */}
-                <circle
-                  cx={NODE_W / 2}
-                  cy={NODE_H}
-                  r={6}
-                  fill="#cfe"
-                  stroke="#456"
-                  onPointerDown={(e) => beginEdge(e, n.id)}
-                  style={{ cursor: 'crosshair' }}
-                />
-                {/* Input port (top edge; visual only) — entry node has no input. */}
-                {n.id !== ENTRY_NODE_ID && (
-                  <circle cx={NODE_W / 2} cy={0} r={4} fill="#456" stroke="#cfe" />
-                )}              </g>
-            ))}
-          </svg>
-          {hostNodeId && <PeerPane hostNodeId={hostNodeId} />}
+            svgRef={setPrimarySvg}
+          />
+          {peerNodeId && peerEffect && (
+            <CanvasPane
+              paneId="peer"
+              effect={peerEffect}
+              onChangeEffect={updatePeerEffect}
+              selectedId={selection?.pane === 'peer' ? selection.id : null}
+              onSelect={(id) => setSelection(id ? { pane: 'peer', id } : null)}
+              wireDraft={wireDraft}
+              onBeginWire={(fromId, x, y) => {
+                setWireDraft({ pane: 'peer', fromId })
+                setCursorClient({ x, y })
+              }}
+              svgRef={setPeerSvg}
+              divider
+            />
+          )}
           <aside style={rightSidebarStyle}>
-            {selected ? (
+            {selectedNode ? (
               <NodeSettingsPanel
-                node={selected}
-                onChangeParam={(k, v) => setParam(selected.id, k, v)}
-                onDelete={() => removeNode(selected.id)}
+                node={selectedNode}
+                onChangeParam={setParam}
+                onDelete={deleteSelected}
               />
             ) : (
               <div style={{ fontSize: 13, color: '#7a8aa0' }}>
@@ -619,11 +501,247 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
               </div>
             )}
           </aside>
+          <CrossOverlay
+            bodyEl={bodyEl}
+            primarySvg={primarySvg}
+            peerSvg={peerSvg}
+            primaryEffect={effect}
+            peerEffect={peerEffect}
+            hostNodeId={hostNodeId ?? null}
+            peerNodeId={peerNodeId}
+            wireDraft={wireDraft}
+            cursorClient={cursorClient}
+            crossLinks={crossLinks}
+          />
         </div>
       </div>
     </div>
   )
 }
+
+// ---- Pure effect mutators (used by both panes) ---------------------------
+
+function addNodeTo(effect: FlowEffect, kind: FlowEffectKind, atX?: number, atY?: number): FlowEffect {
+  const id = `n_${Date.now().toString(36)}_${effect.graph.nodes.length}`
+  let x: number
+  let y: number
+  if (atX != null && atY != null) {
+    x = snapToGrid(atX - NODE_W / 2)
+    y = snapToGrid(atY - NODE_H / 2)
+  } else {
+    const ROW = NODE_H + GRID * 2
+    const COL = NODE_W + GRID * 2
+    const PER_COL = 6
+    const idx = effect.graph.nodes.length
+    x = GRID + Math.floor(idx / PER_COL) * COL
+    y = GRID + ((idx % PER_COL) + 1) * ROW
+  }
+  const node: EffectNode = { id, kind, x, y, params: { ...DEFAULT_PARAMS[kind] } }
+  return { ...effect, graph: { ...effect.graph, nodes: [...effect.graph.nodes, node] } }
+}
+
+function removeNodeFrom(effect: FlowEffect, id: string): FlowEffect {
+  if (id === ENTRY_NODE_ID) return effect
+  return {
+    ...effect,
+    graph: {
+      nodes: effect.graph.nodes.filter((n) => n.id !== id),
+      edges: effect.graph.edges.filter((ed) => ed.from !== id && ed.to !== id),
+    },
+  }
+}
+
+function setParamIn(effect: FlowEffect, id: string, key: string, val: number): FlowEffect {
+  return {
+    ...effect,
+    graph: {
+      ...effect.graph,
+      nodes: effect.graph.nodes.map((n) =>
+        n.id === id ? { ...n, params: { ...n.params, [key]: val } } : n,
+      ),
+    },
+  }
+}
+
+function moveNodeIn(effect: FlowEffect, id: string, x: number, y: number): FlowEffect {
+  const sx = snapToGrid(x)
+  const sy = snapToGrid(y)
+  return {
+    ...effect,
+    graph: {
+      ...effect.graph,
+      nodes: effect.graph.nodes.map((n) => (n.id === id ? { ...n, x: sx, y: sy } : n)),
+    },
+  }
+}
+
+function toggleEdgeIn(effect: FlowEffect, from: string, to: string): FlowEffect {
+  if (from === to) return effect
+  const exists = effect.graph.edges.some((ed) => ed.from === from && ed.to === to)
+  const edges = exists
+    ? effect.graph.edges.filter((ed) => !(ed.from === from && ed.to === to))
+    : [...effect.graph.edges, { from, to }]
+  return { ...effect, graph: { ...effect.graph, edges } }
+}
+
+// ---- Shared canvas pane (primary + peer) ---------------------------------
+
+type PaneId = 'primary' | 'peer'
+interface WireDraft {
+  pane: PaneId
+  fromId: string
+}
+
+interface CanvasPaneProps {
+  paneId: PaneId
+  effect: FlowEffect
+  onChangeEffect: (next: FlowEffect) => void
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+  wireDraft: WireDraft | null
+  onBeginWire: (fromId: string, clientX: number, clientY: number) => void
+  /** Forward the mounted SVG element so the editor can position cross-pane overlays. */
+  svgRef?: (el: SVGSVGElement | null) => void
+  /** Render a dashed left-edge divider when this pane is the right-hand peer. */
+  divider?: boolean
+}
+
+function CanvasPane({
+  paneId,
+  effect,
+  onChangeEffect,
+  selectedId,
+  onSelect,
+  wireDraft,
+  onBeginWire,
+  svgRef: svgRefCallback,
+  divider,
+}: CanvasPaneProps) {
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const setSvgRef = useCallback((el: SVGSVGElement | null) => {
+    svgRef.current = el
+    svgRefCallback?.(el)
+  }, [svgRefCallback])
+  const dragState = useRef<{ id: string; offX: number; offY: number; pointerId: number; capturedOn: Element | null } | null>(null)
+
+  const nodeIndex = useMemo(() => {
+    const m = new Map<string, EffectNode>()
+    for (const n of effect.graph.nodes) m.set(n.id, n)
+    return m
+  }, [effect.graph.nodes])
+
+  const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (dragState.current) {
+      const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
+      onChangeEffect(moveNodeIn(effect, dragState.current.id, pt.x - dragState.current.offX, pt.y - dragState.current.offY))
+    }
+  }
+
+  const onSvgPointerUp = () => {
+    const d = dragState.current
+    if (d) {
+      try { d.capturedOn?.releasePointerCapture?.(d.pointerId) } catch { /* ignore */ }
+      dragState.current = null
+    }
+  }
+
+  const startDrag = (e: React.PointerEvent, n: EffectNode) => {
+    if (wireDraft) return
+    e.stopPropagation()
+    onSelect(n.id)
+    const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
+    const target = e.currentTarget as Element
+    dragState.current = { id: n.id, offX: pt.x - n.x, offY: pt.y - n.y, pointerId: e.pointerId, capturedOn: target }
+    target.setPointerCapture(e.pointerId)
+  }
+
+  // Pending wire previews are drawn by the parent CrossOverlay (in client
+  // coords over the body) so the same dashed line spans both panes when the
+  // user drags across the divider — and there is exactly one preview line.
+
+  return (
+    <svg
+      ref={setSvgRef}
+      style={divider ? { ...canvasStyle, borderLeft: '2px dashed #2f3a4a' } : canvasStyle}
+      onPointerMove={onSvgPointerMove}
+      onPointerUp={onSvgPointerUp}
+      onPointerDown={() => onSelect(null)}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('application/omnigram-effect-kind')) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+        }
+      }}
+      onDrop={(e) => {
+        const kind = e.dataTransfer.getData('application/omnigram-effect-kind') as FlowEffectKind | ''
+        if (!kind) return
+        e.preventDefault()
+        const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
+        onChangeEffect(addNodeTo(effect, kind, pt.x, pt.y))
+      }}
+    >
+      {/* Edges */}
+      {effect.graph.edges.map((e) => {
+        const a = nodeIndex.get(e.from)
+        const b = nodeIndex.get(e.to)
+        if (!a || !b) return null
+        const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
+        const x2 = b.x + NODE_W / 2, y2 = b.y
+        return (
+          <path
+            key={`${e.from}->${e.to}`}
+            d={curvePath(x1, y1, x2, y2)}
+            fill="none"
+            stroke="#88a"
+            strokeWidth={2}
+            onClick={() => onChangeEffect(toggleEdgeIn(effect, e.from, e.to))}
+            style={{ cursor: 'pointer' }}
+          />
+        )
+      })}
+      {/* Nodes */}
+      {effect.graph.nodes.map((n) => (
+        <g
+          key={n.id}
+          transform={`translate(${n.x},${n.y})`}
+          data-effect-node-id={n.id}
+          data-pane-id={paneId}
+          onPointerDown={(e) => startDrag(e, n)}
+          style={{ cursor: wireDraft ? 'crosshair' : 'grab' }}
+        >
+          <rect
+            width={NODE_W}
+            height={NODE_H}
+            rx={8}
+            fill={KIND_COLORS[n.kind]}
+            stroke={selectedId === n.id ? '#cfe' : '#456'}
+            strokeWidth={selectedId === n.id ? 2 : 1}
+          />
+          <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
+            {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : n.kind}
+          </text>
+          {/* Output port (bottom edge) */}
+          <circle
+            cx={NODE_W / 2}
+            cy={NODE_H}
+            r={6}
+            fill="#cfe"
+            stroke="#456"
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              onBeginWire(n.id, e.clientX, e.clientY)
+            }}
+            style={{ cursor: 'crosshair' }}
+          />
+          {n.id !== ENTRY_NODE_ID && (
+            <circle cx={NODE_W / 2} cy={0} r={4} fill="#456" stroke="#cfe" />
+          )}
+        </g>
+      ))}
+    </svg>
+  )
+}
+
 
 function NodeSettingsPanel({
   node,
@@ -819,6 +937,10 @@ const bodyStyle: React.CSSProperties = {
   flex: 1,
   display: 'flex',
   minHeight: 0,
+  // Establish a positioning context so the absolute CrossOverlay anchors
+  // to this container (not a higher modal ancestor); without this the
+  // dashed draft line is offset and reads upside-down.
+  position: 'relative',
 }
 
 const sidebarStyle: React.CSSProperties = {
@@ -852,22 +974,6 @@ const canvasStyle: React.CSSProperties = {
   background: '#0e131c',
   cursor: 'default',
   userSelect: 'none',
-}
-
-const peerPaneStyle: React.CSSProperties = {
-  flex: 1,
-  display: 'flex',
-  flexDirection: 'column',
-  borderLeft: '2px dashed #2f3a4a',
-  minWidth: 0,
-}
-
-const peerPaneHeaderStyle: React.CSSProperties = {
-  padding: '6px 12px',
-  background: '#161c26',
-  borderBottom: '1px solid #2f3a4a',
-  display: 'flex',
-  alignItems: 'center',
 }
 
 const btnStyle: React.CSSProperties = {
@@ -911,6 +1017,142 @@ const fieldStyle: React.CSSProperties = {
  * Unigram). The host node is forced into the active selection so
  * `PointerController`'s pick handler can resolve the source.
  */
+// ---- Cross-pane overlay ---------------------------------------------------
+
+/**
+ * Absolute-positioned SVG layered over both canvas panes. Draws:
+ *  1. The in-progress wire draft from the source port to the cursor when the
+ *     user is dragging across panes.
+ *  2. Persistent CrossEffectLinks between the host and peer effect graphs
+ *     (rendered as orange dashed wires terminating in arrowheads at each
+ *     graph's entry node — a stand-in anchor since CrossEffectLink relates
+ *     whole effect graphs, not individual effect nodes).
+ *
+ * Coords: each pane SVG has no `viewBox`, so 1 user unit = 1 client px. We
+ * convert effect-node-local coords to client coords via the SVG's bounding
+ * rect, then subtract the body container's rect to land in the absolute
+ * overlay's frame.
+ */
+function CrossOverlay({
+  bodyEl,
+  primarySvg,
+  peerSvg,
+  primaryEffect,
+  peerEffect,
+  hostNodeId,
+  peerNodeId,
+  wireDraft,
+  cursorClient,
+  crossLinks,
+}: {
+  bodyEl: HTMLDivElement | null
+  primarySvg: SVGSVGElement | null
+  peerSvg: SVGSVGElement | null
+  primaryEffect: FlowEffect
+  peerEffect: FlowEffect | null
+  hostNodeId: string | null
+  peerNodeId: string | null
+  wireDraft: WireDraft | null
+  cursorClient: { x: number; y: number } | null
+  crossLinks: readonly CrossEffectLink[]
+}) {
+  if (!bodyEl) return null
+  const bodyRect = bodyEl.getBoundingClientRect()
+
+  const portPos = (
+    paneSvg: SVGSVGElement | null,
+    node: EffectNode | undefined,
+    side: 'out' | 'in',
+  ): { x: number; y: number } | null => {
+    if (!paneSvg || !node) return null
+    const r = paneSvg.getBoundingClientRect()
+    const cx = r.left - bodyRect.left + node.x + NODE_W / 2
+    const cy = r.top - bodyRect.top + (side === 'out' ? node.y + NODE_H : node.y)
+    return { x: cx, y: cy }
+  }
+
+  const lines: { d: string; key: string; color: string; dash?: string; arrow?: boolean }[] = []
+
+  if (hostNodeId && peerNodeId && peerEffect) {
+    for (const l of crossLinks) {
+      let fromPane: SVGSVGElement | null = null
+      let toPane: SVGSVGElement | null = null
+      let fromEffect: FlowEffect | null = null
+      let toEffect: FlowEffect | null = null
+      if (l.from.nodeId === hostNodeId && l.to.nodeId === peerNodeId) {
+        fromPane = primarySvg; toPane = peerSvg
+        fromEffect = primaryEffect; toEffect = peerEffect
+      } else if (l.from.nodeId === peerNodeId && l.to.nodeId === hostNodeId) {
+        fromPane = peerSvg; toPane = primarySvg
+        fromEffect = peerEffect; toEffect = primaryEffect
+      } else {
+        continue
+      }
+      // Anchor at the actual effect node the user wired to (falls back
+      // to the entry node for legacy links missing effectNodeId).
+      const fromId = l.from.effectNodeId ?? ENTRY_NODE_ID
+      const toId = l.to.effectNodeId ?? ENTRY_NODE_ID
+      const fromNode = fromEffect.graph.nodes.find((n) => n.id === fromId)
+      const toNode = toEffect.graph.nodes.find((n) => n.id === toId)
+      const a = portPos(fromPane, fromNode, 'out')
+      const b = portPos(toPane, toNode, 'in')
+      if (!a || !b) continue
+      lines.push({ d: vCurvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#cfa544', dash: '6 4', arrow: true })
+    }
+  }
+
+  if (wireDraft && cursorClient) {
+    const sourceEffect = wireDraft.pane === 'primary' ? primaryEffect : peerEffect
+    const sourceSvg = wireDraft.pane === 'primary' ? primarySvg : peerSvg
+    const fromNode = sourceEffect?.graph.nodes.find((n) => n.id === wireDraft.fromId)
+    const a = portPos(sourceSvg, fromNode, 'out')
+    if (a) {
+      const cx = cursorClient.x - bodyRect.left
+      const cy = cursorClient.y - bodyRect.top
+      lines.push({ d: vCurvePath(a.x, a.y, cx, cy), key: '__draft__', color: '#cfe', dash: '4 3' })
+    }
+  }
+
+  return (
+    <svg
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: bodyRect.width,
+        height: bodyRect.height,
+        pointerEvents: 'none',
+      }}
+    >
+      <defs>
+        <marker id="crossArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#cfa544" />
+        </marker>
+      </defs>
+      {lines.map((l) => (
+        <path
+          key={l.key}
+          d={l.d}
+          fill="none"
+          stroke={l.color}
+          strokeWidth={2}
+          strokeDasharray={l.dash}
+          markerEnd={l.arrow ? 'url(#crossArrow)' : undefined}
+        />
+      ))}
+    </svg>
+  )
+}
+
+/** Vertical-opening S-curve matching the in-pane edge style.
+ *  Control-point offset uses the larger of the X / Y spans so the tangent
+ *  stays vertical at both endpoints \u2014 otherwise wires that span panes
+ *  arrive at the arrowhead diagonally. */
+function vCurvePath(x1: number, y1: number, x2: number, y2: number): string {
+  const dy = Math.max(40, Math.max(Math.abs(y2 - y1), Math.abs(x2 - x1)) * 0.5)
+  return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`
+}
+
 function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => void }) {
   // Read peer state from the store so the button text + handler stay in
   // sync with `host.linkedNodeIds`. Single subscription via selector so we
@@ -955,114 +1197,3 @@ function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => 
   )
 }
 
-const EMPTY_LINKED: readonly string[] = []
-
-/**
- * Split-screen peer pane. When the host node is paired with another via
- * `linkedNodeIds`, render a read-only SVG view of the peer\u2019s primary
- * effect graph next to the main canvas (legacy Unigram parity).
- *
- * Cross-links between effects are shown as dashed orange wires terminating
- * at the peer\u2019s entry node \u2014 a visual indicator that lines up with the
- * dragged-cross-wire pattern from legacy without requiring drag-drop
- * across panes (which the runtime does not yet support in Omnigram).
- */
-function PeerPane({ hostNodeId }: { hostNodeId: string }) {
-  const linked = useOmniStore((s) => s.model.nodes.get(hostNodeId)?.linkedNodeIds ?? EMPTY_LINKED)
-  const peerNode = useOmniStore((s) => (linked[0] ? s.model.nodes.get(linked[0]) : null))
-  if (!peerNode) return null
-  const peerEffect = peerNode.flowEffects?.[0]
-  return (
-    <div style={peerPaneStyle}>
-      <div style={peerPaneHeaderStyle}>
-        <span style={{ fontSize: 13, color: '#60a5fa', fontWeight: 600 }}>
-          Peer: {peerNode.label || peerNode.id}
-        </span>
-        {peerEffect && (
-          <span style={{ fontSize: 12, color: '#7a8aa0', marginLeft: 6 }}>
-            \u00b7 {peerEffect.label}
-          </span>
-        )}
-      </div>
-      {peerEffect ? (
-        <svg style={canvasStyle}>
-          {peerEffect.graph.edges.map((e) => {
-            const a = peerEffect.graph.nodes.find((n) => n.id === e.from)
-            const b = peerEffect.graph.nodes.find((n) => n.id === e.to)
-            if (!a || !b) return null
-            const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
-            const x2 = b.x + NODE_W / 2, y2 = b.y
-            return (
-              <path
-                key={`${e.from}->${e.to}`}
-                d={curvePath(x1, y1, x2, y2)}
-                fill="none"
-                stroke="#88a"
-                strokeWidth={2}
-              />
-            )
-          })}
-          {peerEffect.graph.nodes.map((n) => (
-            <g key={n.id} transform={`translate(${n.x},${n.y})`}>
-              <rect
-                width={NODE_W}
-                height={NODE_H}
-                rx={8}
-                fill={KIND_COLORS[n.kind]}
-                stroke="#456"
-                strokeWidth={1}
-              />
-              <text x={10} y={22} fill="#fff" fontSize={14} fontWeight={600}>
-                {n.id === ENTRY_NODE_ID ? '\u25b6 entry' : n.kind}
-              </text>
-            </g>
-          ))}
-        </svg>
-      ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#556677', fontSize: 13 }}>
-          (peer has no effect graph yet)
-        </div>
-      )}
-    </div>
-  )
-}
-
-/**
- * Renders dashed stubs along the right edge of the editor canvas, one per
- * outgoing cross-link from the active effect. Pure visual aid — clicking
- * does nothing (manage links from the sidebar panel).
- */
-function CrossLinkOverlay({ hostNodeId, effectId }: { hostNodeId: string; effectId: string }) {
-  const nodes = useOmniStore((s) => s.model.nodes)
-  const crossLinksRaw = useOmniStore((s) => s.model.crossLinks)
-  const crossLinks = crossLinksRaw ?? EMPTY_CROSS_LINKS
-  const outgoing = crossLinks.filter(
-    (l) => l.from.nodeId === hostNodeId && l.from.effectId === effectId,
-  )
-  if (outgoing.length === 0) return null
-  // Anchor stubs at a pinned x just inside the canvas right edge so they
-  // remain visible at any scroll position. The viewBox is the SVG's
-  // intrinsic coords which we don't strictly know here; pick a generous x
-  // that still works on the doubled-size modal.
-  const x = 1900
-  return (
-    <g pointerEvents="none">
-      {outgoing.map((l, i) => {
-        const peer = nodes.get(l.to.nodeId)
-        const peerEff = peer?.flowEffects?.find((e) => e.id === l.to.effectId)
-        const y = 60 + i * 28
-        return (
-          <g key={l.id} transform={`translate(${x},${y})`}>
-            <line x1={-80} y1={0} x2={0} y2={0} stroke="#cfa544" strokeWidth={2} strokeDasharray="6 4" />
-            <circle cx={0} cy={0} r={5} fill="#cfa544" />
-            <text x={-86} y={4} fill="#cfa544" fontSize={14} textAnchor="end" fontWeight={600}>
-              {peer?.label || l.to.nodeId} · {peerEff?.label || l.to.effectId}
-            </text>
-          </g>
-        )
-      })}
-    </g>
-  )
-}
-// Suppress unused-export lint warning \u2014 retained for future cross-link UX.
-void CrossLinkOverlay
