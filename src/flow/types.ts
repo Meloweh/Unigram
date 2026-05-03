@@ -56,8 +56,8 @@ export interface EffectNode {
    *  - float:            { amp, ms, freq? }           (sinusoidal vertical hover; default freq 1 Hz)
    *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
    *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
-   *  - cloud-levitate:   { ampX, ampY, ms, freq? }    (X/Y phase-offset sin)
-    *  - bubble-levitate:  { ampY, scaleAmp, ms, freq?, scalePulse? }
+  *  - cloud-levitate:   { ampX, ampY, rotAmp?, ms }  (closed-loop X/Y drift + sway)
+   *  - bubble-levitate:  { ampX?, ampY, scaleAmp, ms, scalePulse? }
     *                                                    (vertical sin + optional scale pulse)
    *  - repeater:         { times }                    (when reached, rewinds the run;
    *                                                    times<0 means infinite, otherwise
@@ -110,6 +110,8 @@ export interface NodeOverride {
   dy?: number
   /** Multiplicative scale. 1 = no change. */
   scaleMul?: number
+  /** Additive rotation in degrees. */
+  rotationDeg?: number
   /** Multiplicative alpha. 1 = no change. */
   alphaMul?: number
   /** Pixi tint (0xRRGGBB). 0xFFFFFF = no change. */
@@ -131,6 +133,7 @@ export function mergeOverride(a: NodeOverride, b: NodeOverride): NodeOverride {
     dx: (a.dx ?? 0) + (b.dx ?? 0),
     dy: (a.dy ?? 0) + (b.dy ?? 0),
     scaleMul: (a.scaleMul ?? 1) * (b.scaleMul ?? 1),
+    rotationDeg: (a.rotationDeg ?? 0) + (b.rotationDeg ?? 0),
     alphaMul: (a.alphaMul ?? 1) * (b.alphaMul ?? 1),
     // Tint composition is multiplicative per channel.
     tint: tintCombine(a.tint ?? 0xffffff, b.tint ?? 0xffffff),

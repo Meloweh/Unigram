@@ -290,17 +290,27 @@ function drawThinkingCloudPath(
 ): void {
   const rx = w / 2
   const ry = h / 2
-  const lobes: Array<[number, number, number]> = [
-    [-rx * 0.44, ry * 0.02, ry * 0.42],
-    [-rx * 0.24, -ry * 0.32, ry * 0.38],
-    [rx * 0.04, -ry * 0.42, ry * 0.44],
-    [rx * 0.33, -ry * 0.28, ry * 0.39],
-    [rx * 0.47, ry * 0.06, ry * 0.36],
-    [rx * 0.24, ry * 0.32, ry * 0.42],
-    [-rx * 0.12, ry * 0.39, ry * 0.40],
-    [-rx * 0.42, ry * 0.25, ry * 0.36],
+  const pts: Array<[number, number]> = [
+    [-rx * 0.18, -ry * 0.55],
+    [rx * 0.15, -ry * 0.58],
+    [rx * 0.45, -ry * 0.34],
+    [rx * 0.61, -ry * 0.04],
+    [rx * 0.48, ry * 0.30],
+    [rx * 0.18, ry * 0.52],
+    [-rx * 0.18, ry * 0.50],
+    [-rx * 0.50, ry * 0.32],
+    [-rx * 0.62, ry * 0.02],
+    [-rx * 0.48, -ry * 0.30],
   ]
-  for (const [x, y, r] of lobes) g.circle(x, y, r)
+  g.moveTo(pts[0][0], pts[0][1])
+  for (let i = 0; i < pts.length; i++) {
+    const cur = pts[i]
+    const next = pts[(i + 1) % pts.length]
+    const midX = (cur[0] + next[0]) / 2
+    const midY = (cur[1] + next[1]) / 2
+    g.quadraticCurveTo(cur[0], cur[1], midX, midY)
+  }
+  g.closePath()
   const fallback = fallbackTip ? cosmeticTip({ tip: fallbackTip }) : null
   const angle = tipAngle ?? fallback?.angle ?? Math.PI * 0.75
   const length = tipLength ?? fallback?.length ?? DEFAULT_COSMETIC_TIP_LENGTH

@@ -346,12 +346,14 @@ export class NodePool {
       pn.container.y = baseY + ((override.dy ?? 0) / 100) * SCENE_H
       const s = override.scaleMul ?? 1
       pn.container.scale.set(s, s)
+      pn.container.rotation = ((override.rotationDeg ?? 0) * Math.PI) / 180
       pn.container.alpha = breaking ? 1 : (override.alphaMul ?? 1)
       pn.container.tint = override.tint ?? 0xffffff
     } else {
       pn.container.x = baseX
       pn.container.y = baseY
       if (pn.container.scale.x !== 1) pn.container.scale.set(1, 1)
+      if (pn.container.rotation !== 0) pn.container.rotation = 0
       if (pn.container.alpha !== 1) pn.container.alpha = 1
       if (pn.container.tint !== 0xffffff) pn.container.tint = 0xffffff
     }

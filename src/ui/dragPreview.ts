@@ -112,20 +112,25 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: NodeShape): void {
       const cloudH = h * 0.64
       const rx = cloudW / 2
       const ry = cloudH / 2
-      const lobes: Array<[number, number, number]> = [
-        [cx - rx * 0.44, cy + ry * 0.02, ry * 0.42],
-        [cx - rx * 0.24, cy - ry * 0.32, ry * 0.38],
-        [cx + rx * 0.04, cy - ry * 0.42, ry * 0.44],
-        [cx + rx * 0.33, cy - ry * 0.28, ry * 0.39],
-        [cx + rx * 0.47, cy + ry * 0.06, ry * 0.36],
-        [cx + rx * 0.24, cy + ry * 0.32, ry * 0.42],
-        [cx - rx * 0.12, cy + ry * 0.39, ry * 0.40],
-        [cx - rx * 0.42, cy + ry * 0.25, ry * 0.36],
+      const pts: Array<[number, number]> = [
+        [cx - rx * 0.18, cy - ry * 0.55],
+        [cx + rx * 0.15, cy - ry * 0.58],
+        [cx + rx * 0.45, cy - ry * 0.34],
+        [cx + rx * 0.61, cy - ry * 0.04],
+        [cx + rx * 0.48, cy + ry * 0.30],
+        [cx + rx * 0.18, cy + ry * 0.52],
+        [cx - rx * 0.18, cy + ry * 0.50],
+        [cx - rx * 0.50, cy + ry * 0.32],
+        [cx - rx * 0.62, cy + ry * 0.02],
+        [cx - rx * 0.48, cy - ry * 0.30],
       ]
-      for (const [x, y, r] of lobes) {
-        ctx.moveTo(x + r, y)
-        ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.moveTo(pts[0][0], pts[0][1])
+      for (let i = 0; i < pts.length; i++) {
+        const cur = pts[i]
+        const next = pts[(i + 1) % pts.length]
+        ctx.quadraticCurveTo(cur[0], cur[1], (cur[0] + next[0]) / 2, (cur[1] + next[1]) / 2)
       }
+      ctx.closePath()
       for (const c of thinkingCloudTrail(cloudW, cloudH, DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH * 0.8)) {
         ctx.moveTo(cx + c.cx + c.r, cy + c.cy)
         ctx.arc(cx + c.cx, cy + c.cy, c.r, 0, Math.PI * 2)

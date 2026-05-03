@@ -259,7 +259,7 @@ describe('FlowRuntime — extended kinds', () => {
     const rt = new FlowRuntime()
     rt.start(
       'n1',
-      mkEffect([{ id: 'c', kind: 'cloud-levitate', params: { ampX: 1, ampY: 1, freq: 1, ms: 1000 } }]),
+      mkEffect([{ id: 'c', kind: 'cloud-levitate', params: { ampX: 1, ampY: 1, rotAmp: 1.5, ms: 1000 } }]),
       0,
     )
     rt.tick(250)
@@ -267,17 +267,36 @@ describe('FlowRuntime — extended kinds', () => {
     // Each axis bounded by its amp.
     expect(Math.abs(ov.dx ?? 0)).toBeLessThanOrEqual(1.0001)
     expect(Math.abs(ov.dy ?? 0)).toBeLessThanOrEqual(1.0001)
+    expect(Math.abs(ov.rotationDeg ?? 0)).toBeGreaterThan(0)
   })
 
-  it('bubble-levitate combines dy with a scale pulse near 1', () => {
+  it('cloud-levitate reconnects cleanly at the loop boundary', () => {
     const rt = new FlowRuntime()
     rt.start(
       'n1',
-      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampY: 1, scaleAmp: 0.05, freq: 1, ms: 1000 } }]),
+      { ...mkEffect([{ id: 'c', kind: 'cloud-levitate', params: { ampX: 1, ampY: 1, rotAmp: 1.5, ms: 1000 } }]), alwaysPlay: true },
+      0,
+    )
+    rt.tick(0)
+    const start = rt.getOverride('n1')!
+    rt.tick(1000)
+    const end = rt.getOverride('n1')!
+    expect(end.dx).toBeCloseTo(start.dx ?? 0, 5)
+    expect(end.dy).toBeCloseTo(start.dy ?? 0, 5)
+    expect(end.rotationDeg).toBeCloseTo(start.rotationDeg ?? 0, 5)
+  })
+
+  it('bubble-levitate combines x/y drift with a scale pulse near 1', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampX: 1, ampY: 1, scaleAmp: 0.05, ms: 1000 } }]),
       0,
     )
     rt.tick(125)
     const ov = rt.getOverride('n1')!
+    expect(Math.abs(ov.dx ?? 0)).toBeGreaterThan(0)
+    expect(Math.abs(ov.dy ?? 0)).toBeGreaterThan(0)
     expect(ov.scaleMul).toBeGreaterThan(0.95)
     expect(ov.scaleMul).toBeLessThan(1.05)
   })
@@ -286,12 +305,12 @@ describe('FlowRuntime — extended kinds', () => {
     const rt = new FlowRuntime()
     rt.start(
       'n1',
-      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampY: 1, scaleAmp: 0.2, scalePulse: 0, freq: 1, ms: 1000 } }]),
+      mkEffect([{ id: 'b', kind: 'bubble-levitate', params: { ampY: 1, scaleAmp: 0.2, scalePulse: 0, ms: 1000 } }]),
       0,
     )
     rt.tick(250)
     const ov = rt.getOverride('n1')!
-    expect(ov.dy).toBeCloseTo(1, 1)
+    expect(ov.dy).toBeCloseTo(Math.sin(Math.PI * 0.85), 1)
     expect(ov.scaleMul).toBe(1)
   })
 

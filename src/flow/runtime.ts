@@ -616,27 +616,31 @@ function contribution(
       }
     }
     case 'cloud-levitate': {
-      // X/Y phase-offset sin — drifts laterally while bobbing vertically.
-      const ampX = n.params.ampX ?? 0.6
-      const ampY = n.params.ampY ?? 0.4
-      const freq = n.params.freq ?? 0.6
-      const t = localElapsed / 1000
+      // Legacy cloudy levitate: lateral drift, vertical bob, and a slight
+      // sway. Use task ratio so always-play loops reconnect perfectly.
+      const ampX = n.params.ampX ?? 0.35
+      const ampY = n.params.ampY ?? 0.75
+      const rotAmp = n.params.rotAmp ?? 1.5
+      const phase = ratio * 2 * Math.PI
       return {
-        dx: Math.sin(t * 2 * Math.PI * freq) * ampX,
-        dy: Math.cos(t * 2 * Math.PI * freq * 1.3) * ampY,
+        dx: Math.sin(phase) * ampX,
+        dy: Math.sin(phase + Math.PI * 0.5) * ampY,
+        rotationDeg: Math.sin(phase + Math.PI * 0.2) * rotAmp,
       }
     }
     case 'bubble-levitate': {
-      // Vertical sin + slight scale pulse. Common chat-bubble idle animation.
+      // Legacy soap-bubble levitate: X/Y drift plus slight scale pulse.
+      // Ratio-based phases make the runtime loop seamless.
+      const ampX = n.params.ampX ?? 0.54
       const ampY = n.params.ampY ?? 0.5
       const scaleAmp = n.params.scaleAmp ?? 0.04
-      const freq = n.params.freq ?? 1
       const scalePulse = (n.params.scalePulse ?? 1) !== 0
-      const t = localElapsed / 1000
-      const phase = Math.sin(t * 2 * Math.PI * freq)
+      const phase = ratio * 2 * Math.PI
+      const dyPhase = Math.sin(phase + Math.PI * 0.35)
       return {
-        dy: phase * ampY,
-        scaleMul: scalePulse ? 1 + scaleAmp * phase : 1,
+        dx: Math.sin(phase) * ampX,
+        dy: dyPhase * ampY,
+        scaleMul: scalePulse ? 1 + scaleAmp * Math.sin(phase + Math.PI * 0.7) : 1,
       }
     }
     case 'break': {
