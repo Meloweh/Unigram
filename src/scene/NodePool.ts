@@ -57,6 +57,7 @@ interface PooledNode {
   container: Container
   shape: Graphics
   label: Text
+  formattedLabel?: PooledFormattedLabel
   media?: PooledMedia
   breaking?: PooledBreakApart
   wasBreakingApart: boolean
@@ -74,6 +75,11 @@ interface PooledMedia {
   bg: Graphics
   sprite: Sprite
   text: Text
+}
+
+interface PooledFormattedLabel {
+  container: Container
+  texts: Text[]
 }
 
 interface PooledBreakApart {
@@ -133,7 +139,7 @@ function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
 }
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
-  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${JSON.stringify(n.textFormats ?? [])}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
+  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.previewOf ? 1 : 0}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${JSON.stringify(n.textFormats ?? [])}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
 const labelKeyOf = (n: ModelNode, showLabel: boolean): string => (showLabel && !n.mediaType ? n.label : '')
 
@@ -200,6 +206,7 @@ function setLabel(t: Text, n: ModelNode, showLabel: boolean, fill: number): void
 
 function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
   const formats = n.textFormats ?? []
+  const textLen = String(t.text ?? '').length
   const style = t.style as typeof t.style & {
     fontWeight?: string
     fontStyle?: string
@@ -211,6 +218,7 @@ function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
   style.fontStyle = 'normal'
   style.textDecoration = 'none'
   for (const f of formats) {
+    if (f.start > 0 || f.end < textLen) continue
     if (f.end <= f.start) continue
     if (f.bold) style.fontWeight = '700'
     if (f.italic) style.fontStyle = 'italic'
@@ -218,6 +226,80 @@ function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
     if (f.color) style.fill = f.color
     if (f.fontSize && f.fontSize > 0) style.fontSize = f.fontSize
   }
+}
+
+function ensureFormattedLabel(pn: PooledNode): PooledFormattedLabel {
+  if (pn.formattedLabel) return pn.formattedLabel
+  const container = new Container()
+  container.eventMode = 'none'
+  pn.container.addChild(container)
+  pn.formattedLabel = { container, texts: [] }
+  return pn.formattedLabel
+}
+
+function setFormattedLabel(pn: PooledNode, n: ModelNode, showLabel: boolean, fallbackFill: number): void {
+  const formats = n.textFormats ?? []
+  const text = labelKeyOf(n, showLabel)
+  const partialFormats = formats.filter((f) => f.end > f.start && (f.start > 0 || f.end < text.length))
+  if (!text || partialFormats.length === 0) {
+    if (pn.formattedLabel) pn.formattedLabel.container.visible = false
+    return
+  }
+  const layer = ensureFormattedLabel(pn)
+  layer.container.visible = true
+  const lines = text.split('\n')
+  const baseStyle = pn.label.style
+  const lineHeight = CanvasTextMetrics.measureText('Mg', baseStyle).height || NODE_FONT_SIZE * 1.2
+  const totalH = lineHeight * lines.length
+  let used = 0
+  let globalStart = 0
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li]
+    const lineEnd = globalStart + line.length
+    const lineWidth = CanvasTextMetrics.measureText(line || ' ', baseStyle).width
+    const y = -totalH / 2 + li * lineHeight + lineHeight / 2
+    for (const f of partialFormats) {
+      const start = Math.max(globalStart, f.start)
+      const end = Math.min(lineEnd, f.end)
+      if (end <= start) continue
+      const before = line.slice(0, start - globalStart)
+      const selected = line.slice(start - globalStart, end - globalStart)
+      const beforeW = CanvasTextMetrics.measureText(before, baseStyle).width
+      let t = layer.texts[used]
+      if (!t) {
+        t = new Text({
+          text: '',
+          style: {
+            fontFamily: NODE_FONT_FAMILY,
+            fontSize: NODE_FONT_SIZE,
+            fill: fallbackFill,
+            align: 'left',
+          },
+        })
+        t.anchor.set(0, 0.5)
+        layer.container.addChild(t)
+        layer.texts.push(t)
+      }
+      t.visible = true
+      t.text = selected
+      const style = t.style as typeof t.style & {
+        fontWeight?: string
+        fontStyle?: string
+        textDecoration?: string
+      }
+      style.fontFamily = NODE_FONT_FAMILY
+      style.fontSize = f.fontSize && f.fontSize > 0 ? f.fontSize : NODE_FONT_SIZE
+      style.fill = f.color ?? fallbackFill
+      style.fontWeight = f.bold ? '700' : 'normal'
+      style.fontStyle = f.italic ? 'italic' : 'normal'
+      style.textDecoration = f.strikethrough ? 'line-through' : 'none'
+      t.x = -lineWidth / 2 + beforeW
+      t.y = y
+      used++
+    }
+    globalStart = lineEnd + 1
+  }
+  for (let i = used; i < layer.texts.length; i++) layer.texts[i].visible = false
 }
 
 function mediaPreviewState(n: ModelNode, lod: Lod): MediaPreviewState {
@@ -413,19 +495,21 @@ export class NodePool {
       const s = override.scaleMul ?? 1
       pn.container.scale.set(s, s)
       pn.container.rotation = ((override.rotationDeg ?? 0) * Math.PI) / 180
-      pn.container.alpha = breaking ? 1 : (override.alphaMul ?? 1)
+      pn.container.alpha = breaking ? 1 : (override.alphaMul ?? 1) * (n.previewOf ? 0.62 : 1)
       pn.container.tint = override.tint ?? 0xffffff
     } else {
       pn.container.x = baseX
       pn.container.y = baseY
       if (pn.container.scale.x !== 1) pn.container.scale.set(1, 1)
       if (pn.container.rotation !== 0) pn.container.rotation = 0
-      if (pn.container.alpha !== 1) pn.container.alpha = 1
+      const alpha = n.previewOf ? 0.62 : 1
+      if (pn.container.alpha !== alpha) pn.container.alpha = alpha
       if (pn.container.tint !== 0xffffff) pn.container.tint = 0xffffff
     }
     const key = dirtyKeyOf(n, lod, showLabel, this.theme)
+    const labelFill = this.theme?.label ?? NODE_LABEL_FILL
     if (key !== pn.dirtyKey) {
-      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
+      setLabel(pn.label, n, showLabel, labelFill)
       if (lod === 'full' && this.onNodeFit && pn.label.visible) {
         const required = fitNodeToLabel(n, pn.label)
         if (Math.abs(required.w - n.w) > 0.01 || Math.abs(required.h - n.h) > 0.01) {
@@ -434,13 +518,15 @@ export class NodePool {
       }
       drawShape(pn.shape, n, lod, this.theme)
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
+      setLabel(pn.label, n, showLabel, labelFill)
+      setFormattedLabel(pn, n, lod === 'full' && showLabel, labelFill)
       pn.dirtyKey = dirtyKeyOf(n, lod, showLabel, this.theme)
       pn.lod = lod
     } else {
       // Label text can change while shape stays stable.
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
+      setLabel(pn.label, n, showLabel, labelFill)
+      setFormattedLabel(pn, n, lod === 'full' && showLabel, labelFill)
     }
     this.syncBreakApart(pn, n, breaking)
   }
@@ -536,6 +622,7 @@ export class NodePool {
       pn.wasBreakingApart = false
       pn.shape.visible = true
       pn.label.visible = pn.label.text.length > 0
+      if (pn.formattedLabel) pn.formattedLabel.container.visible = (n.textFormats?.length ?? 0) > 0
       if (pn.media) {
         pn.media.bg.visible = pn.mediaPreviewActive
         pn.media.sprite.visible = pn.mediaPreviewActive && !!(n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc)
@@ -549,6 +636,7 @@ export class NodePool {
     pn.wasBreakingApart = true
     pn.shape.visible = false
     pn.label.visible = false
+    if (pn.formattedLabel) pn.formattedLabel.container.visible = false
     if (pn.media) {
       pn.media.bg.visible = false
       pn.media.sprite.visible = false

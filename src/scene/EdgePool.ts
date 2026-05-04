@@ -28,6 +28,12 @@ interface PooledEdge {
   dirtyKey: string
 }
 
+export interface EdgeRevealGap {
+  wPx: number
+  hPx: number
+  progress: number
+}
+
 const FLOW_COLOR = '#f59e0b'
 const DEFAULT_LABEL_FONT = 22
 
@@ -35,14 +41,15 @@ const keyOf = (
   e: Connection,
   from: ModelNode,
   to: ModelNode,
-  revealGap: boolean,
+  revealGap: EdgeRevealGap | null,
 ): string =>
   `${from.x},${from.y},${from.w},${from.h},${from.shape}|` +
   `${from.cosmeticType ?? ''},${from.tipAngle ?? ''},${from.tipLength ?? ''}|` +
   `${to.x},${to.y},${to.w},${to.h},${to.shape}|` +
   `${to.cosmeticType ?? ''},${to.tipAngle ?? ''},${to.tipLength ?? ''}|` +
   `${e.color}|${e.width}|${e.kind ?? 'default'}|${e.dash ?? 'solid'}|` +
-  `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}|${revealGap ? 1 : 0}`
+  `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}|` +
+  `${revealGap ? `${revealGap.wPx.toFixed(1)},${revealGap.hPx.toFixed(1)},${revealGap.progress.toFixed(3)}` : '0'}`
 
 /** Visual size of the arrow head, in scene pixels. */
 const ARROW_LEN = 16
@@ -163,7 +170,7 @@ function drawEdge(
   e: Connection,
   from: ModelNode,
   to: ModelNode,
-  revealGap: boolean,
+  revealGap: EdgeRevealGap | null,
 ): { midX: number; midY: number } | null {
   g.clear()
   const fxC = (from.x / 100) * SCENE_W
@@ -214,27 +221,119 @@ function drawEdge(
       g.stroke({ color, width: strokePx, alignment: 0.5 })
     }
   }
+  const drawTrack = (points: Array<{ x: number; y: number }>) => {
+    if (points.length < 2) return
+    const radius = Math.min(28, Math.max(6, Math.min(revealGap?.wPx ?? 0, revealGap?.hPx ?? 0) * 0.12))
+    g.moveTo(points[0].x, points[0].y)
+    for (let i = 1; i < points.length; i++) {
+      const curr = points[i]
+      if (i < points.length - 1) {
+        const prev = points[i - 1]
+        const next = points[i + 1]
+        let dx1 = curr.x - prev.x
+        let dy1 = curr.y - prev.y
+        const len1 = Math.hypot(dx1, dy1)
+        let dx2 = next.x - curr.x
+        let dy2 = next.y - curr.y
+        const len2 = Math.hypot(dx2, dy2)
+        if (len1 < 0.5 || len2 < 0.5) {
+          g.lineTo(curr.x, curr.y)
+          continue
+        }
+        dx1 /= len1
+        dy1 /= len1
+        dx2 /= len2
+        dy2 /= len2
+        const r = Math.min(radius, len1 / 2, len2 / 2)
+        g.lineTo(curr.x - dx1 * r, curr.y - dy1 * r)
+        g.quadraticCurveTo(curr.x, curr.y, curr.x + dx2 * r, curr.y + dy2 * r)
+      } else {
+        g.lineTo(curr.x, curr.y)
+      }
+    }
+    g.stroke({ color, width: strokePx, alignment: 0.5 })
+  }
+  const buildTrackAroundPopup = (sign: 1 | -1): Array<{ x: number; y: number }> | null => {
+    if (!revealGap || revealGap.progress < 0.001) return null
+    const midX = (fx + lineEndX) / 2
+    const midY = (fy + lineEndY) / 2
+    const hw = (revealGap.wPx / 2 + 16) * revealGap.progress
+    const hh = (revealGap.hPx / 2 + 16) * revealGap.progress
+    let t = Infinity
+    if (Math.abs(ux) > 1e-9) t = Math.min(t, hw / Math.abs(ux))
+    if (Math.abs(uy) > 1e-9) t = Math.min(t, hh / Math.abs(uy))
+    t = Math.min(t, segLen / 2 - 1)
+    if (t <= 0 || !Number.isFinite(t)) return null
+
+    const entry = { x: midX - ux * t, y: midY - uy * t }
+    const exit = { x: midX + ux * t, y: midY + uy * t }
+    const exitRx = ux * t
+    const exitRy = uy * t
+    const eps = 0.5
+    let exitEdge: number
+    if (Math.abs(exitRx - hw) < eps) exitEdge = 1
+    else if (Math.abs(exitRx + hw) < eps) exitEdge = 3
+    else if (Math.abs(exitRy - hh) < eps) exitEdge = 2
+    else exitEdge = 0
+    const entryEdge = (exitEdge + 2) % 4
+    const corners: Array<{ x: number; y: number }> = [
+      { x: midX - hw, y: midY - hh },
+      { x: midX + hw, y: midY - hh },
+      { x: midX + hw, y: midY + hh },
+      { x: midX - hw, y: midY + hh },
+    ]
+    const cw: number[] = []
+    let edgeIdx = entryEdge
+    while (true) {
+      cw.push((edgeIdx + 1) % 4)
+      edgeIdx = (edgeIdx + 1) % 4
+      if (edgeIdx === exitEdge) break
+    }
+    const ccw: number[] = []
+    edgeIdx = entryEdge
+    while (true) {
+      ccw.push(edgeIdx)
+      edgeIdx = (edgeIdx - 1 + 4) % 4
+      if (edgeIdx === exitEdge) break
+    }
+    const perpX = -uy
+    const perpY = ux
+    const cwPerp = cw.reduce((sum, cornerIdx) => {
+      const c = corners[cornerIdx]
+      return sum + (c.x - midX) * perpX + (c.y - midY) * perpY
+    }, 0)
+    const cornerPath = (cwPerp * sign > 0 ? cw : ccw).map((cornerIdx) => corners[cornerIdx])
+    return [
+      { x: fx, y: fy },
+      entry,
+      ...cornerPath,
+      exit,
+      { x: lineEndX, y: lineEndY },
+    ]
+  }
   if (dash) {
     if (revealGap) {
-      const gap = Math.min(72, Math.max(30, segLen * 0.12))
-      const mx = (fx + lineEndX) / 2
-      const my = (fy + lineEndY) / 2
-      drawStroke(fx, fy, mx - ux * gap, my - uy * gap)
-      drawStroke(mx + ux * gap, my + uy * gap, lineEndX, lineEndY)
+      const a = buildTrackAroundPopup(1)
+      const b = buildTrackAroundPopup(-1)
+      if (a && b) {
+        drawTrack(a)
+        drawTrack(b)
+      } else {
+        drawStroke(fx, fy, lineEndX, lineEndY)
+      }
     } else {
       drawStroke(fx, fy, lineEndX, lineEndY)
     }
   } else {
     if (revealGap) {
-      const gap = Math.min(72, Math.max(30, segLen * 0.12))
-      const mx = (fx + lineEndX) / 2
-      const my = (fy + lineEndY) / 2
-      // Pull the cut ends slightly apart perpendicular to the wire to
-      // recreate the legacy "unzip" feel without allocating a DOM SVG path.
-      const px = -uy * 8
-      const py = ux * 8
-      drawStroke(fx, fy, mx - ux * gap + px, my - uy * gap + py)
-      drawStroke(mx + ux * gap - px, my + uy * gap - py, lineEndX, lineEndY)
+      const a = buildTrackAroundPopup(1)
+      const b = buildTrackAroundPopup(-1)
+      if (a && b) {
+        drawTrack(a)
+        drawTrack(b)
+      } else {
+        drawStroke(fx, fy, lineEndX, lineEndY)
+      }
     } else {
       drawStroke(fx, fy, lineEndX, lineEndY)
     }
@@ -262,7 +361,7 @@ export class EdgePool {
     return this.active.has(id)
   }
 
-  acquire(e: Connection, from: ModelNode, to: ModelNode, revealGap = false): void {
+  acquire(e: Connection, from: ModelNode, to: ModelNode, revealGap: EdgeRevealGap | null = null): void {
     let pe = this.active.get(e.id)
     if (!pe) {
       pe = this.free.pop() ?? { gfx: new Graphics(), label: null, dirtyKey: '' }
@@ -274,7 +373,7 @@ export class EdgePool {
     this.update(e, from, to, revealGap)
   }
 
-  update(e: Connection, from: ModelNode, to: ModelNode, revealGap = false): void {
+  update(e: Connection, from: ModelNode, to: ModelNode, revealGap: EdgeRevealGap | null = null): void {
     const pe = this.active.get(e.id)
     if (!pe) return
     const key = keyOf(e, from, to, revealGap)

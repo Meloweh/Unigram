@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
+import type { EffectNode, FlowEffect, SpawnItem } from '../flow/types'
 import { useOmniStore } from '../model/store'
 import type { Connection, ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
 import { animatedContentStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
@@ -1128,7 +1129,7 @@ function MediaSection({ node }: { node: ModelNode }) {
 /* ---- LinkedNodesSection -------------------------------------------------
  *
  * UI for parity item I — paired effect-graph editing. Lists the node's
- * symmetric link peers and exposes Add / Remove. The actual cross-graph
+ * symmetric link peers. The actual cross-graph
  * authoring lives inside FlowEffectEditor (which renders one column per
  * linked host once opened). "Add" is a one-click flow: the user toggles
  * `pickMode = 'link-node'` and the next selected node is paired.
@@ -1148,17 +1149,88 @@ function LinkedNodesSection({ node }: { node: ModelNode }) {
         {links.map((peerId) => (
           <li key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 14, color: 'var(--ug-text)' }}>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{labelFor(peerId)}</span>
-            <button
-              style={{ ...buttonStyle, padding: '2px 6px', fontSize: 14 }}
-              onClick={() => useOmniStore.getState().unlinkNodes(node.id, peerId)}
-            >
-              Unlink
-            </button>
           </li>
         ))}
       </ul>
     </div>
   )
+}
+
+function spawnItemsOf(node: EffectNode): SpawnItem[] {
+  if (node.kind !== 'spawn') return []
+  if (node.spawnItems && node.spawnItems.length > 0) return node.spawnItems
+  const count = Math.max(0, Math.min(64, Math.floor(node.params.count ?? 6)))
+  const radius = Math.max(0, node.params.radius ?? 8)
+  const items: SpawnItem[] = []
+  for (let i = 0; i < count; i++) {
+    const angle = count > 0 ? (i / count) * Math.PI * 2 : 0
+    items.push({
+      label: `Node ${i + 1}`,
+      offsetX: Math.cos(angle) * radius,
+      offsetY: Math.sin(angle) * radius,
+      animation: 'emerge',
+      connectionType: 'none',
+    })
+  }
+  return items
+}
+
+function materialiseSpawnItems(effect: FlowEffect): FlowEffect {
+  let changed = false
+  const nodes = effect.graph.nodes.map((node) => {
+    if (node.kind !== 'spawn') return node
+    if (node.spawnItems && node.spawnItems.length > 0) return node
+    const items = spawnItemsOf(node)
+    if (items.length === 0) return node
+    changed = true
+    return { ...node, spawnItems: items }
+  })
+  return changed ? { ...effect, graph: { ...effect.graph, nodes } } : effect
+}
+
+function syncSpawnPreviewFacades(hostNodeId: string, effect: FlowEffect): void {
+  const store = useOmniStore.getState()
+  const host = store.model.nodes.get(hostNodeId)
+  if (!host) return
+  const wanted = new Map<string, { item: SpawnItem; index: number; spawnNodeId: string }>()
+  for (const graphNode of effect.graph.nodes) {
+    const items = spawnItemsOf(graphNode)
+    for (let i = 0; i < items.length; i++) {
+      const id = `preview-${hostNodeId}-${graphNode.id}-${i}`
+      wanted.set(id, { item: items[i], index: i, spawnNodeId: graphNode.id })
+    }
+  }
+
+  const existing = [...store.model.nodes.values()].filter((n) => n.previewOf?.hostNodeId === hostNodeId)
+  const removeIds: string[] = []
+  for (const prev of existing) {
+    if (!wanted.has(prev.id)) removeIds.push(prev.id)
+  }
+  if (removeIds.length > 0) store.removeNodes(removeIds)
+
+  const latest = useOmniStore.getState()
+  for (const [id, spec] of wanted) {
+    const x = host.x + spec.item.offsetX
+    const y = host.y + spec.item.offsetY
+    const previewOf = { hostNodeId, spawnEffectNodeId: spec.spawnNodeId, itemIndex: spec.index }
+    const current = latest.model.nodes.get(id)
+    if (current) {
+      latest.updateNode(id, {
+        label: spec.item.label,
+        x,
+        y,
+        previewOf,
+      })
+    } else {
+      latest.addNode({
+        id,
+        label: spec.item.label,
+        x,
+        y,
+        previewOf,
+      })
+    }
+  }
 }
 
 function FlowEffectsSection({
@@ -1200,11 +1272,13 @@ function FlowEffectsSection({
           id: eff.id || `eff_${Date.now().toString(36)}`,
           alwaysPlay: editing?.alwaysPlay ?? false,
         }
+        const savedEffect = materialiseSpawnItems(withId)
         // Replace by id if it already exists.
-        const next = existing.some((x) => x.id === withId.id)
-          ? existing.map((x) => (x.id === withId.id ? withId : x))
-          : [...existing, withId]
+        const next = existing.some((x) => x.id === savedEffect.id)
+          ? existing.map((x) => (x.id === savedEffect.id ? savedEffect : x))
+          : [...existing, savedEffect]
         useOmniStore.getState().updateNode(node.id, { flowEffects: next })
+        syncSpawnPreviewFacades(node.id, savedEffect)
         setEditing(null)
       }}
       onClose={() => setEditing(null)}

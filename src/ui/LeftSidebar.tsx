@@ -323,7 +323,7 @@ function Section({
  * Width of the expanded panel at scale=1. Actual rendered width is this
  * multiplied by `--ug-ui-scale` (default 1.5 — see [src/index.css](../index.css)).
  */
-export const SIDEBAR_EXPANDED_W = 160
+export const SIDEBAR_EXPANDED_W = 190
 /** Width of the collapsed strip at scale=1 (also the width of the
  *  expand/collapse toggle column — widened from 18 → 27 (×1.5) so the
  *  arrow target is comfortably clickable on touch displays). */
@@ -342,7 +342,7 @@ const scaled = (px: number) => `calc(${px}px * var(--ug-ui-scale))`
  * `flex-direction` trick (left = row, right = row-reverse).
  */
 export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSSProperties {
-  const expandedW = side === 'left' ? 147 : SIDEBAR_EXPANDED_W
+  const expandedW = side === 'left' ? 176 : SIDEBAR_EXPANDED_W
   return {
     position: 'absolute',
     [side]: 0,

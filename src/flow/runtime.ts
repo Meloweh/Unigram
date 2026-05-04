@@ -22,6 +22,7 @@ import type {
   EffectNode,
   FlowEffect,
   NodeOverride,
+  SpawnItem,
 } from './types'
 import { mergeCameraOverride, mergeOverride } from './types'
 
@@ -116,10 +117,10 @@ export class FlowRuntime {
    * fires start/stop on the task lifecycle so the renderer can fade them
    * in (start) and fade them out + dispose (stop).
    */
-  onSpawn: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
-  onSpawnStop: ((targetNodeId: string) => void) | null = null
-  onSpawnCircular: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
-  onSpawnCircularStop: ((targetNodeId: string) => void) | null = null
+  onSpawn: ((targetNodeId: string, params: Record<string, number>, effectNodeId: string, spawnItems?: SpawnItem[]) => void) | null = null
+  onSpawnStop: ((targetNodeId: string, effectNodeId: string) => void) | null = null
+  onSpawnCircular: ((targetNodeId: string, params: Record<string, number>, effectNodeId: string, spawnItems?: SpawnItem[]) => void) | null = null
+  onSpawnCircularStop: ((targetNodeId: string, effectNodeId: string) => void) | null = null
 
   /** Returns the run id, or null if the graph was empty / cyclic. */
   start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
@@ -345,10 +346,10 @@ export class FlowRuntime {
             this.onObsRecordStop?.(run.targetNodeId)
             t.sideEffectFired = false
           } else if (t.node.kind === 'spawn' && t.sideEffectFired) {
-            this.onSpawnStop?.(run.targetNodeId)
+            this.onSpawnStop?.(run.targetNodeId, t.node.id)
             t.sideEffectFired = false
           } else if (t.node.kind === 'spawn-circular' && t.sideEffectFired) {
-            this.onSpawnCircularStop?.(run.targetNodeId)
+            this.onSpawnCircularStop?.(run.targetNodeId, t.node.id)
             t.sideEffectFired = false
           }
           // Capture final value for permanent-flagged kinds.
@@ -428,8 +429,8 @@ export class FlowRuntime {
       } else if (t.node.kind === 'spawn' || t.node.kind === 'spawn-circular') {
         if (!t.sideEffectFired) {
           t.sideEffectFired = true
-          if (t.node.kind === 'spawn') this.onSpawn?.(run.targetNodeId, t.node.params)
-          else this.onSpawnCircular?.(run.targetNodeId, t.node.params)
+          if (t.node.kind === 'spawn') this.onSpawn?.(run.targetNodeId, t.node.params, t.node.id, t.node.spawnItems)
+          else this.onSpawnCircular?.(run.targetNodeId, t.node.params, t.node.id, t.node.spawnItems)
         }
       } else {
         const contrib = contribution(t.node, ratio, localElapsed, run.targetNodeId)
@@ -467,8 +468,8 @@ export class FlowRuntime {
       else if (t.node.kind === 'text-format') this.onTextFormatStop?.(run.targetNodeId)
       else if (t.node.kind === 'record') this.onRecordStop?.(run.targetNodeId)
       else if (t.node.kind === 'obs-record') this.onObsRecordStop?.(run.targetNodeId)
-      else if (t.node.kind === 'spawn') this.onSpawnStop?.(run.targetNodeId)
-      else if (t.node.kind === 'spawn-circular') this.onSpawnCircularStop?.(run.targetNodeId)
+      else if (t.node.kind === 'spawn') this.onSpawnStop?.(run.targetNodeId, t.node.id)
+      else if (t.node.kind === 'spawn-circular') this.onSpawnCircularStop?.(run.targetNodeId, t.node.id)
       t.sideEffectFired = false
     }
   }
@@ -727,11 +728,17 @@ function contribution(
       return { tint: (r << 16) | (g << 8) | b }
     }
     case 'jitter': {
-      const amp = n.params.amp ?? 0
-      // 60Hz wobble; deterministic so renderer can re-compute on demand.
-      const t = localElapsed / 1000
-      const dx = Math.sin(t * 18.85) * amp
-      const dy = Math.cos(t * 22.7) * amp
+      const intensityPx = n.params.intensity ?? ((n.params.amp ?? 0.25) / 100) * 1920
+      const decay = shouldKeepPlaying(n) ? 1 : Math.max(0, 1 - ratio)
+      // Legacy Unigram used per-frame random offsets with a decay envelope.
+      // Keep it deterministic for tests, but sample at rAF cadence so the
+      // result reads as a nervous tremor instead of a smooth orbit.
+      const step = Math.floor(localElapsed / (1000 / 60))
+      const seed = targetNodeId || n.id
+      const dxPx = (hashNoise(seed, step * 2 + 17) * 2 - 1) * intensityPx * decay
+      const dyPx = (hashNoise(seed, step * 2 + 101) * 2 - 1) * intensityPx * decay
+      const dx = (dxPx / 1920) * 100
+      const dy = (dyPx / 1080) * 100
       return { dx, dy }
     }
     case 'float': {
@@ -853,6 +860,18 @@ function breakScreenShake(n: EffectNode, localElapsed: number): CameraOverride |
     screenShakeX: Math.sin(localElapsed * 0.19) * intensity * decay,
     screenShakeY: Math.cos(localElapsed * 0.23) * intensity * decay,
   }
+}
+
+function hashNoise(seed: string, step: number): number {
+  let h = 2166136261
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  h ^= step
+  h = Math.imul(h ^ (h >>> 16), 2246822507)
+  h = Math.imul(h ^ (h >>> 13), 3266489909)
+  return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff
 }
 
 /**

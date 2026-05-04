@@ -41,6 +41,14 @@ export type FlowEffectKind =
   | 'expand'
   | 'collapse'
 
+export interface SpawnItem {
+  label: string
+  offsetX: number
+  offsetY: number
+  animation: 'emerge' | 'zip-in'
+  connectionType: 'none' | 'default' | 'flow'
+}
+
 export interface EffectNode {
   id: string
   kind: FlowEffectKind
@@ -53,7 +61,7 @@ export interface EffectNode {
    *                                                    roundtrip≠0 returns to origin)
    *  - scale:            { mul, ms, permanent? }     (final scale multiplier; permanent≠0 holds)
    *  - color:            { tint, ms, permanent? }     (Pixi tint hex; permanent≠0 holds final tint)
-   *  - jitter:           { amp, ms }                  (sine wobble amplitude, scene-percent)
+   *  - jitter:           { intensity, ms }            (legacy-style random burst, screen px)
    *  - float:            { amp, ms, freq? }           (sinusoidal vertical hover; default freq 1 Hz)
    *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
    *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
@@ -83,6 +91,8 @@ export interface EffectNode {
    *                                                    owns the actual reveal state.)
    */
   params: Record<string, number>
+  /** Legacy spawn facade definitions. Runtime activates matching preview nodes. */
+  spawnItems?: SpawnItem[]
   /** Optional editor-visible label. Runtime ignores it. */
   label?: string
 }

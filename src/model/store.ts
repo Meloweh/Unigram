@@ -32,6 +32,35 @@ import {
 let idCounter = 0
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(idCounter++).toString(36)}`
 
+function withPreviewSpawnOffset(host: ModelNode, preview: ModelNode): ModelNode | null {
+  const ref = preview.previewOf
+  if (!ref || !host.flowEffects) return null
+  const spawnEffectNodeId = ref.spawnEffectNodeId
+  const itemIndex = ref.itemIndex
+  if (!spawnEffectNodeId || typeof itemIndex !== 'number') return null
+  let changed = false
+  const flowEffects = host.flowEffects.map((effect) => {
+    let effectChanged = false
+    const nodes = effect.graph.nodes.map((graphNode) => {
+      if (graphNode.id !== spawnEffectNodeId || graphNode.kind !== 'spawn') return graphNode
+      const items = graphNode.spawnItems
+      const item = items?.[itemIndex]
+      if (!items || !item) return graphNode
+      const offsetX = preview.x - host.x
+      const offsetY = preview.y - host.y
+      if (item.offsetX === offsetX && item.offsetY === offsetY) return graphNode
+      changed = true
+      effectChanged = true
+      return {
+        ...graphNode,
+        spawnItems: items.map((it, i) => (i === itemIndex ? { ...it, offsetX, offsetY } : it)),
+      }
+    })
+    return effectChanged ? { ...effect, graph: { ...effect.graph, nodes } } : effect
+  })
+  return changed ? { ...host, flowEffects } : null
+}
+
 interface Camera {
   panX: number
   panY: number
@@ -512,17 +541,36 @@ export const useOmniStore = create<Store>((set, get) => ({
   commitDrag(baselines) {
     const { model } = get()
     const tx: Patch[] = []
+    const hostUpdates = new Map<string, { before: ModelNode; after: ModelNode }>()
     for (const b of baselines) {
       const cur = model.nodes.get(b.id)
       if (!cur) continue
       if (cur.x === b.x && cur.y === b.y) continue
       const before: ModelNode = { ...cur, x: b.x, y: b.y }
       tx.push({ kind: 'node', op: 'update', id: b.id, before, after: cur })
+      if (cur.previewOf) {
+        const hostId = cur.previewOf.hostNodeId
+        if (!hostId) continue
+        const host = hostUpdates.get(hostId)?.after ?? model.nodes.get(hostId)
+        if (host) {
+          const nextHost = withPreviewSpawnOffset(host, cur)
+          if (nextHost) {
+            hostUpdates.set(hostId, {
+              before: hostUpdates.get(hostId)?.before ?? host,
+              after: nextHost,
+            })
+          }
+        }
+      }
+    }
+    for (const [hostId, update] of hostUpdates) {
+      model.nodes.set(hostId, update.after)
+      tx.push({ kind: 'node', op: 'update', id: hostId, before: update.before, after: update.after })
     }
     if (tx.length === 0) return
     // Live nodes already hold the new positions (renderer wrote them in
-    // place). Push the patches to the undo stack and bump rev so other
-    // subscribers see the change; do NOT call applyPatch again.
+    // place), and preview facade offset sync above has already replaced
+    // affected host nodes. Push patches + bump rev; do NOT call applyPatch.
     set((s) => {
       s.undoStack.push(tx)
       const model = { ...s.model }

@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { EffectNode, FlowEffect, FlowEffectKind } from './types'
+import type { EffectNode, FlowEffect, FlowEffectKind, SpawnItem } from './types'
 import { useOmniStore } from '../model/store'
 import type { CrossEffectLink } from '../model/types'
 
@@ -99,7 +99,7 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   move: ['dx', 'dy', 'ms', 'delayMs', 'roundtrip', 'permanent', 'keepPlaying', 'waitForFinish'],
   scale: ['mul', 'ms', 'delayMs', 'permanent', 'keepPlaying', 'waitForFinish'],
   color: ['tint', 'ms', 'delayMs', 'permanent', 'keepPlaying', 'waitForFinish'],
-  jitter: ['amp', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
+  jitter: ['intensity', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
   float: ['amp', 'freq', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
   emerge: ['ms', 'delayMs', 'fromScale', 'waitForFinish'],
   dismiss: ['ms', 'delayMs', 'toScale', 'waitForFinish'],
@@ -108,7 +108,7 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   repeater: ['repeatCount', 'delayMs'],
   camera: ['panX', 'panY', 'zoom', 'ms', 'delayMs', 'permanent', 'waitForFinish'],
   break: ['axis', 'shakeIntensity', 'shakeDurationMs', 'fallDurationMs', 'ms', 'delayMs', 'waitForFinish'],
-  'text-format': ['formatMode', 'startIndex', 'endIndex', 'bold', 'italic', 'strikethrough', 'tint', 'fontSize', 'ms', 'delayMs', 'waitForFinish'],
+  'text-format': ['formatMode', 'animationStyle', 'startIndex', 'endIndex', 'bold', 'italic', 'strikethrough', 'tint', 'fontSize', 'ms', 'delayMs', 'waitForFinish'],
   'text-generator': ['charsPerSec', 'soundPreset', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms', 'delayMs', 'waitForFinish'],
   record: ['ms', 'fps', 'delayMs', 'waitForFinish'],
   'obs-record': ['ms', 'delayMs', 'waitForFinish'],
@@ -139,7 +139,7 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   move: { dx: 4, dy: 0, ms: 400, roundtrip: 0, permanent: 0 },
   scale: { mul: 1.3, ms: 250, permanent: 0 },
   color: { tint: 0xff5555, ms: 400, permanent: 0 },
-  jitter: { amp: 0.4, ms: 600 },
+  jitter: { intensity: 4, ms: 1000, keepPlaying: 0 },
   float: { amp: 0.5, freq: 1, ms: 2000 },
   emerge: { ms: 400, fromScale: 0 },
   dismiss: { ms: 400, toScale: 0 },
@@ -148,7 +148,7 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   repeater: { repeatCount: 3 },
   camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
   break: { axis: 0, shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600, ms: 900 },
-  'text-format': { formatMode: 0, startIndex: 0, endIndex: -1, bold: 1, italic: 0, strikethrough: 0, tint: 0xe879f9, fontSize: 0, ms: 1000 },
+  'text-format': { formatMode: 0, animationStyle: 0, startIndex: 0, endIndex: -1, bold: 1, italic: 0, strikethrough: 0, tint: 0xe879f9, fontSize: 0, ms: 1000 },
   'text-generator': { charsPerSec: 24, soundPreset: 0, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
   // Record canvas to .webm for `ms` while task is active. `fps` is the
   // capture frame rate; defaults to 30. The recording downloads on stop.
@@ -194,10 +194,12 @@ const FIELD_META: Record<string, FieldMeta> = {
   dy: { label: 'Δ Y', unit: '%' },
   mul: { label: 'Multiplier', step: 0.05, min: 0 },
   tint: { label: 'Tint', kind: 'tint' },
+  intensity: { label: 'Intensity', unit: 'px', step: 1, min: 0 },
   amp: { label: 'Amplitude', step: 0.1 },
   ampX: { label: 'Amp X', step: 0.1 },
   ampY: { label: 'Amp Y', step: 0.1 },
   freq: { label: 'Frequency', unit: 'Hz', step: 0.1, min: 0 },
+  rateHz: { label: 'Rate', unit: 'Hz', step: 1, min: 1 },
   scaleAmp: { label: 'Scale amp', step: 0.01 },
   scalePulse: { label: 'Scale pulse', kind: 'bool' },
   fromScale: { label: 'From scale', step: 0.05, min: 0 },
@@ -236,6 +238,18 @@ const FIELD_META: Record<string, FieldMeta> = {
       { value: 1, label: 'Preset downstream' },
     ],
   },
+  animationStyle: {
+    label: 'Animation',
+    kind: 'enum',
+    options: [
+      { value: 0, label: 'None' },
+      { value: 1, label: 'Cloudy' },
+      { value: 2, label: 'Bubbly' },
+      { value: 3, label: 'Jittery' },
+      { value: 4, label: 'Drunken' },
+      { value: 5, label: 'Watery' },
+    ],
+  },
   startIndex: { label: 'Start index', step: 1, min: 0 },
   endIndex: { label: 'End index', step: 1, hint: '-1 = end of string.' },
   degenerationMs: { label: 'Degeneration', unit: 'ms', step: 50, min: 0 },
@@ -272,7 +286,7 @@ const KIND_HINTS: Partial<Record<FlowEffectKind, string>> = {
   move: 'Translate the host node by ΔX/ΔY scene-percent.',
   scale: 'Multiply the host node\u2019s size.',
   color: 'Tint the host node\u2019s fill.',
-  jitter: 'Randomly nudge the node within an amplitude.',
+  jitter: 'Legacy random tremor with a decaying burst envelope.',
   float: 'Sinusoidal vertical bob.',
   emerge: 'Fade + scale the node in from `fromScale`.',
   dismiss: 'Fade + scale the node out to `toScale`.',
@@ -373,6 +387,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
   // attached and we can read their bounding rects.
   const [primarySvg, setPrimarySvg] = useState<SVGSVGElement | null>(null)
   const [peerSvg, setPeerSvg] = useState<SVGSVGElement | null>(null)
+  const [primaryPan, setPrimaryPan] = useState({ x: 0, y: 0 })
+  const [peerPan, setPeerPan] = useState({ x: 0, y: 0 })
   // Body container ref-as-state for the overlay positioning.
   const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null)
   // Subscribe to cross-links from the store so newly-created links re-render.
@@ -495,6 +511,15 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
     }
   }
 
+  const setSpawnItems = (items: SpawnItem[]) => {
+    if (!selection || !selectedNode) return
+    if (selection.pane === 'primary') {
+      setEffect((cur) => setSpawnItemsIn(cur, selection.id, items))
+    } else if (peerEffect) {
+      updatePeerEffect(setSpawnItemsIn(peerEffect, selection.id, items))
+    }
+  }
+
   const deleteSelected = () => {
     if (!selection) return
     if (selection.pane === 'primary') {
@@ -552,6 +577,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
             paneId="primary"
             effect={effect}
             onChangeEffect={setEffect}
+            pan={primaryPan}
+            onPanChange={setPrimaryPan}
             selectedId={selection?.pane === 'primary' ? selection.id : null}
             onSelect={(id) => setSelection(id ? { pane: 'primary', id } : null)}
             wireDraft={wireDraft}
@@ -566,6 +593,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
               paneId="peer"
               effect={peerEffect}
               onChangeEffect={updatePeerEffect}
+              pan={peerPan}
+              onPanChange={setPeerPan}
               selectedId={selection?.pane === 'peer' ? selection.id : null}
               onSelect={(id) => setSelection(id ? { pane: 'peer', id } : null)}
               wireDraft={wireDraft}
@@ -583,6 +612,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
                 node={selectedNode}
                 onChangeParam={setParam}
                 onChangeLabel={setNodeLabel}
+                onChangeSpawnItems={setSpawnItems}
                 onDelete={deleteSelected}
               />
             ) : (
@@ -602,6 +632,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
             wireDraft={wireDraft}
             cursorClient={cursorClient}
             crossLinks={crossLinks}
+            primaryPan={primaryPan}
+            peerPan={peerPan}
           />
         </div>
       </div>
@@ -627,7 +659,14 @@ function addNodeTo(effect: FlowEffect, kind: FlowEffectKind, atX?: number, atY?:
     x = GRID + Math.floor(idx / PER_COL) * COL
     y = GRID + ((idx % PER_COL) + 1) * ROW
   }
-  const node: EffectNode = { id, kind, x, y, params: { ...DEFAULT_PARAMS[kind] } }
+  const node: EffectNode = {
+    id,
+    kind,
+    x,
+    y,
+    params: { ...DEFAULT_PARAMS[kind] },
+    ...(kind === 'spawn' ? { spawnItems: [] } : {}),
+  }
   return { ...effect, graph: { ...effect.graph, nodes: [...effect.graph.nodes, node] } }
 }
 
@@ -660,6 +699,16 @@ function setNodeLabelIn(effect: FlowEffect, id: string, label: string): FlowEffe
     graph: {
       ...effect.graph,
       nodes: effect.graph.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
+    },
+  }
+}
+
+function setSpawnItemsIn(effect: FlowEffect, id: string, items: SpawnItem[]): FlowEffect {
+  return {
+    ...effect,
+    graph: {
+      ...effect.graph,
+      nodes: effect.graph.nodes.map((n) => (n.id === id ? { ...n, spawnItems: items } : n)),
     },
   }
 }
@@ -717,6 +766,8 @@ interface CanvasPaneProps {
   paneId: PaneId
   effect: FlowEffect
   onChangeEffect: (next: FlowEffect) => void
+  pan: { x: number; y: number }
+  onPanChange: (pan: { x: number; y: number }) => void
   selectedId: string | null
   onSelect: (id: string | null) => void
   wireDraft: WireDraft | null
@@ -731,6 +782,8 @@ function CanvasPane({
   paneId,
   effect,
   onChangeEffect,
+  pan,
+  onPanChange,
   selectedId,
   onSelect,
   wireDraft,
@@ -744,6 +797,7 @@ function CanvasPane({
     svgRefCallback?.(el)
   }, [svgRefCallback])
   const dragState = useRef<{ id: string; offX: number; offY: number; pointerId: number; capturedOn: Element | null } | null>(null)
+  const panState = useRef<{ pointerId: number; startClient: { x: number; y: number }; startPan: { x: number; y: number } } | null>(null)
 
   const nodeIndex = useMemo(() => {
     const m = new Map<string, EffectNode>()
@@ -754,7 +808,12 @@ function CanvasPane({
   const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (dragState.current) {
       const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-      onChangeEffect(moveNodeIn(effect, dragState.current.id, pt.x - dragState.current.offX, pt.y - dragState.current.offY))
+      onChangeEffect(moveNodeIn(effect, dragState.current.id, pt.x - pan.x - dragState.current.offX, pt.y - pan.y - dragState.current.offY))
+    } else if (panState.current) {
+      onPanChange({
+        x: panState.current.startPan.x + e.clientX - panState.current.startClient.x,
+        y: panState.current.startPan.y + e.clientY - panState.current.startClient.y,
+      })
     }
   }
 
@@ -764,6 +823,7 @@ function CanvasPane({
       try { d.capturedOn?.releasePointerCapture?.(d.pointerId) } catch { /* ignore */ }
       dragState.current = null
     }
+    panState.current = null
   }
 
   const startDrag = (e: React.PointerEvent, n: EffectNode) => {
@@ -772,8 +832,20 @@ function CanvasPane({
     onSelect(n.id)
     const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
     const target = e.currentTarget as Element
-    dragState.current = { id: n.id, offX: pt.x - n.x, offY: pt.y - n.y, pointerId: e.pointerId, capturedOn: target }
+    dragState.current = { id: n.id, offX: pt.x - pan.x - n.x, offY: pt.y - pan.y - n.y, pointerId: e.pointerId, capturedOn: target }
     target.setPointerCapture(e.pointerId)
+  }
+
+  const startPan = (e: React.PointerEvent<SVGSVGElement>) => {
+    const target = e.target as Element
+    if (wireDraft || target.closest('[data-effect-node-id]') || target.tagName.toLowerCase() === 'path') return
+    panState.current = {
+      pointerId: e.pointerId,
+      startClient: { x: e.clientX, y: e.clientY },
+      startPan: pan,
+    }
+    e.currentTarget.setPointerCapture(e.pointerId)
+    onSelect(null)
   }
 
   // Pending wire previews are drawn by the parent CrossOverlay (in client
@@ -786,7 +858,7 @@ function CanvasPane({
       style={divider ? { ...canvasStyle, borderLeft: '2px dashed #2f3a4a' } : canvasStyle}
       onPointerMove={onSvgPointerMove}
       onPointerUp={onSvgPointerUp}
-      onPointerDown={() => onSelect(null)}
+      onPointerDown={startPan}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('application/omnigram-effect-kind')) {
           e.preventDefault()
@@ -798,7 +870,7 @@ function CanvasPane({
         if (!kind) return
         e.preventDefault()
         const pt = svgPoint(svgRef.current!, e.clientX, e.clientY)
-        onChangeEffect(addNodeTo(effect, kind, pt.x, pt.y))
+        onChangeEffect(addNodeTo(effect, kind, pt.x - pan.x, pt.y - pan.y))
       }}
     >
       <defs>
@@ -813,6 +885,7 @@ function CanvasPane({
         </filter>
       </defs>
       <rect width="100%" height="100%" fill={`url(#fx-grid-${paneId})`} />
+      <g transform={`translate(${pan.x},${pan.y})`}>
       {/* Edges */}
       {effect.graph.edges.map((e) => {
         const a = nodeIndex.get(e.from)
@@ -868,6 +941,7 @@ function CanvasPane({
           </g>
         )
       })}
+      </g>
     </svg>
   )
 }
@@ -950,11 +1024,13 @@ function NodeSettingsPanel({
   node,
   onChangeParam,
   onChangeLabel,
+  onChangeSpawnItems,
   onDelete,
 }: {
   node: EffectNode
   onChangeParam: (key: string, value: number) => void
   onChangeLabel: (label: string) => void
+  onChangeSpawnItems: (items: SpawnItem[]) => void
   onDelete: () => void
 }) {
   if (node.id === ENTRY_NODE_ID) {
@@ -994,6 +1070,12 @@ function NodeSettingsPanel({
           onChange={(v) => onChangeParam(key, v)}
         />
       ))}
+      {node.kind === 'spawn' && (
+        <SpawnItemsPanel
+          items={node.spawnItems ?? []}
+          onChange={onChangeSpawnItems}
+        />
+      )}
       <button
         onClick={onDelete}
         style={{ ...dangerBtnStyle, marginTop: 12 }}
@@ -1001,6 +1083,91 @@ function NodeSettingsPanel({
         Delete node
       </button>
     </>
+  )
+}
+
+function SpawnItemsPanel({
+  items,
+  onChange,
+}: {
+  items: SpawnItem[]
+  onChange: (items: SpawnItem[]) => void
+}) {
+  const update = (idx: number, patch: Partial<SpawnItem>) => {
+    onChange(items.map((item, i) => (i === idx ? { ...item, ...patch } : item)))
+  }
+  const addItem = () => {
+    onChange([
+      ...items,
+      {
+        label: `Node ${items.length + 1}`,
+        offsetX: 10,
+        offsetY: 10,
+        animation: 'emerge',
+        connectionType: 'none',
+      },
+    ])
+  }
+  return (
+    <div style={spawnPanelStyle}>
+      <div style={{ ...panelTitleStyle, fontSize: 13 }}>Spawn preview facades</div>
+      {items.map((item, idx) => (
+        <div key={idx} style={spawnItemStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: '#cbd5e1', fontSize: 12, fontWeight: 700 }}>#{idx + 1}</span>
+            <button
+              type="button"
+              onClick={() => onChange(items.filter((_, i) => i !== idx))}
+              style={{ ...miniDangerBtnStyle, marginLeft: 'auto' }}
+            >
+              ×
+            </button>
+          </div>
+          <label style={spawnFieldStyle}>
+            <span>Label</span>
+            <input
+              value={item.label}
+              onChange={(e) => update(idx, { label: e.target.value })}
+              style={fieldStyle}
+            />
+          </label>
+          <label style={spawnFieldStyle}>
+            <span>Δ X</span>
+            <input
+              type="number"
+              step={1}
+              value={item.offsetX}
+              onChange={(e) => update(idx, { offsetX: parseFloat(e.target.value) || 0 })}
+              style={fieldStyle}
+            />
+          </label>
+          <label style={spawnFieldStyle}>
+            <span>Δ Y</span>
+            <input
+              type="number"
+              step={1}
+              value={item.offsetY}
+              onChange={(e) => update(idx, { offsetY: parseFloat(e.target.value) || 0 })}
+              style={fieldStyle}
+            />
+          </label>
+          <label style={spawnFieldStyle}>
+            <span>Animation</span>
+            <select
+              value={item.animation}
+              onChange={(e) => update(idx, { animation: e.target.value as SpawnItem['animation'] })}
+              style={fieldStyle}
+            >
+              <option value="emerge">Emerge</option>
+              <option value="zip-in">Zip-in</option>
+            </select>
+          </label>
+        </div>
+      ))}
+      <button type="button" onClick={addItem} style={ghostSmallBtnStyle}>
+        + Add spawn item
+      </button>
+    </div>
   )
 }
 
@@ -1263,6 +1430,56 @@ const dangerBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
+const miniDangerBtnStyle: React.CSSProperties = {
+  background: 'rgba(239, 68, 68, 0.12)',
+  border: '1px solid rgba(239, 68, 68, 0.38)',
+  color: '#fca5a5',
+  borderRadius: 4,
+  padding: '1px 6px',
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: 'pointer',
+}
+
+const ghostSmallBtnStyle: React.CSSProperties = {
+  background: 'rgba(148, 163, 184, 0.12)',
+  border: '1px solid rgba(148, 163, 184, 0.28)',
+  color: '#cbd5e1',
+  borderRadius: 5,
+  padding: '5px 8px',
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const spawnPanelStyle: React.CSSProperties = {
+  marginTop: 12,
+  paddingTop: 10,
+  borderTop: '1px solid #2f3a4a',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+}
+
+const spawnItemStyle: React.CSSProperties = {
+  border: '1px solid #2f3a4a',
+  borderRadius: 6,
+  background: 'rgba(15, 23, 42, 0.58)',
+  padding: 8,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+}
+
+const spawnFieldStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '70px minmax(0, 1fr)',
+  alignItems: 'center',
+  gap: 6,
+  color: '#bcd',
+  fontSize: 12,
+}
+
 const panelTitleStyle: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 700,
@@ -1327,6 +1544,8 @@ function CrossOverlay({
   wireDraft,
   cursorClient,
   crossLinks,
+  primaryPan,
+  peerPan,
 }: {
   bodyEl: HTMLDivElement | null
   primarySvg: SVGSVGElement | null
@@ -1338,6 +1557,8 @@ function CrossOverlay({
   wireDraft: WireDraft | null
   cursorClient: { x: number; y: number } | null
   crossLinks: readonly CrossEffectLink[]
+  primaryPan: { x: number; y: number }
+  peerPan: { x: number; y: number }
 }) {
   if (!bodyEl) return null
   const bodyRect = bodyEl.getBoundingClientRect()
@@ -1347,14 +1568,15 @@ function CrossOverlay({
     node: EffectNode | undefined,
     side: 'out' | 'in',
     port: EffectPortId = 'default',
+    pan: { x: number; y: number } = { x: 0, y: 0 },
   ): { x: number; y: number } | null => {
     if (!paneSvg || !node) return null
     const r = paneSvg.getBoundingClientRect()
     const p = portPosition(node, side, port)
-    return { x: r.left - bodyRect.left + p.x, y: r.top - bodyRect.top + p.y }
+    return { x: r.left - bodyRect.left + pan.x + p.x, y: r.top - bodyRect.top + pan.y + p.y }
   }
 
-  const lines: { d: string; key: string; color: string; dash?: string; arrow?: boolean }[] = []
+  const lines: { d: string; key: string; color: string; dash?: string; arrow?: boolean; linkId?: string }[] = []
 
   if (hostNodeId && peerNodeId && peerEffect) {
     for (const l of crossLinks) {
@@ -1377,18 +1599,21 @@ function CrossOverlay({
       const toId = l.to.effectNodeId ?? ENTRY_NODE_ID
       const fromNode = fromEffect.graph.nodes.find((n) => n.id === fromId)
       const toNode = toEffect.graph.nodes.find((n) => n.id === toId)
-      const a = portPos(fromPane, fromNode, 'out')
-      const b = portPos(toPane, toNode, 'in')
+      const fromPan = fromPane === primarySvg ? primaryPan : peerPan
+      const toPan = toPane === primarySvg ? primaryPan : peerPan
+      const a = portPos(fromPane, fromNode, 'out', 'default', fromPan)
+      const b = portPos(toPane, toNode, 'in', 'default', toPan)
       if (!a || !b) continue
-      lines.push({ d: curvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#c084fc', dash: '6 4', arrow: true })
+      lines.push({ d: curvePath(a.x, a.y, b.x, b.y), key: l.id, color: '#c084fc', dash: '6 4', arrow: true, linkId: l.id })
     }
   }
 
   if (wireDraft && cursorClient) {
     const sourceEffect = wireDraft.pane === 'primary' ? primaryEffect : peerEffect
     const sourceSvg = wireDraft.pane === 'primary' ? primarySvg : peerSvg
+    const sourcePan = wireDraft.pane === 'primary' ? primaryPan : peerPan
     const fromNode = sourceEffect?.graph.nodes.find((n) => n.id === wireDraft.fromId)
-    const a = portPos(sourceSvg, fromNode, 'out', wireDraft.fromPort ?? 'default')
+    const a = portPos(sourceSvg, fromNode, 'out', wireDraft.fromPort ?? 'default', sourcePan)
     if (a) {
       const cx = cursorClient.x - bodyRect.left
       const cy = cursorClient.y - bodyRect.top
@@ -1421,6 +1646,8 @@ function CrossOverlay({
           strokeWidth={2}
           strokeDasharray={l.dash}
           markerEnd={l.arrow ? 'url(#crossArrow)' : undefined}
+          onClick={l.linkId ? () => useOmniStore.getState().removeCrossLink(l.linkId!) : undefined}
+          style={{ pointerEvents: l.linkId ? 'stroke' : 'none', cursor: l.linkId ? 'pointer' : 'default' }}
         />
       ))}
     </svg>

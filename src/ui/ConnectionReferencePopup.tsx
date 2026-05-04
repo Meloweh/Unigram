@@ -10,7 +10,7 @@
  * camera + edge endpoints so it follows pan/zoom seamlessly.
  */
 
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useOmniStore } from '../model/store'
 import type { ConnectionReference } from '../model/types'
 import { SCENE_H, SCENE_W } from '../scene/sceneConstants'
@@ -21,6 +21,42 @@ interface Props {
 }
 
 const EMPTY_REF: ConnectionReference = { title: '', citation: '', url: '' }
+const UNZIP_OPEN_MS = 400
+
+function buildRevealClip(w: number, h: number, angle: number, progress: number): string {
+  const cx = w / 2
+  const cy = h / 2
+  const diag = Math.sqrt(w * w + h * h) / 2 + 24
+  const cosA = Math.cos(angle)
+  const sinA = Math.sin(angle)
+  const px = -sinA
+  const py = cosA
+  const halfAlong = diag
+  const halfPerp = diag * progress
+  const points = [
+    [cx + cosA * halfAlong + px * halfPerp, cy + sinA * halfAlong + py * halfPerp],
+    [cx + cosA * halfAlong - px * halfPerp, cy + sinA * halfAlong - py * halfPerp],
+    [cx - cosA * halfAlong - px * halfPerp, cy - sinA * halfAlong - py * halfPerp],
+    [cx - cosA * halfAlong + px * halfPerp, cy - sinA * halfAlong + py * halfPerp],
+  ]
+  return `polygon(${points.map(([x, y]) => `${x}px ${y}px`).join(', ')})`
+}
+
+function useUnzipProgress(): number {
+  const [progress, setProgress] = useState(0)
+  useEffect(() => {
+    const start = performance.now()
+    let raf = 0
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - start) / UNZIP_OPEN_MS)
+      setProgress(1 - (1 - t) ** 3)
+      if (t < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+  return progress
+}
 
 export function ConnectionReferencePopup({ renderer }: Props) {
   // Re-render on store + camera changes so the anchor follows the edge.
@@ -69,6 +105,7 @@ export function ConnectionReferencePopup({ renderer }: Props) {
   const midY = (ay + by) / 2
   const screenX = vp.width / 2 + (cam.panX + midX) * scale
   const screenY = vp.height / 2 + (cam.panY + midY) * scale
+  const angle = Math.atan2(by - ay, bx - ax)
 
   const refs = edge.references ?? []
   const setRefs = (next: ConnectionReference[]) => {
@@ -79,8 +116,11 @@ export function ConnectionReferencePopup({ renderer }: Props) {
   return (
     <ReferenceCard
       key={edgeId}
+      edgeId={edgeId}
+      renderer={renderer}
       x={screenX}
       y={screenY}
+      angle={angle}
       refs={refs}
       onChange={setRefs}
       onClose={close}
@@ -89,22 +129,39 @@ export function ConnectionReferencePopup({ renderer }: Props) {
 }
 
 function ReferenceCard({
+  edgeId,
+  renderer,
   x,
   y,
+  angle,
   refs,
   onChange,
   onClose,
 }: {
+  edgeId: string
+  renderer: SceneRenderer
   x: number
   y: number
+  angle: number
   refs: ConnectionReference[]
   onChange: (next: ConnectionReference[]) => void
   onClose: () => void
 }) {
+  const cardRef = useRef<HTMLDivElement>(null)
   const [adding, setAdding] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [draft, setDraft] = useState<ConnectionReference>({ ...EMPTY_REF })
   const [level, setLevel] = useState<1 | 2 | 3>(1)
+  const [size, setSize] = useState({ w: 300, h: 200 })
+  const progress = useUnzipProgress()
+  const zoomLevel = (deltaY: number) => {
+    setLevel((cur) => {
+      if (deltaY < 0) return cur < 3 ? ((cur + 1) as 1 | 2 | 3) : cur
+      if (cur > 1) return (cur - 1) as 1 | 2 | 3
+      onClose()
+      return cur
+    })
+  }
 
   // Esc closes the popup (or cancels the in-progress edit).
   useEffect(() => {
@@ -121,6 +178,22 @@ function ReferenceCard({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [adding, editingIdx, onClose])
+
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    const update = () => setSize({ w: el.offsetWidth, h: el.offsetHeight })
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    renderer.setConnectionPopupMetrics(edgeId, { w: size.w, h: size.h, progress })
+    return () => renderer.setConnectionPopupMetrics(edgeId, null)
+  }, [edgeId, progress, renderer, size.h, size.w])
 
   const save = () => {
     if (!draft.title.trim()) return
@@ -148,6 +221,7 @@ function ReferenceCard({
 
   return (
     <div
+      ref={cardRef}
       role="dialog"
       aria-label="Connection references"
       style={{
@@ -166,13 +240,20 @@ function ReferenceCard({
         color: 'var(--ug-text)',
         font: '12px system-ui, sans-serif',
         zIndex: 11,
+        clipPath: buildRevealClip(size.w, size.h, angle, progress),
+        opacity: 0.2 + progress * 0.8,
+        transformOrigin: '50% 50%',
       }}
-      onWheel={(e) => e.stopPropagation()}
+      onWheel={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        zoomLevel(e.deltaY)
+      }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <span style={{ fontWeight: 600, color: 'var(--ug-text-heading)' }}>
-          References L{level} ({refs.length})
+          {refs.length} {refs.length === 1 ? 'reference' : 'references'}
         </span>
         <button
           type="button"
@@ -182,24 +263,6 @@ function ReferenceCard({
         >
           ×
         </button>
-      </div>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-        {([1, 2, 3] as const).map((l) => (
-          <button
-            key={l}
-            type="button"
-            onClick={() => setLevel(l)}
-            title={l === 1 ? 'Study titles' : l === 2 ? 'Citations' : 'URLs'}
-            style={{
-              ...miniLevelBtn,
-              background: level === l ? 'var(--ug-primary)' : 'var(--ug-surface-raised)',
-              color: level === l ? 'var(--ug-text-on-primary)' : 'var(--ug-text)',
-              borderColor: level === l ? 'var(--ug-primary-dark)' : 'var(--ug-border)',
-            }}
-          >
-            L{l}
-          </button>
-        ))}
       </div>
       {refs.length > 0 && (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 6px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -297,14 +360,6 @@ const miniBtn: React.CSSProperties = {
   color: 'var(--ug-text-muted)',
   padding: '0 4px',
   fontSize: 13,
-}
-const miniLevelBtn: React.CSSProperties = {
-  flex: 1,
-  border: '1px solid var(--ug-border)',
-  borderRadius: 4,
-  padding: '3px 6px',
-  cursor: 'pointer',
-  font: '600 11px system-ui, sans-serif',
 }
 const inputStyle: React.CSSProperties = {
   padding: '4px 6px',

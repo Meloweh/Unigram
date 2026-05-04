@@ -22,7 +22,7 @@ import {
 import { Quadtree, type Aabb } from '../spatial/quadtree'
 import type { Connection, Model, ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
-import { EdgePool } from './EdgePool'
+import { EdgePool, type EdgeRevealGap } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
 import { drawNodeShape, drawNodeShapePath, pointInShape } from './shapes'
 import { shapeEdgeIntersect } from './shapeIntersect'
@@ -33,7 +33,7 @@ import { estimateFlowEffectDuration, FlowRuntime } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import { TextFormatRunner } from '../flow/TextFormatRunner'
-import type { FlowEffect } from '../flow/types'
+import type { FlowEffect, SpawnItem } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
 
@@ -62,6 +62,7 @@ export type ResizeHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 const CULL_PADDING = 5 // scene percent
 const DETAILED_SELECTION_LIMIT = 80
+const FLOW_CINEMATIC_EFFECTIVE_SCALE = 1.18
 
 export class SceneRenderer {
   private app: Application | null = null
@@ -82,6 +83,7 @@ export class SceneRenderer {
   private quadtree = new Quadtree()
   private edgeQuadtree = new Quadtree()
   private incidentEdges = new Map<string, Set<string>>()
+  private spawnGateByTarget = new Map<string, Set<string>>()
   private model: ModelView = { nodes: new Map(), edges: new Map() }
   /** Raw user camera (free pan + free zoom). RMM scale composes on top. */
   private camera: CameraTransform = { panX: 0, panY: 0, freeScale: 1 }
@@ -90,6 +92,7 @@ export class SceneRenderer {
   private viewport: ViewportSize = { width: 0, height: 0 }
   private selectedIds: ReadonlySet<string> = new Set()
   private selectedEdgeIds: ReadonlySet<string> = new Set()
+  private connectionPopupMetrics: { edgeId: string; w: number; h: number; progress: number } | null = null
   private selectionGfxPool: Graphics[] = []
   /**
    * Aura container painted BELOW the nodes layer so the wavey illumination
@@ -175,6 +178,7 @@ export class SceneRenderer {
    */
   private cameraTrackOffsetX = 0
   private cameraTrackOffsetY = 0
+  private cameraTrackScaleMul = 1
   readonly textGen = new TextGenRunner()
   readonly textFormat = new TextFormatRunner()
   /**
@@ -198,6 +202,8 @@ export class SceneRenderer {
    */
   private ephemeralSpawns = new Map<string, EphemeralSpawnGroup[]>()
   private ephemeralLayer!: Container
+  private activatedPreviewNodes = new Set<string>()
+  private activePreviewGroups = new Map<string, Set<string>>()
 
   /** MPD curtain: sprite painted with a snapshot of the previous scene. */
   private curtainSprite: Sprite | null = null
@@ -519,17 +525,17 @@ export class SceneRenderer {
       this.playMpdCurtain(direction, Math.max(50, params.ms ?? 500))
     }
     // Bridge spawn / spawn-circular ephemeral decorations.
-    this.flow.onSpawn = (targetId, params) => {
-      this.startEphemeralSpawn(targetId, params, 'random')
+    this.flow.onSpawn = (targetId, params, effectNodeId, spawnItems) => {
+      this.startEphemeralSpawn(targetId, params, 'random', effectNodeId, spawnItems)
     }
-    this.flow.onSpawnStop = (targetId) => {
-      this.beginEphemeralFadeOut(targetId, 'spawn')
+    this.flow.onSpawnStop = (targetId, effectNodeId) => {
+      this.beginEphemeralFadeOut(targetId, 'spawn', effectNodeId)
     }
-    this.flow.onSpawnCircular = (targetId, params) => {
-      this.startEphemeralSpawn(targetId, params, 'circular')
+    this.flow.onSpawnCircular = (targetId, params, effectNodeId, spawnItems) => {
+      this.startEphemeralSpawn(targetId, params, 'circular', effectNodeId, spawnItems)
     }
-    this.flow.onSpawnCircularStop = (targetId) => {
-      this.beginEphemeralFadeOut(targetId, 'spawn-circular')
+    this.flow.onSpawnCircularStop = (targetId, effectNodeId) => {
+      this.beginEphemeralFadeOut(targetId, 'spawn-circular', effectNodeId)
     }
     app.ticker.add(this.onTick)
   }
@@ -565,6 +571,9 @@ export class SceneRenderer {
     this.quadtree.clear()
     this.edgeQuadtree.clear()
     this.incidentEdges.clear()
+    this.spawnGateByTarget.clear()
+    this.activatedPreviewNodes.clear()
+    this.activePreviewGroups.clear()
   }
 
   /** Replace model view. Triggers full quadtree rebuild + re-cull. */
@@ -677,6 +686,21 @@ export class SceneRenderer {
   /** Replace the visualised edge selection set. */
   setEdgeSelection(ids: ReadonlySet<string>): void {
     this.selectedEdgeIds = ids
+    if (this.connectionPopupMetrics && !ids.has(this.connectionPopupMetrics.edgeId)) {
+      this.connectionPopupMetrics = null
+    }
+    this.dirty = true
+  }
+
+  setConnectionPopupMetrics(edgeId: string, metrics: { w: number; h: number; progress: number } | null): void {
+    if (!metrics) {
+      if (this.connectionPopupMetrics?.edgeId === edgeId) {
+        this.connectionPopupMetrics = null
+        this.dirty = true
+      }
+      return
+    }
+    this.connectionPopupMetrics = { edgeId, ...metrics }
     this.dirty = true
   }
 
@@ -884,6 +908,8 @@ export class SceneRenderer {
     this.playRuns.clear()
     this.playWires.clear()
     this.playActiveNodes.clear()
+    this.activatedPreviewNodes.clear()
+    this.activePreviewGroups.clear()
     this.flowOverlayGfx?.clear()
     this.dirty = true
   }
@@ -1232,7 +1258,8 @@ export class SceneRenderer {
       this.playActiveNodes.size > 0 ||
       this.playWires.size > 0 ||
       this.cameraTrackOffsetX !== 0 ||
-      this.cameraTrackOffsetY !== 0
+      this.cameraTrackOffsetY !== 0 ||
+      Math.abs(this.cameraTrackScaleMul - 1) > 0.001
     ) {
       // applyCameraTransform handles the lerp + writes to world.x/y.
       this.applyCameraTransform()
@@ -1243,7 +1270,9 @@ export class SceneRenderer {
       const changed = this.textGen.tick(this.model.nodes, performance.now())
       if (changed) this.cullAndDraw()
     }
-    if (this.textFormat.hasActiveRuns) this.cullAndDraw()
+    if (this.textFormat.hasActiveRuns) {
+      if (this.textFormat.tick(this.model.nodes, performance.now())) this.cullAndDraw()
+    }
     // MPD curtain animates each frame; runs only when active.
     if (this.curtainDurationMs > 0) this.tickMpdCurtain()
     // Ephemeral spawn fade in/out animation.
@@ -1315,10 +1344,10 @@ export class SceneRenderer {
     // Camera-tracked-node compensation: ease the world toward placing any
     // active cameraTracked node at viewport centre. Computed per call so
     // node motion (drag, flow override) is followed live.
-    this.tickCameraTracking()
+    this.tickCameraTracking(camScaleMul)
     // Effective scale composes user free-zoom with RMM cameraScale and any
-    // flow camera scale override.
-    this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale * camScaleMul
+    // flow camera scale override plus the cinematic Play focus scale.
+    this.effectiveScale = this.camera.freeScale * this.rmmSnap.cameraScale * camScaleMul * this.cameraTrackScaleMul
     // Scene coords are signed percent around (0,0) = viewport center.
     // World children draw at scene-pixel positions (scene% / 100 * SCENE_W).
     this.world.scale.set(this.effectiveScale)
@@ -1329,18 +1358,19 @@ export class SceneRenderer {
   /**
    * Update the cameraTrackOffset by lerping toward the desired value.
    *
-   * Desired offset = position of the *most recently activated* cameraTracked
+   * Desired offset = position of the *most recently activated* Play target
    * node ("top of the flow") whose Play-halo is currently visible. Tracking
    * a single leading node instead of the centroid avoids the jump that
    * happens when a new node activates (the centroid would shift abruptly
    * by half the inter-node distance). With no active tracked targets the
    * offset eases back to (0, 0).
    */
-  private tickCameraTracking(): void {
+  private tickCameraTracking(flowScaleMul = 1): void {
     let targetX = 0
     let targetY = 0
-    // Two leader candidates: the most-recently activated cameraTracked
-    // node, AND the most-recently started cameraTracked wire reveal. The
+    let targetScaleMul = 1
+    // Two leader candidates: the most-recently activated Play node, AND
+    // the most-recently started Play wire reveal. The
     // newest startMs wins, so the camera smoothly slides along a tracked
     // wire from one tracked node to the next.
     type Leader = { startMs: number; x: number; y: number }
@@ -1350,11 +1380,11 @@ export class SceneRenderer {
       for (const [id, halo] of this.playActiveNodes) {
         if (now < halo.startMs) continue
         const node = this.model.nodes.get(id)
-        if (!node || !node.cameraTracked) continue
+        if (!node) continue
         if (!leader || halo.startMs > leader.startMs) {
           const visual = this.visualNode(node)
-          const cxPx = ((visual.x + visual.w / 2) / 100) * SCENE_W
-          const cyPx = ((visual.y + visual.h / 2) / 100) * SCENE_H
+          const cxPx = (visual.x / 100) * SCENE_W
+          const cyPx = (visual.y / 100) * SCENE_H
           leader = { startMs: halo.startMs, x: cxPx, y: cyPx }
         }
       }
@@ -1363,7 +1393,7 @@ export class SceneRenderer {
       for (const [edgeId, w] of this.playWires) {
         if (now < w.startMs || now > w.startMs + w.durMs) continue
         const edge = this.model.edges.get(edgeId)
-        if (!edge || !edge.cameraTracked) continue
+        if (!edge) continue
         const from = this.model.nodes.get(edge.from)
         const to = this.model.nodes.get(edge.to)
         if (!from || !to) continue
@@ -1387,6 +1417,8 @@ export class SceneRenderer {
     if (leader) {
       targetX = -leader.x - this.camera.panX
       targetY = -leader.y - this.camera.panY
+      const baseScale = Math.max(0.01, this.camera.freeScale * this.rmmSnap.cameraScale * flowScaleMul)
+      targetScaleMul = Math.max(0.35, Math.min(4, FLOW_CINEMATIC_EFFECTIVE_SCALE / baseScale))
     }
     // Lerp factor 0.08 matches legacy flowCameraRef tuning. Small enough to
     // avoid jitter on sub-pixel node moves, large enough to track a 60 FPS
@@ -1394,9 +1426,11 @@ export class SceneRenderer {
     const k = 0.08
     this.cameraTrackOffsetX += (targetX - this.cameraTrackOffsetX) * k
     this.cameraTrackOffsetY += (targetY - this.cameraTrackOffsetY) * k
+    this.cameraTrackScaleMul += (targetScaleMul - this.cameraTrackScaleMul) * k
     // Snap to zero when very close to avoid lingering sub-pixel offsets.
     if (!leader && Math.abs(this.cameraTrackOffsetX) < 0.05) this.cameraTrackOffsetX = 0
     if (!leader && Math.abs(this.cameraTrackOffsetY) < 0.05) this.cameraTrackOffsetY = 0
+    if (!leader && Math.abs(this.cameraTrackScaleMul - 1) < 0.001) this.cameraTrackScaleMul = 1
   }
 
   /**
@@ -1446,8 +1480,17 @@ export class SceneRenderer {
   private rebuildEdgeIndex(): void {
     this.edgeQuadtree.clear()
     this.incidentEdges.clear()
+    this.spawnGateByTarget.clear()
     for (const edge of this.model.edges.values()) {
       this.indexEdge(edge)
+      if (edge.dependsOnSpawn) {
+        let gates = this.spawnGateByTarget.get(edge.to)
+        if (!gates) {
+          gates = new Set()
+          this.spawnGateByTarget.set(edge.to, gates)
+        }
+        gates.add(edge.dependsOnSpawn)
+      }
       let fromList = this.incidentEdges.get(edge.from)
       if (!fromList) {
         fromList = new Set()
@@ -1513,10 +1556,16 @@ export class SceneRenderer {
 
     // Acquire newly visible / update existing nodes.
     const flowActive = this.flow.hasActiveRuns
+    const flowPlaybackActive = flowActive || this.playRuns.size > 0 || this.playWires.size > 0 || this.playActiveNodes.size > 0
     for (let i = 0; i < this.visibleIds.length; i++) {
       const id = this.visibleIds[i]
       const n = this.model.nodes.get(id)
       if (!n) continue
+      if (this.isNodeHiddenBySpawnState(n, flowPlaybackActive)) {
+        visibleSet.delete(id)
+        this.nodePool.release(id)
+        continue
+      }
       let override = this.flow.getOverride(id)
       // Behavioural flag: nodes flagged `hideDuringFlow` go invisible while
       // any flow effect is running on the diagram.
@@ -1525,7 +1574,10 @@ export class SceneRenderer {
           ? { ...override, alphaMul: 0 }
           : { alphaMul: 0 }
       }
-      this.nodePool.acquire(n, lod, override, showNodeLabels)
+      const drawable = n.previewOf && this.activatedPreviewNodes.has(id)
+        ? { ...n, previewOf: undefined }
+        : n
+      this.nodePool.acquire(drawable, lod, override, showNodeLabels)
     }
     // Release nodes that fell out of view.
     for (const id of this.prevVisibleNodes) {
@@ -1550,7 +1602,8 @@ export class SceneRenderer {
       const from = this.model.nodes.get(e.from)
       const to = this.model.nodes.get(e.to)
       if (!from || !to) continue
-      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to), this.selectedEdgeIds.has(e.id))
+      if (this.isEdgeHiddenBySpawnState(e, from, to, flowPlaybackActive)) continue
+      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to), this.edgeRevealFor(e.id))
       visibleEdges.add(e.id)
     }
     // Release edges whose endpoints are no longer near view.
@@ -1566,6 +1619,39 @@ export class SceneRenderer {
     this.visibleEdgesScratch = oldPrevEdges
 
     this.drawSelectionAndOverlays()
+  }
+
+  private isNodeHiddenBySpawnState(node: ModelNode, flowPlaybackActive: boolean): boolean {
+    if (!flowPlaybackActive) return false
+    if (node.previewOf && !this.activatedPreviewNodes.has(node.id)) return true
+    const gates = this.spawnGateByTarget.get(node.id)
+    if (!gates) return false
+    for (const previewId of gates) {
+      if (!this.activatedPreviewNodes.has(previewId)) return true
+    }
+    return false
+  }
+
+  private isEdgeHiddenBySpawnState(
+    edge: Connection,
+    from: ModelNode,
+    to: ModelNode,
+    flowPlaybackActive: boolean,
+  ): boolean {
+    if (!flowPlaybackActive) return false
+    if (edge.dependsOnSpawn && !this.activatedPreviewNodes.has(edge.dependsOnSpawn)) return true
+    return this.isNodeHiddenBySpawnState(from, true) || this.isNodeHiddenBySpawnState(to, true)
+  }
+
+  private edgeRevealFor(edgeId: string): EdgeRevealGap | null {
+    const metrics = this.connectionPopupMetrics
+    if (!metrics || metrics.edgeId !== edgeId || !this.selectedEdgeIds.has(edgeId)) return null
+    const scale = Math.max(0.001, this.effectiveScale)
+    return {
+      wPx: metrics.w / scale,
+      hPx: metrics.h / scale,
+      progress: metrics.progress,
+    }
   }
 
   private drawSelectionAndOverlays(): void {
@@ -1698,7 +1784,12 @@ export class SceneRenderer {
     // Edge selection overlay (separate pool — kept distinct so the aura
     // layer doesn't blur thin edge highlights into illegibility).
     let edgeUsed = 0
+    const popupOwnsSingleEdge =
+      this.selectedEdgeIds.size === 1 &&
+      this.connectionPopupMetrics &&
+      this.selectedEdgeIds.has(this.connectionPopupMetrics.edgeId)
     for (const eid of this.selectedEdgeIds) {
+      if (popupOwnsSingleEdge) continue
       const e = this.model.edges.get(eid)
       if (!e) continue
       const a = this.model.nodes.get(e.from)
@@ -2383,9 +2474,13 @@ export class SceneRenderer {
     targetId: string,
     params: Record<string, number>,
     layout: 'random' | 'circular',
+    effectNodeId?: string,
+    spawnItems?: SpawnItem[],
   ): void {
     const node = this.model.nodes.get(targetId)
     if (!node) return
+    const kind = layout === 'random' ? 'spawn' : 'spawn-circular'
+    if (this.activateSpawnPreviews(targetId, kind, effectNodeId, spawnItems)) return
     const count = Math.max(1, Math.min(64, Math.floor(params.count ?? 6)))
     const radiusPct = Math.max(0.5, params.radius ?? 8)
     const fadeMs = Math.max(50, params.fadeMs ?? 300)
@@ -2393,7 +2488,7 @@ export class SceneRenderer {
     // Host center in world coords.
     const cx = (node.x / 100) * SCENE_W
     const cy = (node.y / 100) * SCENE_H
-    const items: { gfx: Graphics }[] = []
+    const items: { container: Container }[] = []
     for (let i = 0; i < count; i++) {
       const angle =
         layout === 'circular'
@@ -2403,18 +2498,34 @@ export class SceneRenderer {
         layout === 'circular' ? radiusPx : radiusPx * (0.4 + Math.random() * 0.6)
       const px = cx + Math.cos(angle) * dist
       const py = cy + Math.sin(angle) * dist
-      const r = Math.max(2, radiusPx * 0.06)
-      const g = new Graphics()
-      g.circle(0, 0, r).fill({ color: 0x6ca8ff, alpha: 0.85 })
-      g.x = px
-      g.y = py
-      g.alpha = 0
-      g.scale.set(0.2)
-      this.ephemeralLayer.addChild(g)
-      items.push({ gfx: g })
+      const w = Math.max(42, radiusPx * 0.55)
+      const h = Math.max(24, radiusPx * 0.28)
+      const c = new Container()
+      const body = new Graphics()
+      body.roundRect(-w / 2, -h / 2, w, h, 7)
+      body.fill({ color: 0xe8f2ff, alpha: 0.9 })
+      body.stroke({ color: 0x4f8fd8, width: 2, alpha: 0.85 })
+      const label = new Text({
+        text: 'Spawn',
+        style: {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: Math.max(9, Math.min(14, h * 0.42)),
+          fill: 0x23547f,
+          fontWeight: '700',
+        },
+      })
+      label.anchor.set(0.5)
+      c.addChild(body)
+      c.addChild(label)
+      c.x = px
+      c.y = py
+      c.alpha = 0
+      c.scale.set(0.2)
+      this.ephemeralLayer.addChild(c)
+      items.push({ container: c })
     }
     const group: EphemeralSpawnGroup = {
-      kind: layout === 'random' ? 'spawn' : 'spawn-circular',
+      kind,
       items,
       startedAt: performance.now(),
       fadeInMs: fadeMs,
@@ -2426,13 +2537,65 @@ export class SceneRenderer {
     this.ephemeralSpawns.set(targetId, list)
   }
 
-  private beginEphemeralFadeOut(targetId: string, kind: 'spawn' | 'spawn-circular'): void {
+  private beginEphemeralFadeOut(targetId: string, kind: 'spawn' | 'spawn-circular', effectNodeId?: string): void {
+    this.deactivateSpawnPreviews(targetId, kind, effectNodeId)
     const list = this.ephemeralSpawns.get(targetId)
     if (!list) return
     const now = performance.now()
     for (const g of list) {
       if (g.kind === kind && g.fadeOutStartedAt === null) g.fadeOutStartedAt = now
     }
+  }
+
+  private activateSpawnPreviews(
+    targetId: string,
+    kind: 'spawn' | 'spawn-circular',
+    effectNodeId?: string,
+    spawnItems?: SpawnItem[],
+  ): boolean {
+    if (!effectNodeId) return false
+    const previews: ModelNode[] = []
+    if (spawnItems && spawnItems.length > 0) {
+      for (let i = 0; i < spawnItems.length; i++) {
+        const preview = this.model.nodes.get(`preview-${targetId}-${effectNodeId}-${i}`)
+        if (preview?.previewOf) previews.push(preview)
+      }
+    } else {
+      for (const node of this.model.nodes.values()) {
+        if (
+          node.previewOf?.hostNodeId === targetId &&
+          node.previewOf.spawnEffectNodeId === effectNodeId
+        ) {
+          previews.push(node)
+        }
+      }
+    }
+    if (previews.length === 0) return false
+    const key = this.spawnPreviewGroupKey(targetId, kind, effectNodeId)
+    const active = this.activePreviewGroups.get(key) ?? new Set<string>()
+    const now = performance.now()
+    for (const preview of previews) {
+      active.add(preview.id)
+      this.activatedPreviewNodes.add(preview.id)
+      this.playActiveNodes.set(preview.id, { startMs: now, durMs: 650 })
+    }
+    this.activePreviewGroups.set(key, active)
+    this.dirty = true
+    return true
+  }
+
+  private deactivateSpawnPreviews(targetId: string, kind: 'spawn' | 'spawn-circular', effectNodeId?: string): void {
+    if (!effectNodeId) return
+    const key = this.spawnPreviewGroupKey(targetId, kind, effectNodeId)
+    const active = this.activePreviewGroups.get(key)
+    if (!active) return
+    for (const id of active) this.activatedPreviewNodes.delete(id)
+    this.activePreviewGroups.delete(key)
+    this.dirty = true
+  }
+
+  private spawnPreviewGroupKey(targetId: string, kind: 'spawn' | 'spawn-circular', effectNodeId: string): string {
+    return `${targetId}|${kind}|${effectNodeId}`
   }
 
   private tickEphemeralSpawns(): void {
@@ -2453,15 +2616,15 @@ export class SceneRenderer {
           scale = 0.2 + 0.8 * (1 - outT)
           if (outT >= 1) {
             for (const it of g.items) {
-              this.ephemeralLayer.removeChild(it.gfx)
-              it.gfx.destroy()
+              this.ephemeralLayer.removeChild(it.container)
+              it.container.destroy({ children: true })
             }
             continue
           }
         }
         for (const it of g.items) {
-          it.gfx.alpha = alpha
-          it.gfx.scale.set(scale)
+          it.container.alpha = alpha
+          it.container.scale.set(scale)
         }
         surviving.push(g)
       }
@@ -2473,7 +2636,7 @@ export class SceneRenderer {
 
 interface EphemeralSpawnGroup {
   kind: 'spawn' | 'spawn-circular'
-  items: { gfx: Graphics }[]
+  items: { container: Container }[]
   startedAt: number
   fadeInMs: number
   fadeOutMs: number

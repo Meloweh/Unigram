@@ -68,6 +68,43 @@ describe('store', () => {
     expect(useOmniStore.getState().undoStack.depth).toBe(depthBefore)
   })
 
+  it('commitDrag syncs moved spawn preview facades back to spawn item offsets', () => {
+    const hostId = useOmniStore.getState().addNode({
+      x: 20,
+      y: 30,
+      flowEffects: [{
+        id: 'fx',
+        label: 'Spawn',
+        graph: {
+          nodes: [
+            { id: 'sp', kind: 'spawn', x: 0, y: 0, params: {}, spawnItems: [{ label: 'Child', offsetX: 10, offsetY: 5, animation: 'emerge', connectionType: 'none' }] },
+          ],
+          edges: [],
+        },
+      }],
+    })
+    const previewId = useOmniStore.getState().addNode({
+      id: 'preview-host-sp-0',
+      label: 'Child',
+      x: 30,
+      y: 35,
+      previewOf: { hostNodeId: hostId, spawnEffectNodeId: 'sp', itemIndex: 0 },
+    })
+    const preview = useOmniStore.getState().model.nodes.get(previewId)!
+    preview.x = 44
+    preview.y = 41
+    useOmniStore.getState().commitDrag([{ id: previewId, x: 30, y: 35 }])
+    const host = useOmniStore.getState().model.nodes.get(hostId)!
+    const item = host.flowEffects?.[0]?.graph.nodes[0]?.spawnItems?.[0]
+    expect(item?.offsetX).toBe(24)
+    expect(item?.offsetY).toBe(11)
+    useOmniStore.getState().undo()
+    const restored = useOmniStore.getState().model.nodes.get(hostId)!
+    const restoredItem = restored.flowEffects?.[0]?.graph.nodes[0]?.spawnItems?.[0]
+    expect(restoredItem?.offsetX).toBe(10)
+    expect(restoredItem?.offsetY).toBe(5)
+  })
+
   it('undo/redo round-trips an add', () => {
     const id = useOmniStore.getState().addNode({ x: 0, y: 0 })
     expect(useOmniStore.getState().model.nodes.has(id)).toBe(true)
