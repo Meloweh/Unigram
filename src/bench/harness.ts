@@ -83,6 +83,27 @@ const SCENARIOS: Record<string, ScenarioDef> = {
       freeScale: s,
     })
   }),
+  /**
+   * Edge-heavy pan/zoom: 2000 nodes with ~6000 edges. Guards the dedicated
+   * edge spatial index by making camera motion cull/pick against many
+   * connections without returning to an all-edge scan.
+   */
+  'edge-heavy-2k': defineScenario(
+    (r, t) => {
+      const s = 0.85 + Math.sin(t * 0.0018) * 0.3
+      r.setCamera({
+        panX: Math.cos(t * 0.0011) * 32,
+        panY: Math.sin(t * 0.0013) * 24,
+        freeScale: s,
+      })
+    },
+    () => {
+      useOmniStore.getState().loadModel(spawnGrid({ count: 2000, spacingPercent: 2.8, edgeRatio: 3 }))
+    },
+    () => {
+      useOmniStore.getState().loadModel(spawnGrid({ count: 1 }))
+    },
+  ),
   /** Idle — pure render-loop overhead. */
   idle: defineScenario(() => {
     /* no-op */

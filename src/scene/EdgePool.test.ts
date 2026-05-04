@@ -71,6 +71,15 @@ describe('EdgePool parity styling', () => {
     expect(pool.activeCount).toBe(4)
   })
 
+  it('handles every arrow style', () => {
+    const a = node('a', 10, 10)
+    const b = node('b', 30, 10)
+    for (const arrowStyle of ['none', 'standard', 'triangle', 'filled-triangle', 'line-arrow', 'stealth', 'diamond', 'circle'] as const) {
+      pool.acquire(edge({ id: `e-${arrowStyle}`, arrowStyle }), a, b)
+    }
+    expect(pool.activeCount).toBe(8)
+  })
+
   it('mounts a Text label only when label is set', () => {
     const a = node('a', 10, 10)
     const b = node('b', 30, 10)

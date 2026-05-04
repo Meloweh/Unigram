@@ -14,7 +14,7 @@
  */
 
 import JSZip from 'jszip'
-import type { Connection, GridSettings, Model, ModelNode } from './types'
+import type { Connection, CrossEffectLink, GridSettings, Model, ModelNode } from './types'
 import type { ModelCosmetics } from '../theme/types'
 import { getMediaBlob, storeMediaBlob } from '../media/mediaStore'
 import { DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, isCosmeticShape } from '../scene/cosmeticGeometry'
@@ -26,6 +26,7 @@ interface ModelFile {
   cosmetics?: ModelCosmetics
   nodes: ModelNode[]
   edges: Connection[]
+  crossLinks?: CrossEffectLink[]
   extra?: Record<string, unknown>
 }
 
@@ -60,6 +61,7 @@ export async function exportBundle(snapshot: ProjectSnapshot): Promise<Blob> {
       ...(m.cosmetics ? { cosmetics: m.cosmetics } : {}),
       nodes,
       edges: [...m.edges.values()],
+      ...(m.crossLinks ? { crossLinks: m.crossLinks } : {}),
       ...(m.extra ? { extra: m.extra } : {}),
     }
   }
@@ -87,6 +89,7 @@ export async function importBundle(blob: Blob): Promise<ProjectSnapshot> {
       edges: new Map(mf.edges.map((e) => [e.id, e])),
       ...(mf.grid ? { grid: mf.grid } : {}),
       ...(mf.cosmetics ? { cosmetics: mf.cosmetics } : {}),
+      ...(mf.crossLinks ? { crossLinks: mf.crossLinks } : {}),
       ...(mf.extra ? { extra: mf.extra } : {}),
     }
     models.set(modelId, model)

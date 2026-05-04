@@ -21,6 +21,7 @@ import type {
   Model,
   ModelNode,
   Project,
+  TextFormatRange,
 } from './types'
 import { DEFAULT_EDGE, DEFAULT_NODE } from './types'
 import { SCENE_H, SCENE_W } from '../scene/sceneConstants'
@@ -40,6 +41,8 @@ interface LegacyNode {
   tipDirection?: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
   tipAnchor?: number
   membraneVisible?: boolean
+  textFormats?: TextFormatRange[]
+  previewOf?: ModelNode['previewOf']
   cellColor?: string
   membraneColor?: string
   nodeWidth?: number
@@ -59,12 +62,18 @@ interface LegacyNode {
 interface LegacyConnection {
   from: string
   to: string
+  type?: Connection['kind']
   strokeColor?: string
   strokeWidth?: number
   strokeDash?: Connection['dash']
   arrowStyle?: Connection['arrowStyle']
   label?: string
   labelFontSize?: number
+  cameraTracked?: boolean
+  dependsOnSpawn?: string
+  hideDuringFlow?: boolean
+  evidence?: Connection['references']
+  references?: Connection['references']
 }
 
 interface LegacyFile {
@@ -164,6 +173,7 @@ function translate(
       shape,
       cellColor: ln.cellColor ?? DEFAULT_NODE.cellColor,
       membraneColor: ln.membraneColor ?? DEFAULT_NODE.membraneColor,
+      ...(ln.membraneVisible === false ? { membraneVisible: false } : {}),
       ...(cosmeticType ? { cosmeticType, tipAngle: legacyTipAngle ?? DEFAULT_COSMETIC_TIP_ANGLE, tipLength: ln.tipLength ?? DEFAULT_COSMETIC_TIP_LENGTH } : {}),
       ...(childModelId ? { childModelId } : {}),
       ...(mpdDimensions && mpdDimensions.length > 0 ? { mpdDimensions } : {}),
@@ -177,6 +187,8 @@ function translate(
       ...(ln.contentSource !== undefined ? { contentSource: ln.contentSource } : {}),
       ...(ln.contentCollapsed !== undefined ? { contentCollapsed: ln.contentCollapsed } : {}),
       ...(ln.contentFontSize !== undefined ? { contentFontSize: ln.contentFontSize } : {}),
+      ...(ln.textFormats ? { textFormats: ln.textFormats } : {}),
+      ...(ln.previewOf ? { previewOf: ln.previewOf } : {}),
     }
     nodes.set(node.id, node)
   }
@@ -191,11 +203,15 @@ function translate(
       to: lc.to,
       color: lc.strokeColor ?? DEFAULT_EDGE.color,
       width: lc.strokeWidth ?? DEFAULT_EDGE.width,
-      kind: DEFAULT_EDGE.kind,
+      kind: lc.type ?? DEFAULT_EDGE.kind,
       dash: lc.strokeDash ?? DEFAULT_EDGE.dash,
       arrowStyle: lc.arrowStyle ?? DEFAULT_EDGE.arrowStyle,
       ...(lc.label ? { label: lc.label } : {}),
       ...(lc.labelFontSize ? { labelFontSize: lc.labelFontSize } : {}),
+      ...(lc.cameraTracked ? { cameraTracked: true } : {}),
+      ...(lc.dependsOnSpawn ? { dependsOnSpawn: lc.dependsOnSpawn } : {}),
+      ...(lc.hideDuringFlow ? { hideDuringFlow: true } : {}),
+      ...(lc.references ? { references: lc.references } : lc.evidence ? { references: lc.evidence } : {}),
     }
     edges.set(edge.id, edge)
   }

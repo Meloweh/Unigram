@@ -25,6 +25,25 @@ export interface CosmeticTip {
   y: number
 }
 
+export interface TextFormatRange {
+  start: number
+  end: number
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strikethrough?: boolean
+  color?: string
+  fontSize?: number
+  fontFamily?: string
+}
+
+export interface LegacyPreviewRef {
+  hostNodeId?: string
+  spawnEffectNodeId?: string
+  itemIndex?: number
+  [key: string]: unknown
+}
+
 export interface ModelNode {
   id: string
   /** Position in scene percent (0–100 of `SCENE_W` / `SCENE_H`). */
@@ -41,6 +60,8 @@ export interface ModelNode {
   cellColor: string
   /** Border / membrane color. */
   membraneColor: string
+  /** Legacy membrane visibility flag. False means render without the outline. */
+  membraneVisible?: boolean
   /** Optional child-model id for RMM zoom. */
   childModelId?: string
   /**
@@ -86,6 +107,10 @@ export interface ModelNode {
   audioCoverSrc?: string
   /** Raw markdown / LaTeX source for content nodes. */
   contentSource?: string
+  /** Legacy rich-text ranges for label/content editing. Preserved for round-trip parity. */
+  textFormats?: TextFormatRange[]
+  /** Legacy preview-node provenance for spawned/previewed content. */
+  previewOf?: LegacyPreviewRef
   /** Whether markdown / math content renders in collapsed preview mode. */
   contentCollapsed?: boolean
   /** Content preview/body font size in rem-like units. */
@@ -108,10 +133,12 @@ export type ConnectionDashStyle = 'solid' | 'dashed' | 'dotted' | 'dash-dot'
 export type ConnectionArrowStyle =
   | 'none'
   | 'standard'
+  | 'triangle'
   | 'filled-triangle'
   | 'line-arrow'
   | 'stealth'
   | 'diamond'
+  | 'circle'
 
 export interface Connection {
   id: string
@@ -142,6 +169,8 @@ export interface Connection {
   cameraTracked?: boolean
   /** When set, this connection only appears once the named spawn effect runs. */
   dependsOnSpawn?: string
+  /** When true, the connection is hidden while a flow effect is running. */
+  hideDuringFlow?: boolean
   /**
    * Citations / supporting references attached to this connection. Surfaced
    * by the in-canvas reference popup that opens over a selected edge

@@ -222,6 +222,7 @@ describe('store', () => {
     )!
     expect(linkId).toBeTruthy()
     expect(useOmniStore.getState().model.crossLinks?.length).toBe(1)
+    expect(useOmniStore.getState().models.get(useOmniStore.getState().model.id)?.crossLinks?.length).toBe(1)
     // Duplicate cross-link returns existing id, no new entry.
     const dup = useOmniStore.getState().addCrossLink(
       { nodeId: a, effectId: 'fx-a' },
@@ -234,6 +235,7 @@ describe('store', () => {
     expect(useOmniStore.getState().model.nodes.get(a)?.linkedNodeIds).toEqual([])
     expect(useOmniStore.getState().model.nodes.get(b)?.linkedNodeIds).toEqual([])
     expect(useOmniStore.getState().model.crossLinks?.length).toBe(0)
+    expect(useOmniStore.getState().models.get(useOmniStore.getState().model.id)?.crossLinks?.length).toBe(0)
   })
 
   it('addCrossLink rejects when hosts are not linked', () => {
@@ -245,6 +247,19 @@ describe('store', () => {
       { nodeId: b, effectId: 'fx-b' },
     )
     expect(id).toBeNull()
+  })
+
+  it('removeNodes prunes dangling cross-links from the active model registry', () => {
+    const s = useOmniStore.getState()
+    const a = s.addNode({ x: 0, y: 0 })
+    const b = s.addNode({ x: 10, y: 10 })
+    s.linkNodes(a, b)
+    const linkId = s.addCrossLink({ nodeId: a, effectId: 'fx-a' }, { nodeId: b, effectId: 'fx-b' })
+    expect(linkId).toBeTruthy()
+    s.removeNodes([a])
+    const state = useOmniStore.getState()
+    expect(state.model.crossLinks).toEqual([])
+    expect(state.models.get(state.model.id)?.crossLinks).toEqual([])
   })
 
   it('setGrid round-trips appearance through the model', () => {

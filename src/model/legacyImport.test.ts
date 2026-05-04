@@ -13,6 +13,9 @@ const FILES: Record<string, unknown> = {
         y: 50,
         childModel: './alpha.json',
         mpdModels: ['./alpha.json', './alpha-perf.json'],
+        membraneVisible: false,
+        textFormats: [{ start: 0, end: 5, bold: true }],
+        previewOf: { hostNodeId: 'host', spawnEffectNodeId: 'spawn', itemIndex: 1 },
       },
       { id: 'n2', label: 'Plain', x: 30, y: 30 },
       {
@@ -41,7 +44,19 @@ const FILES: Record<string, unknown> = {
       },
     ],
     connections: [
-      { from: 'n1', to: 'n2', strokeColor: '#ff0000', strokeWidth: 0.3, label: 'rel' },
+      {
+        from: 'n1',
+        to: 'n2',
+        type: 'flow',
+        strokeColor: '#ff0000',
+        strokeWidth: 0.3,
+        strokeDash: 'dash-dot',
+        arrowStyle: 'circle',
+        label: 'rel',
+        hideDuringFlow: true,
+        dependsOnSpawn: 'spawn',
+        evidence: [{ title: 'Paper', citation: 'Doe 2024', url: 'https://example.test/paper' }],
+      },
     ],
   },
   '/models/alpha.json': {
@@ -89,6 +104,20 @@ describe('importLegacyBundle', () => {
     expect(e.to).toBe('n2')
     expect(e.color).toBe('#ff0000')
     expect(e.label).toBe('rel')
+    expect(e.kind).toBe('flow')
+    expect(e.dash).toBe('dash-dot')
+    expect(e.arrowStyle).toBe('circle')
+    expect(e.hideDuringFlow).toBe(true)
+    expect(e.dependsOnSpawn).toBe('spawn')
+    expect(e.references).toEqual([{ title: 'Paper', citation: 'Doe 2024', url: 'https://example.test/paper' }])
+  })
+
+  it('preserves legacy visual and preview fields', async () => {
+    const snap = await importLegacyBundle('/models/root.json', fetcher)
+    const n1 = snap.models.get('root')!.nodes.get('n1')!
+    expect(n1.membraneVisible).toBe(false)
+    expect(n1.textFormats).toEqual([{ start: 0, end: 5, bold: true }])
+    expect(n1.previewOf).toEqual({ hostNodeId: 'host', spawnEffectNodeId: 'spawn', itemIndex: 1 })
   })
 
   it('renames v0 `label` field to `name`', async () => {

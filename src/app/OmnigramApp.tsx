@@ -26,6 +26,7 @@ import { LeftSidebar, DRAG_MIME_SHAPE, DRAG_MIME_MEDIA } from '../ui/LeftSidebar
 import { RightSidebar } from '../ui/RightSidebar'
 import { EditorToolbar } from '../ui/EditorToolbar'
 import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
+import { RichNodeOverlay } from '../ui/RichNodeOverlay'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { ModelNode, NodeShape } from '../model/types'
@@ -232,6 +233,7 @@ export function OmnigramApp() {
       <LeftSidebar />
       <RightSidebar renderer={renderer} />
       <ConnectionReferencePopup renderer={renderer} />
+      <RichNodeOverlay renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
       <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
       {pickMode === 'link-node' && <PickModeBanner />}
@@ -524,12 +526,21 @@ function NodeLabelEditor({
 
   const commit = () => {
     const trimmed = draft
-    if (trimmed !== node.label) {
-      useOmniStore.getState().updateNode(editingId, { label: trimmed })
+    const isTemporary = node.extra?.temporaryName === true
+    if (isTemporary && trimmed.trim().length === 0) {
+      useOmniStore.getState().removeNodes([editingId])
+    } else if (trimmed !== node.label || isTemporary) {
+      const nextExtra = isTemporary
+        ? dropTemporaryName(node.extra)
+        : node.extra
+      useOmniStore.getState().updateNode(editingId, { label: trimmed, extra: nextExtra })
     }
     useOmniStore.getState().setEditingNode(null)
   }
   const cancel = () => {
+    if (node.extra?.temporaryName === true) {
+      useOmniStore.getState().removeNodes([editingId])
+    }
     useOmniStore.getState().setEditingNode(null)
   }
 
@@ -575,6 +586,13 @@ function NodeLabelEditor({
       }}
     />
   )
+}
+
+function dropTemporaryName(extra: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!extra || extra.temporaryName !== true) return extra
+  const { temporaryName, ...rest } = extra
+  void temporaryName
+  return Object.keys(rest).length > 0 ? rest : undefined
 }
 
 /**

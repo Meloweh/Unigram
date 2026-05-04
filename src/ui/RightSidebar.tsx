@@ -184,10 +184,12 @@ function renderInner(
               >
                 <option value="none">None</option>
                 <option value="standard">Standard</option>
+                <option value="triangle">Triangle</option>
                 <option value="filled-triangle">Filled triangle</option>
                 <option value="line-arrow">Line arrow</option>
                 <option value="stealth">Stealth</option>
                 <option value="diamond">Diamond</option>
+                <option value="circle">Circle</option>
               </select>
             </Field>
             <Field label="Label">

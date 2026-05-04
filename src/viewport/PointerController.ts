@@ -17,12 +17,12 @@
 
 import { Graphics } from 'pixi.js'
 import { clientToScene } from '../scene/sceneConstants'
-import type { SceneRenderer } from '../scene/SceneRenderer'
+import type { ResizeHandleDir, SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 import { DEFAULT_NODE } from '../model/types'
 
 interface ActiveDrag {
-  kind: 'pan' | 'node' | 'connect' | 'box' | 'tip'
+  kind: 'pan' | 'node' | 'connect' | 'box' | 'tip' | 'resize'
   pointerId: number
   startClient: { x: number; y: number }
   startScene: { x: number; y: number }
@@ -42,6 +42,8 @@ interface ActiveDrag {
   baseSelection?: ReadonlySet<string>
   totalMoved?: number
   tipBaseline?: { id: string; tipAngle?: number; tipLength?: number; tip?: import('../model/types').ModelNode['tip'] }
+  resizeDir?: ResizeHandleDir
+  resizeBaseline?: { id: string; x: number; y: number; w: number; h: number }
 }
 
 const CLICK_THRESHOLD_PX = 4
@@ -114,11 +116,28 @@ export class PointerController {
   private onPointerDown = (e: PointerEvent): void => {
     if (this.active) return
     const scene = this.toScene(e)
-    const tipHitId = e.button === 0 ? this.renderer.pickCosmeticTipHandle(scene.x, scene.y) : null
+    const resizeHit = e.button === 0 ? this.renderer.pickResizeHandle(scene.x, scene.y) : null
+    const tipHitId = e.button === 0 && !resizeHit ? this.renderer.pickCosmeticTipHandle(scene.x, scene.y) : null
     const hitId = this.renderer.pickNode(scene.x, scene.y)
     const isRight = e.button === 2
     const shift = e.shiftKey
     this.host.setPointerCapture(e.pointerId)
+
+    if (resizeHit) {
+      const node = useOmniStore.getState().model.nodes.get(resizeHit.id)
+      if (!node || node.locked) return
+      this.active = {
+        kind: 'resize',
+        pointerId: e.pointerId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startScene: scene,
+        nodeId: resizeHit.id,
+        resizeDir: resizeHit.dir,
+        resizeBaseline: { id: resizeHit.id, x: node.x, y: node.y, w: node.w, h: node.h },
+        totalMoved: 0,
+      }
+      return
+    }
 
     if (tipHitId) {
       const node = useOmniStore.getState().model.nodes.get(tipHitId)
@@ -278,6 +297,17 @@ export class PointerController {
       return
     }
 
+    if (a.kind === 'resize' && a.resizeBaseline && a.resizeDir) {
+      const sceneNow = this.toScene(e)
+      const dx = sceneNow.x - a.startScene.x
+      const dy = sceneNow.y - a.startScene.y
+      this.renderer.resizeNodeDirect(
+        a.resizeBaseline.id,
+        resizeGeometryFromDrag(a.resizeBaseline, a.resizeDir, dx, dy),
+      )
+      return
+    }
+
     if (a.kind === 'box') {
       const sceneNow = this.toScene(e)
       const aabb = {
@@ -379,6 +409,21 @@ export class PointerController {
       return
     }
 
+    if (a.kind === 'resize' && a.resizeBaseline) {
+      if (movedFar) {
+        const store = useOmniStore.getState()
+        const cur = store.model.nodes.get(a.resizeBaseline.id)
+        if (cur) {
+          const snapped = snapNodeCornerToGrid(cur.x, cur.y, cur.w, cur.h, this.snapStep)
+          if (snapped.x !== cur.x || snapped.y !== cur.y) {
+            this.renderer.resizeNodeDirect(cur.id, { x: snapped.x, y: snapped.y, w: cur.w, h: cur.h })
+          }
+        }
+        store.commitGeometry(a.resizeBaseline)
+      }
+      return
+    }
+
     if (a.kind === 'box') {
       this.renderer.setBoxSelect(null)
       const sceneNow = this.toScene(e)
@@ -445,9 +490,11 @@ export class PointerController {
       const id = useOmniStore.getState().addNode({
         x: snapped.x,
         y: snapped.y,
-        label: 'node',
+        label: '',
+        extra: { temporaryName: true },
       })
       useOmniStore.getState().select(id)
+      useOmniStore.getState().setEditingNode(id)
       return
     }
     // Single click on empty space — try an edge hit before clearing selection.
@@ -466,7 +513,7 @@ export class PointerController {
  * (`x - w/2`, `y - h/2`) to the nearest grid intersection, then convert
  * back to centre coords. Returns the new centre.
  */
-function snapNodeCornerToGrid(
+export function snapNodeCornerToGrid(
   x: number,
   y: number,
   w: number,
@@ -479,6 +526,38 @@ function snapNodeCornerToGrid(
   const snappedCornerX = Math.round(cornerX / step) * step
   const snappedCornerY = Math.round(cornerY / step) * step
   return { x: snappedCornerX + w / 2, y: snappedCornerY + h / 2 }
+}
+
+export function resizeGeometryFromDrag(
+  baseline: { x: number; y: number; w: number; h: number },
+  dir: ResizeHandleDir,
+  dx: number,
+  dy: number,
+): { x: number; y: number; w: number; h: number } {
+  const minW = 1
+  const minH = 1
+  let left = baseline.x - baseline.w / 2
+  let right = baseline.x + baseline.w / 2
+  let top = baseline.y - baseline.h / 2
+  let bottom = baseline.y + baseline.h / 2
+  if (dir.includes('e')) right += dx
+  if (dir.includes('w')) left += dx
+  if (dir.includes('s')) bottom += dy
+  if (dir.includes('n')) top += dy
+  if (right - left < minW) {
+    if (dir.includes('w')) left = right - minW
+    else right = left + minW
+  }
+  if (bottom - top < minH) {
+    if (dir.includes('n')) top = bottom - minH
+    else bottom = top + minH
+  }
+  return {
+    x: (left + right) / 2,
+    y: (top + bottom) / 2,
+    w: right - left,
+    h: bottom - top,
+  }
 }
 
 // Suppress unused import warning when the codebase later wires Pixi ghost lines.

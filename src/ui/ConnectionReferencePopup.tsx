@@ -2,8 +2,8 @@
  * ConnectionReferencePopup — floating panel that opens above a selected
  * connection and lets the user view / add / edit / remove citation rows.
  * Legacy parity: replaces the `unzipPopup` from
- * `src/old/ui/UnzipPopup.tsx` with a simpler chrome (no clip-path animation,
- * no per-level reveal — just a focused references editor).
+ * `src/old/ui/UnzipPopup.tsx` with a GPU-friendly edge split plus a
+ * three-level references panel.
  *
  * Mounted unconditionally by the app shell. Renders nothing unless exactly
  * one edge is selected. Position is recomputed each frame from the renderer
@@ -61,10 +61,10 @@ export function ConnectionReferencePopup({ renderer }: Props) {
   const cam = renderer.getCamera()
   const vp = renderer.getViewport()
   const scale = cam.freeScale
-  const ax = ((a.x + a.w / 2) / 100) * SCENE_W
-  const ay = ((a.y + a.h / 2) / 100) * SCENE_H
-  const bx = ((b.x + b.w / 2) / 100) * SCENE_W
-  const by = ((b.y + b.h / 2) / 100) * SCENE_H
+  const ax = (a.x / 100) * SCENE_W
+  const ay = (a.y / 100) * SCENE_H
+  const bx = (b.x / 100) * SCENE_W
+  const by = (b.y / 100) * SCENE_H
   const midX = (ax + bx) / 2
   const midY = (ay + by) / 2
   const screenX = vp.width / 2 + (cam.panX + midX) * scale
@@ -104,6 +104,7 @@ function ReferenceCard({
   const [adding, setAdding] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [draft, setDraft] = useState<ConnectionReference>({ ...EMPTY_REF })
+  const [level, setLevel] = useState<1 | 2 | 3>(1)
 
   // Esc closes the popup (or cancels the in-progress edit).
   useEffect(() => {
@@ -171,7 +172,7 @@ function ReferenceCard({
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <span style={{ fontWeight: 600, color: 'var(--ug-text-heading)' }}>
-          References ({refs.length})
+          References L{level} ({refs.length})
         </span>
         <button
           type="button"
@@ -181,6 +182,24 @@ function ReferenceCard({
         >
           ×
         </button>
+      </div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        {([1, 2, 3] as const).map((l) => (
+          <button
+            key={l}
+            type="button"
+            onClick={() => setLevel(l)}
+            title={l === 1 ? 'Study titles' : l === 2 ? 'Citations' : 'URLs'}
+            style={{
+              ...miniLevelBtn,
+              background: level === l ? 'var(--ug-primary)' : 'var(--ug-surface-raised)',
+              color: level === l ? 'var(--ug-text-on-primary)' : 'var(--ug-text)',
+              borderColor: level === l ? 'var(--ug-primary-dark)' : 'var(--ug-border)',
+            }}
+          >
+            L{l}
+          </button>
+        ))}
       </div>
       {refs.length > 0 && (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 6px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -199,10 +218,10 @@ function ReferenceCard({
                 <button type="button" onClick={() => edit(i)} title="Edit" style={miniBtn}>✎</button>
                 <button type="button" onClick={() => remove(i)} title="Remove" style={miniBtn}>×</button>
               </div>
-              {r.citation && (
+              {level >= 2 && r.citation && (
                 <div style={{ fontSize: 11, color: 'var(--ug-text-secondary)', marginTop: 2 }}>{r.citation}</div>
               )}
-              {r.url && (
+              {level >= 3 && r.url && (
                 <a
                   href={r.url}
                   target="_blank"
@@ -278,6 +297,14 @@ const miniBtn: React.CSSProperties = {
   color: 'var(--ug-text-muted)',
   padding: '0 4px',
   fontSize: 13,
+}
+const miniLevelBtn: React.CSSProperties = {
+  flex: 1,
+  border: '1px solid var(--ug-border)',
+  borderRadius: 4,
+  padding: '3px 6px',
+  cursor: 'pointer',
+  font: '600 11px system-ui, sans-serif',
 }
 const inputStyle: React.CSSProperties = {
   padding: '4px 6px',

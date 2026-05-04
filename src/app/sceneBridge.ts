@@ -27,14 +27,19 @@ export function bindStoreToRenderer(renderer: SceneRenderer): () => void {
     const edgesChanged = s.model.edges !== lastEdges
     if (nodesChanged || edgesChanged) {
       // Map identity swapped (loadModel, or external mutation) — full sync.
-      renderer.setModel({ nodes: s.model.nodes, edges: s.model.edges, grid: s.model.grid })
+      renderer.setModel({
+        nodes: s.model.nodes,
+        edges: s.model.edges,
+        grid: s.model.grid,
+        crossLinks: s.model.crossLinks,
+      })
       lastNodes = s.model.nodes
       lastEdges = s.model.edges
     } else {
       // Same Maps, just mutated in place. Renderer's quadtree is already
       // current for drag-bypass commits; for add/remove transactions the
       // renderer will catch up on the next setModel call. Re-cull only.
-      renderer.syncIncremental(s.model.nodes, s.model.edges, s.model.grid)
+      renderer.syncIncremental(s.model.nodes, s.model.edges, s.model.grid, s.model.crossLinks)
     }
   }
   const pushCamera = (s: Store) => {

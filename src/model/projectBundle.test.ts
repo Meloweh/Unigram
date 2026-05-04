@@ -46,6 +46,13 @@ const mkModel = (id: string, name: string): Model => ({
     ],
   ]),
   grid: { enabled: true, snap: true, sizePercent: 5 },
+  crossLinks: [
+    {
+      id: 'xl1',
+      from: { nodeId: 'n1', effectId: 'fx1', effectNodeId: 'out' },
+      to: { nodeId: 'n2', effectId: 'fx2', effectNodeId: 'in' },
+    },
+  ],
 })
 
 describe('projectBundle round-trip', () => {
@@ -69,6 +76,7 @@ describe('projectBundle round-trip', () => {
     expect(r.nodes.get('n2')?.childModelId).toBe('child')
     expect(r.edges.size).toBe(1)
     expect(r.edges.get('e1')).toMatchObject({ from: 'n1', to: 'n2', color: '#444', width: 0.2 })
+    expect(r.crossLinks).toEqual(root.crossLinks)
     const c = restored.models.get('child')!
     expect(c.name).toBe('Child')
     expect(c.nodes.size).toBe(2)

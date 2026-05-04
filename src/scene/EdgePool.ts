@@ -1,7 +1,7 @@
 /**
  * Pooled `Graphics` per visible edge, plus a pooled mid-line `Text` when the
  * connection carries a label. Edges support legacy parity styling: dash
- * pattern, six arrow-head styles, optional label, and a `kind: 'flow'` mode
+ * pattern, eight arrow-head styles, optional label, and a `kind: 'flow'` mode
  * that adopts the legacy flow-orange palette.
  *
  * Endpoints are computed by projecting the line direction against each
@@ -35,13 +35,14 @@ const keyOf = (
   e: Connection,
   from: ModelNode,
   to: ModelNode,
+  revealGap: boolean,
 ): string =>
   `${from.x},${from.y},${from.w},${from.h},${from.shape}|` +
   `${from.cosmeticType ?? ''},${from.tipAngle ?? ''},${from.tipLength ?? ''}|` +
   `${to.x},${to.y},${to.w},${to.h},${to.shape}|` +
   `${to.cosmeticType ?? ''},${to.tipAngle ?? ''},${to.tipLength ?? ''}|` +
   `${e.color}|${e.width}|${e.kind ?? 'default'}|${e.dash ?? 'solid'}|` +
-  `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}`
+  `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}|${revealGap ? 1 : 0}`
 
 /** Visual size of the arrow head, in scene pixels. */
 const ARROW_LEN = 16
@@ -107,12 +108,18 @@ function drawArrowHead(
   const py = ux
   switch (style) {
     case 'standard':
+    case 'triangle':
     case 'filled-triangle': {
       g.poly([
         tx, ty,
         baseX + px * ARROW_HALF_W, baseY + py * ARROW_HALF_W,
         baseX - px * ARROW_HALF_W, baseY - py * ARROW_HALF_W,
       ])
+      g.fill({ color })
+      break
+    }
+    case 'circle': {
+      g.circle(tx - ux * (ARROW_LEN * 0.45), ty - uy * (ARROW_LEN * 0.45), ARROW_HALF_W * 0.72)
       g.fill({ color })
       break
     }
@@ -156,6 +163,7 @@ function drawEdge(
   e: Connection,
   from: ModelNode,
   to: ModelNode,
+  revealGap: boolean,
 ): { midX: number; midY: number } | null {
   g.clear()
   const fxC = (from.x / 100) * SCENE_W
@@ -198,11 +206,38 @@ function drawEdge(
   const lineEndY = ty - uy * inset
 
   const dash = dashPattern(e.dash ?? 'solid')
+  const drawStroke = (sx: number, sy: number, ex: number, ey: number) => {
+    if (dash) {
+      strokeDashed(g, sx, sy, ex, ey, dash, color, strokePx)
+    } else {
+      g.moveTo(sx, sy).lineTo(ex, ey)
+      g.stroke({ color, width: strokePx, alignment: 0.5 })
+    }
+  }
   if (dash) {
-    strokeDashed(g, fx, fy, lineEndX, lineEndY, dash, color, strokePx)
+    if (revealGap) {
+      const gap = Math.min(72, Math.max(30, segLen * 0.12))
+      const mx = (fx + lineEndX) / 2
+      const my = (fy + lineEndY) / 2
+      drawStroke(fx, fy, mx - ux * gap, my - uy * gap)
+      drawStroke(mx + ux * gap, my + uy * gap, lineEndX, lineEndY)
+    } else {
+      drawStroke(fx, fy, lineEndX, lineEndY)
+    }
   } else {
-    g.moveTo(fx, fy).lineTo(lineEndX, lineEndY)
-    g.stroke({ color, width: strokePx, alignment: 0.5 })
+    if (revealGap) {
+      const gap = Math.min(72, Math.max(30, segLen * 0.12))
+      const mx = (fx + lineEndX) / 2
+      const my = (fy + lineEndY) / 2
+      // Pull the cut ends slightly apart perpendicular to the wire to
+      // recreate the legacy "unzip" feel without allocating a DOM SVG path.
+      const px = -uy * 8
+      const py = ux * 8
+      drawStroke(fx, fy, mx - ux * gap + px, my - uy * gap + py)
+      drawStroke(mx + ux * gap - px, my + uy * gap - py, lineEndX, lineEndY)
+    } else {
+      drawStroke(fx, fy, lineEndX, lineEndY)
+    }
   }
 
   drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)
@@ -227,7 +262,7 @@ export class EdgePool {
     return this.active.has(id)
   }
 
-  acquire(e: Connection, from: ModelNode, to: ModelNode): void {
+  acquire(e: Connection, from: ModelNode, to: ModelNode, revealGap = false): void {
     let pe = this.active.get(e.id)
     if (!pe) {
       pe = this.free.pop() ?? { gfx: new Graphics(), label: null, dirtyKey: '' }
@@ -236,15 +271,15 @@ export class EdgePool {
       pe.dirtyKey = ''
       this.active.set(e.id, pe)
     }
-    this.update(e, from, to)
+    this.update(e, from, to, revealGap)
   }
 
-  update(e: Connection, from: ModelNode, to: ModelNode): void {
+  update(e: Connection, from: ModelNode, to: ModelNode, revealGap = false): void {
     const pe = this.active.get(e.id)
     if (!pe) return
-    const key = keyOf(e, from, to)
+    const key = keyOf(e, from, to, revealGap)
     if (key === pe.dirtyKey) return
-    const mid = drawEdge(pe.gfx, e, from, to)
+    const mid = drawEdge(pe.gfx, e, from, to, revealGap)
     pe.dirtyKey = key
     this.syncLabel(pe, e, mid)
   }

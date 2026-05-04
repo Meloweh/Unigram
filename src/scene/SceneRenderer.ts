@@ -19,7 +19,7 @@ import {
   type ViewportSize,
   visibleSceneAabb,
 } from './sceneConstants'
-import { Quadtree } from '../spatial/quadtree'
+import { Quadtree, type Aabb } from '../spatial/quadtree'
 import type { Connection, Model, ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
 import { EdgePool } from './EdgePool'
@@ -50,6 +50,15 @@ export interface SceneRendererStats {
   totalNodes: number
 }
 
+export interface RichOverlayTarget {
+  id: string
+  node: ModelNode
+  rect: { left: number; top: number; width: number; height: number }
+  scale: number
+}
+
+export type ResizeHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
 const CULL_PADDING = 5 // scene percent
 const DETAILED_SELECTION_LIMIT = 80
 
@@ -66,9 +75,12 @@ export class SceneRenderer {
   /** Box-select rectangle (single Graphics). */
   private boxSelectGfx!: Graphics
   private cosmeticTipHandleGfx!: Graphics
+  private resizeHandleGfx!: Graphics
   private nodePool!: NodePool
   private edgePool!: EdgePool
   private quadtree = new Quadtree()
+  private edgeQuadtree = new Quadtree()
+  private incidentEdges = new Map<string, Set<string>>()
   private model: ModelView = { nodes: new Map(), edges: new Map() }
   /** Raw user camera (free pan + free zoom). RMM scale composes on top. */
   private camera: CameraTransform = { panX: 0, panY: 0, freeScale: 1 }
@@ -199,6 +211,7 @@ export class SceneRenderer {
 
   // Reusable scratch buffers — keep hot path GC-free.
   private visibleIds: string[] = []
+  private visibleEdgeIds: string[] = []
   private prevVisibleNodes = new Set<string>()
   private visibleNodesScratch = new Set<string>()
   private visibleEdgesScratch = new Set<string>()
@@ -281,6 +294,10 @@ export class SceneRenderer {
     this.cosmeticTipHandleGfx.eventMode = 'none'
     this.cosmeticTipHandleGfx.visible = false
     this.selectionLayer.addChild(this.cosmeticTipHandleGfx)
+    this.resizeHandleGfx = new Graphics()
+    this.resizeHandleGfx.eventMode = 'none'
+    this.resizeHandleGfx.visible = false
+    this.selectionLayer.addChild(this.resizeHandleGfx)
     // Flow halo glow lives on its own below-nodes layer so the warm bleed
     // never overpaints node bodies. Wire core + beads + crisp ring stay on
     // `flowOverlayGfx` above the nodes for legibility.
@@ -530,6 +547,8 @@ export class SceneRenderer {
     }
     this.app = null
     this.quadtree.clear()
+    this.edgeQuadtree.clear()
+    this.incidentEdges.clear()
   }
 
   /** Replace model view. Triggers full quadtree rebuild + re-cull. */
@@ -561,6 +580,7 @@ export class SceneRenderer {
     ;(node as { x: number; y: number }).x = x
     ;(node as { x: number; y: number }).y = y
     this.quadtree.update(id, nodeAabb(node))
+    this.updateIncidentEdges(id)
     this.dirty = true
   }
 
@@ -584,6 +604,7 @@ export class SceneRenderer {
       ;(node as { x: number; y: number }).x = move.x
       ;(node as { x: number; y: number }).y = move.y
       if (updateIndex) this.quadtree.update(move.id, nodeAabb(node))
+      this.updateIncidentEdges(move.id)
       changed = true
     }
     if (changed) this.dirty = true
@@ -602,6 +623,20 @@ export class SceneRenderer {
     ;(node as { tipAngle?: number; tipLength?: number; tip?: undefined }).tipLength = next.length
     ;(node as { tip?: undefined }).tip = undefined
     this.quadtree.update(id, nodeAabb(node))
+    this.updateIncidentEdges(id)
+    this.dirty = true
+  }
+
+  resizeNodeDirect(id: string, geom: { x: number; y: number; w: number; h: number }): void {
+    const node = this.model.nodes.get(id) as ModelNode | undefined
+    if (!node) return
+    if (node.x === geom.x && node.y === geom.y && node.w === geom.w && node.h === geom.h) return
+    ;(node as { x: number; y: number; w: number; h: number }).x = geom.x
+    ;(node as { x: number; y: number; w: number; h: number }).y = geom.y
+    ;(node as { x: number; y: number; w: number; h: number }).w = geom.w
+    ;(node as { x: number; y: number; w: number; h: number }).h = geom.h
+    this.quadtree.update(id, nodeAabb(node))
+    this.updateIncidentEdges(id)
     this.dirty = true
   }
 
@@ -609,7 +644,10 @@ export class SceneRenderer {
   reindexNodes(ids: Iterable<string>): void {
     for (const id of ids) {
       const node = this.model.nodes.get(id)
-      if (node) this.quadtree.update(id, nodeAabb(node))
+      if (node) {
+        this.quadtree.update(id, nodeAabb(node))
+        this.updateIncidentEdges(id)
+      }
     }
     this.dirty = true
   }
@@ -961,6 +999,29 @@ export class SceneRenderer {
     }
   }
 
+  /**
+   * Return a capped set of high-LOD rich nodes that should be hosted by a DOM
+   * overlay (video/audio controls, rendered markdown/math). React still mounts
+   * O(1) app chrome plus at most `max` focused overlays, never one component
+   * per graph entity.
+   */
+  getRichOverlayTargets(max = 10): RichOverlayTarget[] {
+    if (!this.app || max <= 0 || this.effectiveScale < LOD_FULL) return []
+    const out: RichOverlayTarget[] = []
+    const push = (id: string) => {
+      if (out.length >= max) return
+      if (!this.prevVisibleNodes.has(id)) return
+      if (out.some((t) => t.id === id)) return
+      const node = this.model.nodes.get(id)
+      if (!node?.mediaType) return
+      const target = this.richOverlayTargetFor(node)
+      if (target) out.push(target)
+    }
+    for (const id of this.selectedIds) push(id)
+    for (const id of this.prevVisibleNodes) push(id)
+    return out
+  }
+
   /** Hit-test by scene point; topmost match wins. */
   pickNode(sceneX: number, sceneY: number): string | null {
     const hits: string[] = []
@@ -1002,6 +1063,25 @@ export class SceneRenderer {
     return distScreen <= 12 ? id : null
   }
 
+  pickResizeHandle(sceneX: number, sceneY: number): { id: string; dir: ResizeHandleDir } | null {
+    if (this.selectedIds.size !== 1) return null
+    const id = this.selectedIds.values().next().value as string | undefined
+    if (!id || !this.prevVisibleNodes.has(id)) return null
+    const node = this.model.nodes.get(id)
+    if (!node || node.locked) return null
+    const handles = resizeHandlesFor(this.visualNode(node))
+    const px = (sceneX / 100) * SCENE_W
+    const py = (sceneY / 100) * SCENE_H
+    const hitR = 10 / Math.max(0.01, this.effectiveScale)
+    for (let i = handles.length - 1; i >= 0; i--) {
+      const h = handles[i]
+      if (Math.abs(px - h.x) <= hitR && Math.abs(py - h.y) <= hitR) {
+        return { id, dir: h.dir }
+      }
+    }
+    return null
+  }
+
   /**
    * Hit-test edges by scene point. Returns the closest edge whose centre
    * line passes within `tolerancePercent` (scene-percent) of the point, or
@@ -1017,7 +1097,15 @@ export class SceneRenderer {
     const tol = (tolPx * 100) / SCENE_W
     let best: string | null = null
     let bestDist = tol
-    for (const e of this.model.edges.values()) {
+    this.edgeQuadtree.query({
+      minX: sceneX - tol,
+      minY: sceneY - tol,
+      maxX: sceneX + tol,
+      maxY: sceneY + tol,
+    }, this.visibleEdgeIds)
+    for (let i = 0; i < this.visibleEdgeIds.length; i++) {
+      const e = this.model.edges.get(this.visibleEdgeIds[i])
+      if (!e) continue
       const a = this.model.nodes.get(e.from)
       const b = this.model.nodes.get(e.to)
       if (!a || !b) continue
@@ -1043,6 +1131,28 @@ export class SceneRenderer {
       y: node.y + dy,
       w: node.w * scale,
       h: node.h * scale,
+    }
+  }
+
+  private richOverlayTargetFor(node: ModelNode): RichOverlayTarget | null {
+    if (!this.world) return null
+    const visual = this.visualNode(node)
+    const scale = this.effectiveScale
+    const w = (visual.w / 100) * SCENE_W * scale
+    const h = (visual.h / 100) * SCENE_H * scale
+    if (w < 28 || h < 20) return null
+    const cx = this.world.x + ((visual.x / 100) * SCENE_W) * scale
+    const cy = this.world.y + ((visual.y / 100) * SCENE_H) * scale
+    return {
+      id: node.id,
+      node,
+      rect: {
+        left: cx - w / 2,
+        top: cy - h / 2,
+        width: w,
+        height: h,
+      },
+      scale,
     }
   }
 
@@ -1266,8 +1376,9 @@ export class SceneRenderer {
     nodes: Map<string, ModelNode>,
     edges: Map<string, Connection>,
     grid?: ModelView['grid'],
+    crossLinks?: CrossEffectLink[],
   ): void {
-    this.model = { nodes, edges, grid }
+    this.model = { nodes, edges, grid, crossLinks }
     // Add or update entries for nodes currently in the model.
     for (const n of nodes.values()) {
       // quadtree.update is no-op if AABB unchanged; otherwise re-inserts.
@@ -1285,6 +1396,7 @@ export class SceneRenderer {
       this.nodePool.release(id)
       this.prevVisibleNodes.delete(id)
     }
+    this.rebuildEdgeIndex()
     this.syncAlwaysPlayEffects(nodes)
     this.dirty = true
   }
@@ -1294,11 +1406,63 @@ export class SceneRenderer {
     for (const n of this.model.nodes.values()) {
       this.quadtree.insert(n.id, nodeAabb(n))
     }
+    this.rebuildEdgeIndex()
+  }
+
+  private rebuildEdgeIndex(): void {
+    this.edgeQuadtree.clear()
+    this.incidentEdges.clear()
+    for (const edge of this.model.edges.values()) {
+      this.indexEdge(edge)
+      let fromList = this.incidentEdges.get(edge.from)
+      if (!fromList) {
+        fromList = new Set()
+        this.incidentEdges.set(edge.from, fromList)
+      }
+      fromList.add(edge.id)
+      let toList = this.incidentEdges.get(edge.to)
+      if (!toList) {
+        toList = new Set()
+        this.incidentEdges.set(edge.to, toList)
+      }
+      toList.add(edge.id)
+    }
+  }
+
+  private updateIncidentEdges(nodeId: string): void {
+    const ids = this.incidentEdges.get(nodeId)
+    if (!ids) return
+    for (const edgeId of ids) {
+      const edge = this.model.edges.get(edgeId)
+      if (edge) this.indexEdge(edge)
+      else this.edgeQuadtree.remove(edgeId)
+    }
+  }
+
+  private indexEdge(edge: Connection): void {
+    const aabb = this.edgeAabb(edge)
+    if (aabb) this.edgeQuadtree.update(edge.id, aabb)
+    else this.edgeQuadtree.remove(edge.id)
+  }
+
+  private edgeAabb(edge: Connection): Aabb | null {
+    const from = this.model.nodes.get(edge.from)
+    const to = this.model.nodes.get(edge.to)
+    if (!from || !to) return null
+    const a = nodeAabb(from)
+    const b = nodeAabb(to)
+    const pad = Math.max(1, edge.width * 2)
+    return {
+      minX: Math.min(a.minX, b.minX, from.x, to.x) - pad,
+      minY: Math.min(a.minY, b.minY, from.y, to.y) - pad,
+      maxX: Math.max(a.maxX, b.maxX, from.x, to.x) + pad,
+      maxY: Math.max(a.maxY, b.maxY, from.y, to.y) + pad,
+    }
   }
 
   private cullAndDraw(): void {
     if (!this.app) return
-    const visibleAabb: SceneAabb = visibleSceneAabb(this.camera, this.viewport, CULL_PADDING)
+    const visibleAabb: SceneAabb = visibleSceneAabb(this.getCamera(), this.viewport, CULL_PADDING)
     this.quadtree.query(visibleAabb, this.visibleIds)
 
     // Build the new visible-set into a reused Set (cleared, not reallocated).
@@ -1307,7 +1471,7 @@ export class SceneRenderer {
     for (let i = 0; i < this.visibleIds.length; i++) visibleSet.add(this.visibleIds[i])
 
     // Choose LOD from the *effective* on-screen scale.
-    const effective = this.camera.freeScale
+    const effective = this.effectiveScale
     const lod: Lod = effective >= LOD_FULL ? 'full' : effective >= LOD_SIMPLE ? 'simple' : 'dot'
     const totalNodes = this.model.nodes.size
     const allNodesVisible = totalNodes > 0 && this.visibleIds.length >= totalNodes
@@ -1339,17 +1503,20 @@ export class SceneRenderer {
     oldPrev.clear()
     this.visibleNodesScratch = oldPrev
 
-    // Edges — draw any edge with at least one visible endpoint. Edge-AABB
-    // indexing arrives in a later stage; for now this is O(E) per dirty cycle
-    // but only when something changed.
+    // Edges — edge AABBs live in their own quadtree so culling/picking does
+    // not scan every connection on pan/zoom. Incident edges are re-indexed
+    // when a node moves; full rebuild happens only on store sync.
     const visibleEdges = this.visibleEdgesScratch
     visibleEdges.clear()
-    for (const e of this.model.edges.values()) {
+    this.edgeQuadtree.query(visibleAabb, this.visibleEdgeIds)
+    for (let i = 0; i < this.visibleEdgeIds.length; i++) {
+      const e = this.model.edges.get(this.visibleEdgeIds[i])
+      if (!e) continue
+      if (flowActive && e.hideDuringFlow) continue
       const from = this.model.nodes.get(e.from)
       const to = this.model.nodes.get(e.to)
       if (!from || !to) continue
-      if (!this.prevVisibleNodes.has(e.from) && !this.prevVisibleNodes.has(e.to)) continue
-      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to))
+      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to), this.selectedEdgeIds.has(e.id))
       visibleEdges.add(e.id)
     }
     // Release edges whose endpoints are no longer near view.
@@ -1493,6 +1660,7 @@ export class SceneRenderer {
       this.selectionAuraRingPool[i].visible = false
     }
     this.drawCosmeticTipHandle()
+    this.drawResizeHandles()
     // Edge selection overlay (separate pool — kept distinct so the aura
     // layer doesn't blur thin edge highlights into illegibility).
     let edgeUsed = 0
@@ -1518,7 +1686,20 @@ export class SceneRenderer {
       const bx = (bv.x / 100) * SCENE_W
       const by = (bv.y / 100) * SCENE_H
       const baseW = Math.max(1, (e.width / 100) * SCENE_W)
-      g.moveTo(ax, ay).lineTo(bx, by)
+      const dx = bx - ax
+      const dy = by - ay
+      const len = Math.hypot(dx, dy)
+      if (len > 1e-3) {
+        const ux = dx / len
+        const uy = dy / len
+        const gap = Math.min(72, Math.max(30, len * 0.12))
+        const mx = (ax + bx) / 2
+        const my = (ay + by) / 2
+        const px = -uy * 8
+        const py = ux * 8
+        g.moveTo(ax, ay).lineTo(mx - ux * gap + px, my - uy * gap + py)
+        g.moveTo(mx + ux * gap - px, my + uy * gap - py).lineTo(bx, by)
+      }
       g.stroke({ color: RING_COLOR, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
       edgeUsed++
     }
@@ -1575,6 +1756,33 @@ export class SceneRenderer {
     g.circle(cx + handle.x, cy + handle.y, r + lineW)
     g.fill({ color: 0xffffff, alpha: 0.95 })
     g.stroke({ color: 0x0e4f8f, width: lineW * 1.7, alpha: 0.9 })
+  }
+
+  private drawResizeHandles(): void {
+    const g = this.resizeHandleGfx
+    if (!g || this.selectedIds.size !== 1) {
+      if (g) g.visible = false
+      return
+    }
+    const id = this.selectedIds.values().next().value as string | undefined
+    if (!id || !this.prevVisibleNodes.has(id)) {
+      g.visible = false
+      return
+    }
+    const node = this.model.nodes.get(id)
+    if (!node || node.locked) {
+      g.visible = false
+      return
+    }
+    const size = 8 / Math.max(0.2, this.effectiveScale)
+    const strokeW = 1.5 / Math.max(0.2, this.effectiveScale)
+    g.visible = true
+    g.clear()
+    for (const h of resizeHandlesFor(this.visualNode(node))) {
+      g.roundRect(h.x - size / 2, h.y - size / 2, size, size, size * 0.22)
+    }
+    g.fill({ color: 0xffffff, alpha: 0.98 })
+    g.stroke({ color: 0x2478bd, width: strokeW, alignment: 0.5, alpha: 0.95 })
   }
 
   private drawGrid(): void {
@@ -2246,6 +2454,23 @@ function nodeAabb(n: ModelNode) {
     maxX: n.x + n.w / 2 + pad.x,
     maxY: n.y + n.h / 2 + pad.y,
   }
+}
+
+function resizeHandlesFor(n: ModelNode): Array<{ dir: ResizeHandleDir; x: number; y: number }> {
+  const cx = (n.x / 100) * SCENE_W
+  const cy = (n.y / 100) * SCENE_H
+  const hw = ((n.w / 100) * SCENE_W) / 2
+  const hh = ((n.h / 100) * SCENE_H) / 2
+  return [
+    { dir: 'nw', x: cx - hw, y: cy - hh },
+    { dir: 'n', x: cx, y: cy - hh },
+    { dir: 'ne', x: cx + hw, y: cy - hh },
+    { dir: 'e', x: cx + hw, y: cy },
+    { dir: 'se', x: cx + hw, y: cy + hh },
+    { dir: 's', x: cx, y: cy + hh },
+    { dir: 'sw', x: cx - hw, y: cy + hh },
+    { dir: 'w', x: cx - hw, y: cy },
+  ]
 }
 
 /** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by). */

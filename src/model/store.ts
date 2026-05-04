@@ -159,6 +159,8 @@ interface Actions {
    * and pushes them as a single transaction.
    */
   commitDrag(baselines: Iterable<{ id: string; x: number; y: number }>): void
+  /** Commit renderer-direct geometry edits as one undoable change. */
+  commitGeometry(baseline: { id: string; x: number; y: number; w: number; h: number }): void
   /** Commit renderer-direct cosmetic tip edits as one undoable change. */
   commitCosmeticTip(baseline: { id: string; tipAngle?: number; tipLength?: number; tip?: ModelNode['tip'] }): void
 
@@ -343,10 +345,23 @@ export const useOmniStore = create<Store>((set, get) => ({
     get().applyTransaction(tx)
     if (tx.length > 0) {
       set((s) => {
-        if (s.selectedIds.size === 0) return s
+        const links = s.model.crossLinks
+        let model = s.model
+        let models = s.models
+        if (links?.length) {
+          const keep = links.filter((l) => !idSet.has(l.from.nodeId) && !idSet.has(l.to.nodeId))
+          if (keep.length !== links.length) {
+            model = { ...model, crossLinks: keep }
+            models = new Map(models)
+            models.set(model.id, model)
+          }
+        }
+        if (s.selectedIds.size === 0) {
+          return model === s.model ? s : { model, models, rev: s.rev + 1 }
+        }
         const next = new Set(s.selectedIds)
         for (const id of idSet) next.delete(id)
-        return { selectedIds: next, selRev: s.selRev + 1 }
+        return { model, models, selectedIds: next, selRev: s.selRev + 1, rev: model === s.model ? s.rev : s.rev + 1 }
       })
     }
   },
@@ -504,6 +519,32 @@ export const useOmniStore = create<Store>((set, get) => ({
     // Live nodes already hold the new positions (renderer wrote them in
     // place). Push the patches to the undo stack and bump rev so other
     // subscribers see the change; do NOT call applyPatch again.
+    set((s) => {
+      s.undoStack.push(tx)
+      const model = { ...s.model }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
+    })
+  },
+
+  commitGeometry(baseline) {
+    const cur = get().model.nodes.get(baseline.id)
+    if (!cur) return
+    if (
+      cur.x === baseline.x &&
+      cur.y === baseline.y &&
+      cur.w === baseline.w &&
+      cur.h === baseline.h
+    ) return
+    const before: ModelNode = {
+      ...cur,
+      x: baseline.x,
+      y: baseline.y,
+      w: baseline.w,
+      h: baseline.h,
+    }
+    const tx: Patch[] = [{ kind: 'node', op: 'update', id: baseline.id, before, after: cur }]
     set((s) => {
       s.undoStack.push(tx)
       const model = { ...s.model }
@@ -794,7 +835,12 @@ export const useOmniStore = create<Store>((set, get) => ({
       (l) => !((l.from.nodeId === a && l.to.nodeId === b) || (l.from.nodeId === b && l.to.nodeId === a)),
     )
     if (keep.length !== links.length) {
-      set((cur) => ({ model: { ...cur.model, crossLinks: keep }, rev: cur.rev + 1 }))
+      set((cur) => {
+        const model: Model = { ...cur.model, crossLinks: keep }
+        const models = new Map(cur.models)
+        models.set(model.id, model)
+        return { model, models, rev: cur.rev + 1 }
+      })
     }
   },
 
@@ -826,10 +872,12 @@ export const useOmniStore = create<Store>((set, get) => ({
     if (dup) return dup.id
     const id = newId('xl')
     const link = { id, from: { ...from }, to: { ...to } }
-    set((cur) => ({
-      model: { ...cur.model, crossLinks: [...(cur.model.crossLinks ?? []), link] },
-      rev: cur.rev + 1,
-    }))
+    set((cur) => {
+      const model: Model = { ...cur.model, crossLinks: [...(cur.model.crossLinks ?? []), link] }
+      const models = new Map(cur.models)
+      models.set(model.id, model)
+      return { model, models, rev: cur.rev + 1 }
+    })
     return id
   },
 
@@ -838,7 +886,12 @@ export const useOmniStore = create<Store>((set, get) => ({
     const links = s.model.crossLinks ?? []
     const next = links.filter((l) => l.id !== id)
     if (next.length === links.length) return
-    set((cur) => ({ model: { ...cur.model, crossLinks: next }, rev: cur.rev + 1 }))
+    set((cur) => {
+      const model: Model = { ...cur.model, crossLinks: next }
+      const models = new Map(cur.models)
+      models.set(model.id, model)
+      return { model, models, rev: cur.rev + 1 }
+    })
   },
 
   rmmZoomStep(direction, step) {

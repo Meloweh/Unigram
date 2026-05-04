@@ -9,6 +9,7 @@ describe('bench harness', () => {
     expect(names).toContain('pan-loop')
     expect(names).toContain('zoom-pulse')
     expect(names).toContain('pan-zoom')
+    expect(names).toContain('edge-heavy-2k')
     expect(names).toContain('idle')
     // Stage 3 RMM zoom acceptance.
     expect(names).toContain('rmm-zoom')

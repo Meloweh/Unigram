@@ -120,7 +120,7 @@ function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
 }
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
-  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
+  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
 const labelKeyOf = (n: ModelNode, showLabel: boolean): string => (showLabel && !n.mediaType ? n.label : '')
 
@@ -147,7 +147,7 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | nul
     h: hPx,
     fill,
     stroke: membrane,
-    strokeWidth: NODE_STROKE_WIDTH,
+    strokeWidth: n.membraneVisible === false ? 0 : NODE_STROKE_WIDTH,
     tip,
     tipAngle: resolvedTip.angle,
     tipLength: resolvedTip.length,

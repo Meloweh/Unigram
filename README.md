@@ -146,7 +146,8 @@ Everything below documents what `master` does today. Each item is a port target 
 | `jszip` 3 | `.unigram` bundle import/export | Central for project I/O |
 | `katex` 0.16, `marked` 18, `dompurify` 3 | Math + markdown content nodes | Used in nodes |
 | `motion` 12 | **Listed but never imported** (0 grep matches) | Unused — drop |
-| `express`, `cors` | Dev-only YouTube proxy ([server/](server/)) | Dev only |
+
+The old dev-only YouTube downloader/proxy has been excluded from Omnigram to keep the project clear of commercial-use compliance risk. Video parity now targets local file drops and stored blob playback only.
 
 Test stack: Vitest 4 (`happy-dom`), Playwright 1.59 — single E2E smoke at [tests/e2e/smoke.spec.ts](tests/e2e/smoke.spec.ts).
 
@@ -341,7 +342,8 @@ In Omnigram the entire scene moves into PixiJS, so the particle overlay merges i
 ## Benchmarks
 
 Manual gate plus a scripted bench harness (Stage 2) — pick a scenario from the
-in-app toolbar (`Bench: pan-h`, `pan-loop`, `zoom-pulse`, `pan-zoom`, `idle`).
+in-app toolbar (`Bench: pan-h`, `pan-loop`, `zoom-pulse`, `pan-zoom`,
+`edge-heavy-2k`, `idle`).
 Each run samples per-frame deltas via `requestAnimationFrame` for 3 s and
 prints `frames / p50 / p95 / min / max FPS` to the overlay and the console.
 The harness lives at [src/bench/harness.ts](src/bench/harness.ts) — every new
@@ -353,7 +355,7 @@ feature must register a scenario there.
 | 1 | spawn grid, idle pan/zoom | 1000 | ~1500 | Chrome (60 Hz cap) | 60 (capped) |
 | 1 | spawn grid, idle pan/zoom | 2000 | ~3000 | Chrome (60 Hz cap) | 60 (capped) |
 | 1 | spawn grid, idle pan/zoom | 2000 | ~3000 | VSCode integrated (uncapped) | 144 |
-| 2 | _bench harness pending — record p50/p95 on next run_ | | | | |
+| 2 | edge-heavy-2k (spatial edge index) | 2000 | ~6000 | _pending manual run_ | _record p50/p95 next_ |
 
 Stage 1 acceptance (≥60 FPS at 2000 nodes) **passed**. Headroom remains for
 stages 3–5.
