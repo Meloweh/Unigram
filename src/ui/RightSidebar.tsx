@@ -401,12 +401,21 @@ function renderInner(
         Delete {isMulti ? `${nodes.length} nodes` : 'node'}
       </button>
 
-      <BehaviourFlags nodes={nodes} updateAll={updateAll} />
-      {selectedEdges.length > 0 && <ConnectionSelectionFlags edges={selectedEdges} />}
+      <BehaviourFlags
+        nodes={nodes}
+        updateAll={updateAll}
+        showCameraTracked={selectedEdges.length === 0}
+      />
+      {selectedEdges.length > 0 && (
+        <MixedSelectionCameraTrackingFlags
+          nodes={nodes}
+          edges={selectedEdges}
+          updateNodes={updateAll}
+        />
+      )}
 
       {!isMulti && <MpdSection node={nodes[0]} />}
       {!isMulti && <RmmSection node={nodes[0]} />}
-      {!isMulti && <LinkedNodesSection node={nodes[0]} />}
       {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
     </>
   )
@@ -749,6 +758,39 @@ function ConnectionSelectionFlags({ edges }: { edges: Connection[] }) {
   )
 }
 
+function MixedSelectionCameraTrackingFlags({
+  nodes,
+  edges,
+  updateNodes,
+}: {
+  nodes: ModelNode[]
+  edges: Connection[]
+  updateNodes: (patch: Partial<ModelNode>) => void
+}) {
+  const total = nodes.length + edges.length
+  const checkedCount =
+    nodes.filter((n) => n.cameraTracked === true).length +
+    edges.filter((e) => e.cameraTracked === true).length
+  const cameraTracked: boolean | 'mixed' =
+    checkedCount === total ? true : checkedCount > 0 ? 'mixed' : false
+  const updateAll = (v: boolean) => {
+    updateNodes({ cameraTracked: v || undefined })
+    for (const e of edges) {
+      useOmniStore.getState().updateEdge(e.id, { cameraTracked: v || undefined })
+    }
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Flow tracking</span>
+      <Checkbox
+        label="Tracked by camera"
+        checked={cameraTracked}
+        onChange={updateAll}
+      />
+    </div>
+  )
+}
+
 /**
  * Behavioural flags surfaced for selection (single or multi). Each flag
  * follows the legacy semantics:
@@ -763,9 +805,11 @@ function ConnectionSelectionFlags({ edges }: { edges: Connection[] }) {
 function BehaviourFlags({
   nodes,
   updateAll,
+  showCameraTracked = true,
 }: {
   nodes: ModelNode[]
   updateAll: (patch: Partial<ModelNode>) => void
+  showCameraTracked?: boolean
 }) {
   const allHave = (pick: (n: ModelNode) => boolean | undefined) => nodes.every((n) => !!pick(n))
   const someHave = (pick: (n: ModelNode) => boolean | undefined) => nodes.some((n) => !!pick(n))
@@ -790,11 +834,13 @@ function BehaviourFlags({
         checked={hideDuringFlow}
         onChange={(v) => updateAll({ hideDuringFlow: v || undefined })}
       />
-      <Checkbox
-        label="Tracked by camera"
-        checked={cameraTracked}
-        onChange={(v) => updateAll({ cameraTracked: v || undefined })}
-      />
+      {showCameraTracked && (
+        <Checkbox
+          label="Tracked by camera"
+          checked={cameraTracked}
+          onChange={(v) => updateAll({ cameraTracked: v || undefined })}
+        />
+      )}
     </div>
   )
 }
@@ -1122,36 +1168,6 @@ function MediaSection({ node }: { node: ModelNode }) {
           </Field>
         </>
       )}
-    </div>
-  )
-}
-
-/* ---- LinkedNodesSection -------------------------------------------------
- *
- * UI for parity item I — paired effect-graph editing. Lists the node's
- * symmetric link peers. The actual cross-graph
- * authoring lives inside FlowEffectEditor (which renders one column per
- * linked host once opened). "Add" is a one-click flow: the user toggles
- * `pickMode = 'link-node'` and the next selected node is paired.
- */
-function LinkedNodesSection({ node }: { node: ModelNode }) {
-  const links = node.linkedNodeIds ?? []
-  const allNodes = useOmniStore((s) => s.model.nodes)
-  // Hide the section entirely when nothing is linked — the empty-state
-  // copy was confusing because the only way to add a link is from inside
-  // the effect-graph editor (the inspector has no entry point).
-  if (links.length === 0) return null
-  const labelFor = (id: string) => allNodes.get(id)?.label || id
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Linked nodes (paired effects)</span>
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {links.map((peerId) => (
-          <li key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 14, color: 'var(--ug-text)' }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{labelFor(peerId)}</span>
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }

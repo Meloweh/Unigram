@@ -37,4 +37,29 @@ describe('TextFormatRunner', () => {
     runner.stop(n)
     expect(n.textFormats).toEqual([{ start: 6, end: 11, italic: true }])
   })
+
+  it('keeps multiple active text-format nodes composed independently', () => {
+    const n = node()
+    const runner = new TextFormatRunner()
+    runner.start(n, { startIndex: 0, endIndex: 5, bold: 1 }, 'first')
+    runner.start(n, { startIndex: 6, endIndex: 11, italic: 1 }, 'second')
+    expect(n.textFormats).toEqual([
+      { start: 0, end: 5, bold: true },
+      { start: 6, end: 11, italic: true },
+    ])
+    runner.stop(n, 'first')
+    expect(n.textFormats).toEqual([{ start: 6, end: 11, italic: true }])
+    runner.stop(n, 'second')
+    expect(n.textFormats).toBeUndefined()
+  })
+
+  it('adds legacy-style xy transforms for animated text formats', () => {
+    const n = node()
+    const runner = new TextFormatRunner()
+    runner.start(n, { startIndex: 0, endIndex: 5, animationStyle: 1, fontSize: 24 }, 'cloud')
+    runner.tick(new Map([[n.id, n]]), performance.now() + 100)
+    const fmt = n.textFormats?.[0]
+    expect(fmt?.fontSize).toBe(24)
+    expect(Math.abs(fmt?.offsetX ?? 0) + Math.abs(fmt?.offsetY ?? 0)).toBeGreaterThan(0)
+  })
 })

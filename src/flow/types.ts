@@ -63,7 +63,9 @@ export interface EffectNode {
    *  - color:            { tint, ms, permanent? }     (Pixi tint hex; permanent≠0 holds final tint)
    *  - jitter:           { intensity, ms }            (legacy-style random burst, screen px)
    *  - float:            { amp, ms, freq? }           (sinusoidal vertical hover; default freq 1 Hz)
-   *  - emerge:           { ms, fromScale? }           (scale + alpha 0→1; default fromScale 0)
+   *  - emerge:           { ms, fromScale?,            (scale + alpha 0→1; default fromScale 0.
+   *                         animation?, fromDx?,       animation=0 emerges from incoming source,
+   *                         fromDy? }                  animation=1 center scale, animation=2 fade)
    *  - dismiss:          { ms, toScale? }             (scale + alpha 1→0; default toScale 0)
   *  - cloud-levitate:   { ampX, ampY, rotAmp?, speed?, ms }
    *                                                    (prototype-style X/Y drift + sway)
@@ -138,6 +140,8 @@ export interface NodeOverride {
   tint?: number
   /** Render the target as two falling masked halves instead of one whole node. */
   breakApart?: BreakApartOverride
+  /** 0→1 while an emerge task is revealing this node; used by incoming edges. */
+  emergeProgress?: number
 }
 
 export interface BreakApartOverride {
@@ -158,6 +162,7 @@ export function mergeOverride(a: NodeOverride, b: NodeOverride): NodeOverride {
     // Tint composition is multiplicative per channel.
     tint: tintCombine(a.tint ?? 0xffffff, b.tint ?? 0xffffff),
     breakApart: b.breakApart ?? a.breakApart,
+    emergeProgress: b.emergeProgress ?? a.emergeProgress,
   }
 }
 

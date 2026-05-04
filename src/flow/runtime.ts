@@ -35,6 +35,8 @@ interface Task {
   durationMs: number
   /** Duration downstream tasks should wait after this task starts. */
   blockMs: number
+  /** Extra relative wall-clock gate, used by cross-effect links. */
+  notBefore: number
   /** ids of tasks this one waits on (nodes with edges into us). */
   dependsOn: string[]
   /** Set once `startAt` is computed (after dependsOn complete). */
@@ -63,16 +65,12 @@ interface Run {
   held: NodeOverride | null
   /** Held camera contribution (e.g. permanent `camera` task). */
   cameraHeld: CameraOverride | null
-  /**
-   * Per-task remaining repeats from `repeater` nodes. When > 0, completing
-   * the run rewinds and decrements; 0 means done; -1 means infinite.
-   */
-  repeatLeft: number
 }
 
 let RUN_COUNTER = 0
 const PHASE_CACHE_LIMIT = 4096
 const phaseCache = new Map<string, number>()
+const EMPTY_NOT_BEFORE: ReadonlyMap<string, number> = new Map()
 
 export class FlowRuntime {
   private runs = new Map<string, Run>()
@@ -85,13 +83,15 @@ export class FlowRuntime {
    * Side-effect bridge for kinds that touch external state the renderer
    * owns (currently only `text-generator`, which delegates to the
    * `TextGenRunner`). Optional — when unset, side-effect tasks no-op.
-   * `start` fires once per task when scheduled; `stop` fires on cancel,
-   * task end, or run drain.
+   * `start` fires once per task when scheduled. `stop` fires on cancel or
+   * run drain; most side-effect kinds also stop at task end. Text generation
+   * intentionally persists past task end so downstream generators can fill
+   * additional ranges before the flow cleans up.
    */
-  onTextGen: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
-  onTextGenStop: ((targetNodeId: string) => void) | null = null
-  onTextFormat: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
-  onTextFormatStop: ((targetNodeId: string) => void) | null = null
+  onTextGen: ((targetNodeId: string, params: Record<string, number>, effectNodeId: string) => void) | null = null
+  onTextGenStop: ((targetNodeId: string, effectNodeId: string) => void) | null = null
+  onTextFormat: ((targetNodeId: string, params: Record<string, number>, effectNodeId: string) => void) | null = null
+  onTextFormatStop: ((targetNodeId: string, effectNodeId: string) => void) | null = null
   /**
    * Recording side-effects — mirror the text-generator pattern. The renderer
    * owns the actual `MediaRecorder` / OBS-WebSocket session; the runtime only
@@ -123,7 +123,12 @@ export class FlowRuntime {
   onSpawnCircularStop: ((targetNodeId: string, effectNodeId: string) => void) | null = null
 
   /** Returns the run id, or null if the graph was empty / cyclic. */
-  start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
+  start(
+    targetNodeId: string,
+    effect: FlowEffect,
+    now: number,
+    notBefore: ReadonlyMap<string, number> = EMPTY_NOT_BEFORE,
+  ): string | null {
     const { nodes, edges } = effect.graph
     if (nodes.length === 0) return null
     const repeaterTasks = nodes.some((n) => n.kind === 'repeater' && edges.some((e) => e.from === n.id && e.fromPort === 'circuit'))
@@ -142,7 +147,6 @@ export class FlowRuntime {
         loop: effect.alwaysPlay === true,
         held: null,
         cameraHeld: null,
-        repeatLeft: 0,
       })
       return runId
     }
@@ -180,21 +184,13 @@ export class FlowRuntime {
         startAt: 0,
         durationMs: durationOf(n),
         blockMs: blockDurationOf(n),
+        notBefore: Math.max(0, notBefore.get(n.id) ?? 0),
         dependsOn: incoming.get(n.id) ?? [],
         scheduled: false,
         endedAt: -1,
       })
     }
     const runId = `run_${++RUN_COUNTER}`
-    // Sum repeats across all `repeater` nodes; -1 (infinite) wins.
-    let repeatLeft = 0
-    for (const n of nodes) {
-      if (n.kind === 'repeater') {
-        const t = (n.params.repeatCount ?? n.params.times ?? 0) | 0
-        if (t < 0) { repeatLeft = -1; break }
-        repeatLeft += t
-      }
-    }
     this.runs.set(runId, {
       id: runId,
       targetNodeId,
@@ -205,7 +201,6 @@ export class FlowRuntime {
       loop: effect.alwaysPlay === true,
       held: null,
       cameraHeld: null,
-      repeatLeft,
     })
     return runId
   }
@@ -247,12 +242,11 @@ export class FlowRuntime {
           }
         }
         if (anyAlive) break
-        if (!run.loop && run.repeatLeft === 0) {
+        if (!run.loop) {
           this.fireSideEffectStops(run)
           this.runs.delete(id)
           break
         }
-        if (run.repeatLeft > 0) run.repeatLeft -= 1
         // Rewind: bump start time by total cycle length and clear task state.
         let cycle = 0
         for (const t of run.tasks.values()) {
@@ -311,7 +305,7 @@ export class FlowRuntime {
           if (depEnd > latestEnd) latestEnd = depEnd
         }
         if (allReady) {
-          t.startAt = latestEnd + delayOf(t.node)
+          t.startAt = Math.max(latestEnd + delayOf(t.node), t.notBefore)
           t.scheduled = true
           progressed = true
         }
@@ -323,6 +317,8 @@ export class FlowRuntime {
     //    into `run.held` and merged each subsequent tick (cancellation still
     //    drops everything since the run leaves the runtime).
     let merged: NodeOverride | null = run.held
+    const preEmerge = preEmergeHold(run, elapsed, run.targetNodeId)
+    if (preEmerge) merged = merged ? mergeOverride(merged, preEmerge) : preEmerge
     let cameraMerged: CameraOverride | null = run.cameraHeld
     for (const t of run.tasks.values()) {
       if (!t.scheduled) continue
@@ -330,13 +326,14 @@ export class FlowRuntime {
       if (elapsed >= taskEnd) {
         if (t.endedAt < 0) {
           t.endedAt = taskEnd
-          // Side-effect tasks: fire stop on completion.
+          // Side-effect tasks: fire stop on completion. Text generation is
+          // the exception: generated spans persist until the whole run drains
+          // or is cancelled so downstream effects can build on them.
           if (t.node.kind === 'text-generator' && t.sideEffectFired) {
-            this.onTextGenStop?.(run.targetNodeId)
-            t.sideEffectFired = false
+            // Keep sideEffectFired true for fireSideEffectStops().
           } else if (t.node.kind === 'text-format' && t.sideEffectFired) {
             if (!shouldKeepPlaying(t.node)) {
-              this.onTextFormatStop?.(run.targetNodeId)
+              this.onTextFormatStop?.(run.targetNodeId, t.node.id)
               t.sideEffectFired = false
             }
           } else if (t.node.kind === 'record' && t.sideEffectFired) {
@@ -398,12 +395,12 @@ export class FlowRuntime {
         // Side-effect: fire start exactly once when the task becomes active.
         if (!t.sideEffectFired) {
           t.sideEffectFired = true
-          this.onTextGen?.(run.targetNodeId, t.node.params)
+          this.onTextGen?.(run.targetNodeId, t.node.params, t.node.id)
         }
       } else if (t.node.kind === 'text-format') {
         if (!t.sideEffectFired) {
           t.sideEffectFired = true
-          this.onTextFormat?.(run.targetNodeId, t.node.params)
+          this.onTextFormat?.(run.targetNodeId, t.node.params, t.node.id)
         }
       } else if (t.node.kind === 'record') {
         if (!t.sideEffectFired) {
@@ -441,7 +438,7 @@ export class FlowRuntime {
         }
       }
     }
-    if (!run.loop && run.repeatLeft === 0 && !runHasUnfinishedTasks(run)) return
+    if (!run.loop && !runHasUnfinishedTasks(run)) return
     if (merged) {
       const cur = this.overrides.get(run.targetNodeId)
       this.overrides.set(
@@ -464,8 +461,8 @@ export class FlowRuntime {
   private fireSideEffectStops(run: Run): void {
     for (const t of run.tasks.values()) {
       if (!t.sideEffectFired) continue
-      if (t.node.kind === 'text-generator') this.onTextGenStop?.(run.targetNodeId)
-      else if (t.node.kind === 'text-format') this.onTextFormatStop?.(run.targetNodeId)
+      if (t.node.kind === 'text-generator') this.onTextGenStop?.(run.targetNodeId, t.node.id)
+      else if (t.node.kind === 'text-format') this.onTextFormatStop?.(run.targetNodeId, t.node.id)
       else if (t.node.kind === 'record') this.onRecordStop?.(run.targetNodeId)
       else if (t.node.kind === 'obs-record') this.onObsRecordStop?.(run.targetNodeId)
       else if (t.node.kind === 'spawn') this.onSpawnStop?.(run.targetNodeId, t.node.id)
@@ -481,6 +478,16 @@ function runHasUnfinishedTasks(run: Run): boolean {
   return false
 }
 
+function preEmergeHold(run: Run, elapsed: number, targetNodeId: string): NodeOverride | null {
+  let next: Task | null = null
+  for (const t of run.tasks.values()) {
+    if (t.node.kind !== 'emerge' || !t.scheduled || t.endedAt >= 0) continue
+    if (elapsed >= t.startAt) return null
+    if (!next || t.startAt < next.startAt) next = t
+  }
+  return next ? contribution(next.node, 0, 0, targetNodeId) : null
+}
+
 function buildRepeaterTasks(nodes: EffectNode[], edges: EffectEdge[]): Map<string, Task> | null {
   const byId = new Map<string, EffectNode>()
   const outgoing = new Map<string, EffectEdge[]>()
@@ -493,41 +500,34 @@ function buildRepeaterTasks(nodes: EffectNode[], edges: EffectEdge[]): Map<strin
   for (const e of edges) {
     if (!byId.has(e.from) || !byId.has(e.to)) continue
     outgoing.get(e.from)?.push(e)
-    incomingCount.set(e.to, (incomingCount.get(e.to) ?? 0) + 1)
+    if ((e.toPort ?? 'default') !== 'circuit') {
+      incomingCount.set(e.to, (incomingCount.get(e.to) ?? 0) + 1)
+    }
   }
 
-  let frontier = nodes.filter((n) => (incomingCount.get(n.id) ?? 0) === 0).map((n) => n.id)
+  type FrontierItem = { id: string; inPort: EffectEdge['toPort'] }
+  let frontier: FrontierItem[] = nodes
+    .filter((n) => (incomingCount.get(n.id) ?? 0) === 0)
+    .map((n) => ({ id: n.id, inPort: 'default' }))
   if (frontier.length === 0) {
     const entry = nodes.find((n) => n.id === '__entry__')
     const repeater = nodes.find((n) => n.kind === 'repeater')
-    frontier = [entry?.id ?? repeater?.id ?? nodes[0]?.id].filter(Boolean) as string[]
+    const id = entry?.id ?? repeater?.id ?? nodes[0]?.id
+    frontier = id ? [{ id, inPort: 'default' }] : []
   }
   if (frontier.length === 0) return new Map()
 
-  const visited = new Set(frontier)
   const repeaterCounters = new Map<string, number>()
   const tasks = new Map<string, Task>()
   let delay = 0
   let seq = 0
   let safety = 0
 
-  const clearCircuitPath = (startIds: string[], repeaterId: string) => {
-    const q = [...startIds]
-    const seen = new Set<string>()
-    while (q.length > 0) {
-      const id = q.shift()!
-      if (id === repeaterId || seen.has(id)) continue
-      seen.add(id)
-      visited.delete(id)
-      for (const e of outgoing.get(id) ?? []) q.push(e.to)
-    }
-    visited.delete(repeaterId)
-  }
-
   while (frontier.length > 0 && safety++ < 10000) {
-    const next: string[] = []
+    const next: FrontierItem[] = []
     let layerMax = 0
-    for (const id of frontier) {
+    for (const item of frontier) {
+      const id = item.id
       const node = byId.get(id)
       if (!node) continue
       const startAt = delay + delayOf(node)
@@ -538,6 +538,7 @@ function buildRepeaterTasks(nodes: EffectNode[], edges: EffectEdge[]): Map<strin
         startAt,
         durationMs: durationOf(node),
         blockMs: blockDurationOf(node),
+        notBefore: 0,
         dependsOn: [],
         scheduled: true,
         endedAt: -1,
@@ -545,24 +546,25 @@ function buildRepeaterTasks(nodes: EffectNode[], edges: EffectEdge[]): Map<strin
       layerMax = Math.max(layerMax, delayOf(node) + blockDurationOf(node))
 
       const outs = outgoing.get(id) ?? []
-      let targets: string[]
+      let targets: EffectEdge[]
       if (node.kind === 'repeater') {
-        const count = (repeaterCounters.get(id) ?? 0) + 1
-        repeaterCounters.set(id, count)
         const repeatCount = Math.max(0, Math.floor(node.params.repeatCount ?? node.params.times ?? 3))
-        if (count <= repeatCount) {
-          targets = outs.filter((e) => e.fromPort === 'circuit').map((e) => e.to)
-          clearCircuitPath(targets, id)
+        if ((item.inPort ?? 'default') === 'circuit') {
+          const completed = (repeaterCounters.get(id) ?? 0) + 1
+          repeaterCounters.set(id, completed)
+          targets = outs.filter((e) => (e.fromPort ?? 'default') === (completed < repeatCount ? 'circuit' : 'default'))
         } else {
-          targets = outs.filter((e) => (e.fromPort ?? 'default') !== 'circuit').map((e) => e.to)
+          const alreadyStarted = repeaterCounters.has(id)
+          if (!alreadyStarted) repeaterCounters.set(id, 0)
+          targets = outs.filter((e) =>
+            (e.fromPort ?? 'default') === (!alreadyStarted && repeatCount > 0 ? 'circuit' : 'default'),
+          )
         }
       } else {
-        targets = outs.map((e) => e.to)
+        targets = outs
       }
       for (const target of targets) {
-        if (visited.has(target)) continue
-        visited.add(target)
-        next.push(target)
+        next.push({ id: target.to, inPort: target.toPort ?? 'default' })
       }
     }
     delay += layerMax
@@ -612,16 +614,33 @@ function blockDurationOf(n: EffectNode): number {
   return waits ? durationOf(n) : 0
 }
 
-export function estimateFlowEffectDuration(effect: FlowEffect): number {
+export interface FlowEffectTiming {
+  startAt: number
+  endAt: number
+  blockEndAt: number
+}
+
+export function scheduleFlowEffect(
+  effect: FlowEffect,
+  notBefore: ReadonlyMap<string, number> = EMPTY_NOT_BEFORE,
+): Map<string, FlowEffectTiming> {
   const { nodes, edges } = effect.graph
-  if (nodes.length === 0) return 0
+  const timings = new Map<string, FlowEffectTiming>()
+  if (nodes.length === 0) return timings
   if (nodes.some((n) => n.kind === 'repeater' && edges.some((e) => e.from === n.id && e.fromPort === 'circuit'))) {
     const tasks = buildRepeaterTasks(nodes, edges)
-    if (!tasks) return 0
-    let maxEnd = 0
-    for (const t of tasks.values()) maxEnd = Math.max(maxEnd, t.startAt + durationOf(t.node))
-    return maxEnd
+    if (!tasks) return timings
+    for (const t of tasks.values()) {
+      timings.set(t.node.id, {
+        startAt: t.startAt,
+        endAt: t.startAt + durationOf(t.node),
+        blockEndAt: t.startAt + blockDurationOf(t.node),
+      })
+    }
+    return timings
   }
+
+  const byId = new Map(nodes.map((n) => [n.id, n]))
   const incoming = new Map<string, string[]>()
   const dependents = new Map<string, string[]>()
   for (const n of nodes) {
@@ -646,10 +665,9 @@ export function estimateFlowEffectDuration(effect: FlowEffect): number {
       if (left === 0) queue.push(dep)
     }
   }
-  if (visited !== nodes.length) return 0
+  if (visited !== nodes.length) return new Map()
 
   const scheduled = new Set<string>()
-  const startAt = new Map<string, number>()
   let progressed = true
   while (progressed) {
     progressed = false
@@ -662,19 +680,28 @@ export function estimateFlowEffectDuration(effect: FlowEffect): number {
           allReady = false
           break
         }
-        const dep = nodes.find((candidate) => candidate.id === depId)
-        if (dep) latestEnd = Math.max(latestEnd, (startAt.get(depId) ?? 0) + blockDurationOf(dep))
+        const dep = byId.get(depId)
+        if (dep) latestEnd = Math.max(latestEnd, timings.get(depId)!.blockEndAt)
       }
       if (allReady) {
-        startAt.set(n.id, latestEnd + delayOf(n))
+        const startAt = Math.max(latestEnd + delayOf(n), Math.max(0, notBefore.get(n.id) ?? 0))
+        timings.set(n.id, {
+          startAt,
+          endAt: startAt + durationOf(n),
+          blockEndAt: startAt + blockDurationOf(n),
+        })
         scheduled.add(n.id)
         progressed = true
       }
     }
   }
-  if (scheduled.size !== nodes.length) return 0
+  return scheduled.size === nodes.length ? timings : new Map()
+}
+
+export function estimateFlowEffectDuration(effect: FlowEffect): number {
+  const timings = scheduleFlowEffect(effect)
   let maxEnd = 0
-  for (const n of nodes) maxEnd = Math.max(maxEnd, (startAt.get(n.id) ?? 0) + durationOf(n))
+  for (const timing of timings.values()) maxEnd = Math.max(maxEnd, timing.endAt)
   return maxEnd
 }
 
@@ -749,11 +776,22 @@ function contribution(
       return { dy: Math.sin(t * 2 * Math.PI * freq) * amp }
     }
     case 'emerge': {
-      // Alpha + scale 0→1 (or fromScale→1).
+      // Alpha + scale 0→1 (or fromScale→1). When the renderer provides
+      // `fromDx/fromDy`, animation=0 moves the node out from its incoming
+      // flow source; animation=1 scales from its own centre; animation=2
+      // fades the node in without scaling.
+      const animation = Math.round(n.params.animation ?? 0)
       const fromScale = n.params.fromScale ?? 0
+      const sourceDx = n.params.fromDx ?? 0
+      const sourceDy = n.params.fromDy ?? 0
+      const hasSource = (n.params.hasSource ?? 0) !== 0
+      const t = animation === 0 && hasSource ? easeOutCubic(ratio) : ratio
       return {
+        dx: animation === 0 && hasSource ? sourceDx * (1 - t) : 0,
+        dy: animation === 0 && hasSource ? sourceDy * (1 - t) : 0,
         alphaMul: ratio,
-        scaleMul: fromScale + (1 - fromScale) * ratio,
+        scaleMul: animation === 2 ? 1 : fromScale + (1 - fromScale) * t,
+        emergeProgress: t,
       }
     }
     case 'dismiss': {
@@ -921,4 +959,8 @@ function quantizedCycles(rawCycles: number, quantum: number): number {
 
 function easeInCubic(t: number): number {
   return t * t * t
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3
 }

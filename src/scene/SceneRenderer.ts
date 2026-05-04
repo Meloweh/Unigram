@@ -29,7 +29,7 @@ import { shapeEdgeIntersect } from './shapeIntersect'
 import { pulse01 } from './anim'
 import { createInitialSnapshot, type HybridZoomSnapshot } from '../zoom/hybridZoom'
 import { ParticleLayer } from '../theme/ParticleLayer'
-import { estimateFlowEffectDuration, FlowRuntime } from '../flow/runtime'
+import { estimateFlowEffectDuration, FlowRuntime, scheduleFlowEffect } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import { TextFormatRunner } from '../flow/TextFormatRunner'
@@ -382,7 +382,7 @@ export class SceneRenderer {
     // Bridge text-generator side-effects from the FlowRuntime to the local
     // TextGenRunner so the `'text-generator'` flow effect kind drives the
     // same reveal pipeline that the legacy stand-alone control used.
-    this.flow.onTextGen = (targetId, params) => {
+    this.flow.onTextGen = (targetId, params, effectNodeId) => {
       const node = this.model.nodes.get(targetId)
       if (!node) return
       const config: TextGenConfig = {
@@ -395,25 +395,25 @@ export class SceneRenderer {
         endIndex: params.endIndex ?? -1,
         degenerationMs: Math.max(0, params.degenerationMs ?? 0),
       }
-      this.textGen.start(node, config, performance.now())
+      this.textGen.start(node, config, performance.now(), effectNodeId)
       this.dirty = true
     }
-    this.flow.onTextGenStop = (targetId) => {
+    this.flow.onTextGenStop = (targetId, effectNodeId) => {
       const node = this.model.nodes.get(targetId)
       if (!node) return
-      this.textGen.stop(node)
+      this.textGen.stop(node, effectNodeId)
       this.dirty = true
     }
-    this.flow.onTextFormat = (targetId, params) => {
+    this.flow.onTextFormat = (targetId, params, effectNodeId) => {
       const node = this.model.nodes.get(targetId)
       if (!node) return
-      this.textFormat.start(node, params)
+      this.textFormat.start(node, params, effectNodeId)
       this.dirty = true
     }
-    this.flow.onTextFormatStop = (targetId) => {
+    this.flow.onTextFormatStop = (targetId, effectNodeId) => {
       const node = this.model.nodes.get(targetId)
       if (!node) return
-      this.textFormat.stop(node)
+      this.textFormat.stop(node, effectNodeId)
       this.dirty = true
     }
     // Bridge `record` flow kind to MediaRecorder. `targetId` is the node
@@ -739,7 +739,7 @@ export class SceneRenderer {
    */
   playFlowEffect(targetNodeId: string, effect: FlowEffect): string | null {
     const startedAt = performance.now()
-    const runId = this.flow.start(targetNodeId, effect, startedAt)
+    const runId = this.flow.start(targetNodeId, this.effectWithEmergeContext(targetNodeId, effect), startedAt)
     const node = this.model.nodes.get(targetNodeId)
     for (const peerId of node?.linkedNodeIds ?? []) {
       // Only fire on the peer if it doesn't already host this effect by id;
@@ -748,7 +748,7 @@ export class SceneRenderer {
       if (!peer) continue
       const owns = (peer.flowEffects ?? []).some((e) => e.id === effect.id)
       if (owns) continue
-      this.flow.start(peerId, effect, startedAt)
+      this.flow.start(peerId, this.effectWithEmergeContext(peerId, effect), startedAt)
     }
     return runId
   }
@@ -814,65 +814,123 @@ export class SceneRenderer {
       }
     }
 
-    // 2. For every reachable node, schedule the halo + start its one-shot
-    //    effects at the computed arrival time. The runtime treats a future
-    //    `startedAt` as a deferred start (elapsed < 0 → no contribution
-    //    until the clock catches up).
-    //
-    //    Linked-peer parity (Tier 3 I): when a node fires, every node in
-    //    its `linkedNodeIds` glows in lock-step. We schedule the same
-    //    halo + effect runs on the peer at the same `arriveAt` so the
-    //    pair is visually inseparable. Wires are NOT mirrored — only the
-    //    DAG topology drives wire reveal.
-    //
-    //    Cross-links (`model.crossLinks`): when a host A fires an effect
-    //    with id E1, any cross-link `{from:{A,E1}, to:{B,E2}}` triggers
-    //    B's effect E2 at the same arriveAt. This lets users compose
-    //    multi-host effect graphs from the editor.
-    const crossIndex = new Map<string, Array<{ nodeId: string; effectId: string }>>()
+    // 2. Build an effect-run plan. Cross-links are task-level gates: the
+    //    target effect can be scheduled with its host, but the specific
+    //    effect node behind the cross-connection cannot begin until the
+    //    source effect node reaches its own block/end point.
+    const crossIndex = new Map<string, CrossEffectLink[]>()
     for (const link of this.model.crossLinks ?? []) {
       const key = `${link.from.nodeId}:${link.from.effectId}`
       let list = crossIndex.get(key)
       if (!list) { list = []; crossIndex.set(key, list) }
-      list.push(link.to)
+      list.push(link)
     }
-    const fireOnce = (nodeId: string, arriveAt: number, depth = 0) => {
-      // Depth-cap guards against pathological cross-link cycles (A.E1 →
-      // B.E2 → A.E1). The runtime would also drop duplicate runs but the
-      // wasted scheduling is avoided here.
+
+    interface PlannedEffectRun {
+      nodeId: string
+      effect: FlowEffect
+      startAt: number
+      gates: Map<string, number>
+    }
+    const planned = new Map<string, PlannedEffectRun>()
+    const planKey = (nodeId: string, effectId: string) => `${nodeId}:${effectId}`
+    const addPlan = (
+      nodeId: string,
+      effect: FlowEffect,
+      startAt: number,
+      gate?: { effectNodeId?: string; notBeforeAbs: number },
+    ): boolean => {
+      const key = planKey(nodeId, effect.id)
+      let p = planned.get(key)
+      let changedPlan = false
+      if (!p) {
+        p = { nodeId, effect, startAt, gates: new Map() }
+        planned.set(key, p)
+        changedPlan = true
+      } else if (startAt < p.startAt) {
+        p.startAt = startAt
+        changedPlan = true
+      }
+      if (gate?.effectNodeId) {
+        const prev = p.gates.get(gate.effectNodeId)
+        if (prev === undefined || gate.notBeforeAbs > prev) {
+          p.gates.set(gate.effectNodeId, gate.notBeforeAbs)
+          changedPlan = true
+        }
+      }
+      return changedPlan
+    }
+    const scheduleHost = (nodeId: string, arriveAt: number, depth = 0) => {
       if (depth > 8) return
       const node = this.model.nodes.get(nodeId)
       if (!node) return
-      const nodeDuration = this.oneShotFlowDuration(nodeId)
-      this.playActiveNodes.set(nodeId, { startMs: arriveAt, durMs: Math.max(NODE_HALO_MS, nodeDuration + 250) })
+      const crossLinkedPeerEffects = new Set<string>()
       for (const eff of node.flowEffects ?? []) {
         if (eff.alwaysPlay) continue
-        const runId = this.flow.start(nodeId, eff, arriveAt)
-        if (runId) { this.playRuns.add(runId); started++ }
-        // Cross-link fan-out: schedule paired effects on partner hosts.
-        const targets = crossIndex.get(`${nodeId}:${eff.id}`)
-        if (targets) {
-          for (const t of targets) {
-            const peer = this.model.nodes.get(t.nodeId)
-            if (!peer) continue
-            const peerEff = (peer.flowEffects ?? []).find((e) => e.id === t.effectId)
-            if (!peerEff || peerEff.alwaysPlay) continue
-            const peerDuration = this.oneShotFlowDuration(t.nodeId)
-            this.playActiveNodes.set(t.nodeId, { startMs: arriveAt, durMs: Math.max(NODE_HALO_MS, peerDuration + 250) })
-            const peerRunId = this.flow.start(t.nodeId, peerEff, arriveAt)
-            if (peerRunId) { this.playRuns.add(peerRunId); started++ }
-          }
+        addPlan(nodeId, this.effectWithEmergeContext(nodeId, eff), arriveAt)
+        for (const link of crossIndex.get(planKey(nodeId, eff.id)) ?? []) {
+          crossLinkedPeerEffects.add(planKey(link.to.nodeId, link.to.effectId))
         }
       }
-      // Linked-peer fan-out (whole-effect mirror).
       for (const peerId of node.linkedNodeIds ?? []) {
-        if (arrival.has(peerId)) continue // already scheduled by the DAG walk
-        if (this.playActiveNodes.has(peerId)) continue // already mirrored
-        fireOnce(peerId, arriveAt, depth + 1)
+        if (arrival.has(peerId)) continue
+        const peer = this.model.nodes.get(peerId)
+        if (!peer) continue
+        for (const eff of peer.flowEffects ?? []) {
+          if (crossLinkedPeerEffects.has(planKey(peerId, eff.id))) continue
+          if (!eff.alwaysPlay) addPlan(peerId, this.effectWithEmergeContext(peerId, eff), arriveAt)
+        }
       }
     }
     for (const [id, arriveAt] of arrival) {
-      fireOnce(id, arriveAt)
+      scheduleHost(id, arriveAt)
+    }
+
+    let changedPlans = true
+    let planPass = 0
+    while (changedPlans && planPass++ < 32) {
+      changedPlans = false
+      for (const p of [...planned.values()]) {
+        const relGates = absoluteGatesToRelative(p.gates, p.startAt)
+        const timings = scheduleFlowEffect(p.effect, relGates)
+        const links = crossIndex.get(planKey(p.nodeId, p.effect.id)) ?? []
+        for (const link of links) {
+          const sourceId = link.from.effectNodeId
+          const sourceTiming = sourceId ? timings.get(sourceId) : undefined
+          const triggerAt = p.startAt + (sourceTiming?.blockEndAt ?? 0)
+          const target = this.model.nodes.get(link.to.nodeId)
+          if (!target) continue
+          const targetEffect = (target.flowEffects ?? []).find((e) => e.id === link.to.effectId)
+          if (!targetEffect || targetEffect.alwaysPlay) continue
+          const targetStart = arrival.get(link.to.nodeId) ?? triggerAt
+          if (addPlan(link.to.nodeId, this.effectWithEmergeContext(link.to.nodeId, targetEffect), targetStart, {
+            effectNodeId: link.to.effectNodeId,
+            notBeforeAbs: triggerAt,
+          })) {
+            changedPlans = true
+          }
+        }
+      }
+    }
+
+    const setHalo = (nodeId: string, startMs: number, durMs: number) => {
+      const existing = this.playActiveNodes.get(nodeId)
+      if (!existing) {
+        this.playActiveNodes.set(nodeId, { startMs, durMs })
+        return
+      }
+      const start = Math.min(existing.startMs, startMs)
+      const end = Math.max(existing.startMs + existing.durMs, startMs + durMs)
+      this.playActiveNodes.set(nodeId, { startMs: start, durMs: end - start })
+    }
+    for (const p of planned.values()) {
+      const relGates = absoluteGatesToRelative(p.gates, p.startAt)
+      const timings = scheduleFlowEffect(p.effect, relGates)
+      let duration = estimateFlowEffectDuration(p.effect)
+      for (const t of timings.values()) duration = Math.max(duration, t.endAt)
+      setHalo(p.nodeId, p.startAt, Math.max(NODE_HALO_MS, duration + 250))
+      const runId = this.flow.start(p.nodeId, p.effect, p.startAt, relGates)
+      if (runId) { this.playRuns.add(runId); started++ }
     }
 
     // 3. Schedule wire reveals at the parent's arrival (wire fires as the
@@ -900,6 +958,41 @@ export class SceneRenderer {
       duration = Math.max(duration, estimateFlowEffectDuration(eff))
     }
     return duration
+  }
+
+  private effectWithEmergeContext(targetNodeId: string, effect: FlowEffect): FlowEffect {
+    if (!effect.graph.nodes.some((n) => n.kind === 'emerge')) return effect
+    const target = this.model.nodes.get(targetNodeId)
+    const source = this.emergeSourceFor(targetNodeId)
+    const fromDx = target && source ? source.x - target.x : 0
+    const fromDy = target && source ? source.y - target.y : 0
+    const hasSource = target && source ? 1 : 0
+    return {
+      ...effect,
+      graph: {
+        ...effect.graph,
+        nodes: effect.graph.nodes.map((n) => {
+          if (n.kind !== 'emerge') return n
+          return {
+            ...n,
+            params: {
+              ...n.params,
+              fromDx,
+              fromDy,
+              hasSource,
+            },
+          }
+        }),
+      },
+    }
+  }
+
+  private emergeSourceFor(targetNodeId: string): ModelNode | null {
+    for (const edge of this.model.edges.values()) {
+      if (edge.to !== targetNodeId || !edgeParticipatesInFlow(edge)) continue
+      return this.model.nodes.get(edge.from) ?? null
+    }
+    return null
   }
 
   /** Cancel every run started by `playFlowFromNode` and clear the cascade. */
@@ -967,7 +1060,7 @@ export class SceneRenderer {
         const key = `${n.id}::${e.id}`
         seen.add(key)
         if (this.alwaysPlayRuns.has(key)) continue
-        const runId = this.flow.start(n.id, e, now)
+        const runId = this.flow.start(n.id, this.effectWithEmergeContext(n.id, e), now)
         if (runId) this.alwaysPlayRuns.set(key, runId)
       }
     }
@@ -1381,6 +1474,7 @@ export class SceneRenderer {
         if (now < halo.startMs) continue
         const node = this.model.nodes.get(id)
         if (!node) continue
+        if (node.cameraTracked !== true) continue
         if (!leader || halo.startMs > leader.startMs) {
           const visual = this.visualNode(node)
           const cxPx = (visual.x / 100) * SCENE_W
@@ -1394,6 +1488,7 @@ export class SceneRenderer {
         if (now < w.startMs || now > w.startMs + w.durMs) continue
         const edge = this.model.edges.get(edgeId)
         if (!edge) continue
+        if (edge.cameraTracked !== true) continue
         const from = this.model.nodes.get(edge.from)
         const to = this.model.nodes.get(edge.to)
         if (!from || !to) continue
@@ -1569,7 +1664,7 @@ export class SceneRenderer {
       let override = this.flow.getOverride(id)
       // Behavioural flag: nodes flagged `hideDuringFlow` go invisible while
       // any flow effect is running on the diagram.
-      if (flowActive && n.hideDuringFlow) {
+      if (flowActive && n.hideDuringFlow && !nodeHasEmergeEffect(n)) {
         override = override
           ? { ...override, alphaMul: 0 }
           : { alphaMul: 0 }
@@ -1603,7 +1698,14 @@ export class SceneRenderer {
       const to = this.model.nodes.get(e.to)
       if (!from || !to) continue
       if (this.isEdgeHiddenBySpawnState(e, from, to, flowPlaybackActive)) continue
-      this.edgePool.acquire(e, this.visualNode(from), this.visualNode(to), this.edgeRevealFor(e.id))
+      const emergeProgress = this.edgeEmergeProgress(e)
+      this.edgePool.acquire(
+        e,
+        this.visualNode(from),
+        emergeProgress != null && emergeProgress < 0.999 ? to : this.visualNode(to),
+        this.edgeRevealFor(e.id),
+        emergeProgress,
+      )
       visibleEdges.add(e.id)
     }
     // Release edges whose endpoints are no longer near view.
@@ -1652,6 +1754,12 @@ export class SceneRenderer {
       hPx: metrics.h / scale,
       progress: metrics.progress,
     }
+  }
+
+  private edgeEmergeProgress(edge: Connection): number | null {
+    if (!edgeParticipatesInFlow(edge)) return null
+    const progress = this.flow.getOverride(edge.to)?.emergeProgress
+    return progress == null ? null : Math.max(0, Math.min(1, progress))
   }
 
   private drawSelectionAndOverlays(): void {
@@ -1815,17 +1923,33 @@ export class SceneRenderer {
       const dy = by - ay
       const len = Math.hypot(dx, dy)
       if (len > 1e-3) {
-        const ux = dx / len
-        const uy = dy / len
-        const gap = Math.min(72, Math.max(30, len * 0.12))
-        const mx = (ax + bx) / 2
-        const my = (ay + by) / 2
-        const px = -uy * 8
-        const py = ux * 8
-        g.moveTo(ax, ay).lineTo(mx - ux * gap + px, my - uy * gap + py)
-        g.moveTo(mx + ux * gap - px, my + uy * gap - py).lineTo(bx, by)
+        const aHw = ((av.w / 100) * SCENE_W) / 2
+        const aHh = ((av.h / 100) * SCENE_H) / 2
+        const bHw = ((bv.w / 100) * SCENE_W) / 2
+        const bHh = ((bv.h / 100) * SCENE_H) / 2
+        const aEdge = shapeEdgeIntersect(av.shape, aHw, aHh, dx, dy)
+        const bEdge = shapeEdgeIntersect(bv.shape, bHw, bHh, -dx, -dy)
+        const sx = ax + aEdge.x
+        const sy = ay + aEdge.y
+        const tx = bx + bEdge.x
+        const ty = by + bEdge.y
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 260 + len * 0.006)
+        g.moveTo(sx, sy).lineTo(tx, ty)
+        g.stroke({ color: 0x7bc7ff, width: baseW + 14, alpha: 0.12 + pulse * 0.05, alignment: 0.5 })
+        g.moveTo(sx, sy).lineTo(tx, ty)
+        g.stroke({ color: RING_COLOR, width: baseW + 7, alpha: 0.55, alignment: 0.5 })
+        g.moveTo(sx, sy).lineTo(tx, ty)
+        g.stroke({ color: 0xe8f6ff, width: Math.max(2, baseW + 1.5), alpha: 0.9, alignment: 0.5 })
+        const beadR = Math.max(4, Math.min(8, baseW + 4))
+        g.circle(sx, sy, beadR)
+        g.fill({ color: RING_COLOR, alpha: 0.28 })
+        g.circle(tx, ty, beadR)
+        g.fill({ color: RING_COLOR, alpha: 0.28 })
+        g.circle(sx, sy, beadR * 0.46)
+        g.fill({ color: 0xe8f6ff, alpha: 0.9 })
+        g.circle(tx, ty, beadR * 0.46)
+        g.fill({ color: 0xe8f6ff, alpha: 0.9 })
       }
-      g.stroke({ color: RING_COLOR, width: baseW + 6, alpha: 0.4, alignment: 0.5 })
       edgeUsed++
     }
     for (let i = edgeUsed; i < this.selectionGfxPool.length; i++) {
@@ -2672,6 +2796,16 @@ function resizeHandlesFor(n: ModelNode): Array<{ dir: ResizeHandleDir; x: number
 
 function edgeParticipatesInFlow(e: Connection): boolean {
   return e.kind === 'flow' || e.cameraTracked === true
+}
+
+function nodeHasEmergeEffect(node: ModelNode): boolean {
+  return (node.flowEffects ?? []).some((effect) => effect.graph.nodes.some((n) => n.kind === 'emerge'))
+}
+
+function absoluteGatesToRelative(gates: ReadonlyMap<string, number>, startAt: number): Map<string, number> {
+  const rel = new Map<string, number>()
+  for (const [id, abs] of gates) rel.set(id, Math.max(0, abs - startAt))
+  return rel
 }
 
 /** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by). */

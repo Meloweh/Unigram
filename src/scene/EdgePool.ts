@@ -42,6 +42,7 @@ const keyOf = (
   from: ModelNode,
   to: ModelNode,
   revealGap: EdgeRevealGap | null,
+  emergeProgress: number | null,
 ): string =>
   `${from.x},${from.y},${from.w},${from.h},${from.shape}|` +
   `${from.cosmeticType ?? ''},${from.tipAngle ?? ''},${from.tipLength ?? ''}|` +
@@ -49,7 +50,8 @@ const keyOf = (
   `${to.cosmeticType ?? ''},${to.tipAngle ?? ''},${to.tipLength ?? ''}|` +
   `${e.color}|${e.width}|${e.kind ?? 'default'}|${e.dash ?? 'solid'}|` +
   `${e.arrowStyle ?? 'standard'}|${e.label ?? ''}|${e.labelFontSize ?? 0}|` +
-  `${revealGap ? `${revealGap.wPx.toFixed(1)},${revealGap.hPx.toFixed(1)},${revealGap.progress.toFixed(3)}` : '0'}`
+  `${revealGap ? `${revealGap.wPx.toFixed(1)},${revealGap.hPx.toFixed(1)},${revealGap.progress.toFixed(3)}` : '0'}|` +
+  `${emergeProgress == null ? 'full' : emergeProgress.toFixed(3)}`
 
 /** Visual size of the arrow head, in scene pixels. */
 const ARROW_LEN = 16
@@ -171,6 +173,7 @@ function drawEdge(
   from: ModelNode,
   to: ModelNode,
   revealGap: EdgeRevealGap | null,
+  emergeProgress: number | null,
 ): { midX: number; midY: number } | null {
   g.clear()
   const fxC = (from.x / 100) * SCENE_W
@@ -199,18 +202,23 @@ function drawEdge(
   // Flow connections render slightly thicker to read as primary action lines.
   const strokePx = kind === 'flow' ? Math.max(2, baseStrokePx * 1.4) : baseStrokePx
 
-  const ndx = tx - fx
-  const ndy = ty - fy
+  const emergeT = emergeProgress == null ? null : Math.max(0, Math.min(1, emergeProgress))
+  const partialEmerge = emergeT != null && emergeT < 0.999
+  const effectiveTx = partialEmerge ? fx + (tx - fx) * emergeT : tx
+  const effectiveTy = partialEmerge ? fy + (ty - fy) * emergeT : ty
+
+  const ndx = effectiveTx - fx
+  const ndy = effectiveTy - fy
   const segLen = Math.hypot(ndx, ndy)
   if (segLen < 1e-3) return null
   const ux = ndx / segLen
   const uy = ndy / segLen
-  const arrowStyle = e.arrowStyle ?? 'standard'
+  const arrowStyle = partialEmerge ? 'none' : (e.arrowStyle ?? 'standard')
   // Pull the line short of the arrow tip so the stroke doesn't overshoot
   // through the chevron filling. `none` arrows draw the line all the way.
   const inset = arrowStyle === 'none' ? 0 : ARROW_LEN * 0.6
-  const lineEndX = tx - ux * inset
-  const lineEndY = ty - uy * inset
+  const lineEndX = effectiveTx - ux * inset
+  const lineEndY = effectiveTy - uy * inset
 
   const dash = dashPattern(e.dash ?? 'solid')
   const drawStroke = (sx: number, sy: number, ex: number, ey: number) => {
@@ -339,7 +347,7 @@ function drawEdge(
     }
   }
 
-  drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)
+  if (!partialEmerge) drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)
 
   return { midX: (fx + tx) / 2, midY: (fy + ty) / 2 }
 }
@@ -361,7 +369,13 @@ export class EdgePool {
     return this.active.has(id)
   }
 
-  acquire(e: Connection, from: ModelNode, to: ModelNode, revealGap: EdgeRevealGap | null = null): void {
+  acquire(
+    e: Connection,
+    from: ModelNode,
+    to: ModelNode,
+    revealGap: EdgeRevealGap | null = null,
+    emergeProgress: number | null = null,
+  ): void {
     let pe = this.active.get(e.id)
     if (!pe) {
       pe = this.free.pop() ?? { gfx: new Graphics(), label: null, dirtyKey: '' }
@@ -370,17 +384,23 @@ export class EdgePool {
       pe.dirtyKey = ''
       this.active.set(e.id, pe)
     }
-    this.update(e, from, to, revealGap)
+    this.update(e, from, to, revealGap, emergeProgress)
   }
 
-  update(e: Connection, from: ModelNode, to: ModelNode, revealGap: EdgeRevealGap | null = null): void {
+  update(
+    e: Connection,
+    from: ModelNode,
+    to: ModelNode,
+    revealGap: EdgeRevealGap | null = null,
+    emergeProgress: number | null = null,
+  ): void {
     const pe = this.active.get(e.id)
     if (!pe) return
-    const key = keyOf(e, from, to, revealGap)
+    const key = keyOf(e, from, to, revealGap, emergeProgress)
     if (key === pe.dirtyKey) return
-    const mid = drawEdge(pe.gfx, e, from, to, revealGap)
+    const mid = drawEdge(pe.gfx, e, from, to, revealGap, emergeProgress)
     pe.dirtyKey = key
-    this.syncLabel(pe, e, mid)
+    this.syncLabel(pe, e, emergeProgress != null && emergeProgress < 0.999 ? null : mid)
   }
 
   private syncLabel(

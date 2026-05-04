@@ -122,7 +122,7 @@ export interface OmniState {
    * One-shot pointer mode used by inspector flows that need a follow-up
    * canvas click. Currently:
    *   - `'link-node'` — the next node clicked is paired with the
-   *     currently-selected node (see RightSidebar `LinkedNodesSection`).
+   *     currently-selected node from the flow-effect editor link picker.
    * The PointerController consumes and clears this on the next select.
    * NOT undoable (UI state).
    */

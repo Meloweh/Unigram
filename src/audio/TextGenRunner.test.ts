@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TextGenRunner } from './TextGenRunner'
+import { TextGenRunner, textGenFitLabelOf } from './TextGenRunner'
 import type { ModelNode } from '../model/types'
 
 function mkNode(id: string, label = ''): ModelNode {
@@ -22,9 +22,9 @@ describe('TextGenRunner', () => {
     const node = mkNode('n1', 'original')
     const map = new Map([[node.id, node]])
     r.start(node, { text: 'hello', charsPerSec: 10, sound: 'none' }, 0)
-    expect(node.label).toBe('')
+    expect(node.label.trim()).toBe('')
     r.tick(map, 250) // 2.5 chars at 10 cps → floor 2
-    expect(node.label).toBe('he')
+    expect(node.label.trimEnd()).toBe('he')
     r.tick(map, 1000) // full string + idle
     expect(node.label).toBe('hello')
   })
@@ -73,18 +73,37 @@ describe('TextGenRunner', () => {
       { text: 'Hello world', charsPerSec: 10, sound: 'none', startIndex: 6, endIndex: 11 },
       0,
     )
-    // Initial: prefix only.
-    expect(node.label).toBe('Hello ')
-    // Mid-typing (3 chars): prefix + 'wor', no suffix yet (here suffix is empty so it's ambiguous;
-    // assert just on prefix+animated).
+    // Initial: every portion is hidden until explicitly generated.
+    expect(node.label.trim()).toBe('')
+    // Mid-typing (3 chars): only the selected range appears at its source index.
     r.tick(map, 300) // 3 chars
-    expect(node.label).toBe('Hello wor')
-    // Fully typed: prefix + animated + suffix.
+    expect(node.label).toBe('      wor  ')
+    expect(textGenFitLabelOf(node)).toBe('wor')
+    // Fully typed: the selected range persists; untouched portions stay hidden.
     r.tick(map, 600)
-    expect(node.label).toBe('Hello world')
+    expect(node.label).toBe('      world')
+    expect(textGenFitLabelOf(node)).toBe('world')
   })
 
-  it('keeps a static suffix hidden until the animated range completes', () => {
+  it('exposes a tight fit label while preserving source-index placeholders', () => {
+    const r = new TextGenRunner()
+    const node = mkNode('n1', 'orig')
+    const map = new Map([[node.id, node]])
+    r.start(
+      node,
+      { text: '11111 22222 333', charsPerSec: 100, sound: 'none', startIndex: 6, endIndex: 11 },
+      0,
+    )
+    expect(node.label).toBe('               ')
+    expect(textGenFitLabelOf(node)).toBe('')
+    r.tick(map, 30)
+    expect(node.label).toBe('      222      ')
+    expect(textGenFitLabelOf(node)).toBe('222')
+    r.stop(node)
+    expect(textGenFitLabelOf(node)).toBeUndefined()
+  })
+
+  it('keeps non-generated portions hidden', () => {
     const r = new TextGenRunner()
     const node = mkNode('n1', 'orig')
     const map = new Map([[node.id, node]])
@@ -93,14 +112,39 @@ describe('TextGenRunner', () => {
       { text: 'AB-CD-EF', charsPerSec: 10, sound: 'none', startIndex: 3, endIndex: 5 },
       0,
     )
-    // Initial: only prefix.
-    expect(node.label).toBe('AB-')
-    // Mid-typing 1 char of 2.
+    expect(node.label.trim()).toBe('')
     r.tick(map, 100)
-    expect(node.label).toBe('AB-C')
-    // Range complete → suffix appears.
+    expect(node.label).toBe('   C    ')
     r.tick(map, 250)
-    expect(node.label).toBe('AB-CD-EF')
+    expect(node.label).toBe('   CD   ')
+  })
+
+  it('persists one generated range while a later generator fills another range', () => {
+    const r = new TextGenRunner()
+    const node = mkNode('n1', 'orig')
+    const map = new Map([[node.id, node]])
+    r.start(
+      node,
+      { text: 'ABCDE', charsPerSec: 20, sound: 'none', startIndex: 1, endIndex: 3 },
+      0,
+      'first',
+    )
+    r.tick(map, 200)
+    expect(node.label).toBe(' BC  ')
+
+    r.start(
+      node,
+      { text: 'ABCDE', charsPerSec: 20, sound: 'none', startIndex: 3, endIndex: 5 },
+      200,
+      'second',
+    )
+    r.tick(map, 250)
+    expect(node.label).toBe(' BCD ')
+
+    r.stop(node, 'second')
+    expect(node.label).toBe(' BC  ')
+    r.stop(node, 'first')
+    expect(node.label).toBe('orig')
   })
 
   it('un-types the animated range over degenerationMs on stop', () => {
@@ -125,8 +169,8 @@ describe('TextGenRunner', () => {
       // 50% through degeneration → should be roughly half typed.
       fakeNow = 1500
       r.tick(map, 1500)
-      expect(node.label.length).toBeGreaterThanOrEqual(1)
-      expect(node.label.length).toBeLessThanOrEqual(4)
+      expect(node.label.trim().length).toBeGreaterThanOrEqual(1)
+      expect(node.label.trim().length).toBeLessThanOrEqual(4)
       // Past degeneration window → original restored.
       fakeNow = 2100
       r.tick(map, 2100)

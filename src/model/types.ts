@@ -35,6 +35,13 @@ export interface TextFormatRange {
   color?: string
   fontSize?: number
   fontFamily?: string
+  /** Transient flow animation offsets in scene-renderer pixels. */
+  offsetX?: number
+  offsetY?: number
+  rotationDeg?: number
+  scaleX?: number
+  scaleY?: number
+  skewXDeg?: number
 }
 
 export interface LegacyPreviewRef {
@@ -237,8 +244,8 @@ export interface Model {
  *
  * `effectNodeId` records the inner effect-graph node the user actually
  * wired to, so the editor can anchor the visual at the right port. The
- * runtime ignores this field today — cross-links still fire the entire
- * peer effect — but storing it preserves authoring intent.
+ * runtime also uses it as a task-level hand-off gate so downstream work
+ * behind a cross-connection respects the source graph's flow order.
  */
 export interface CrossEffectLink {
   id: string

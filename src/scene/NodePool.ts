@@ -9,8 +9,9 @@
 
 import { CanvasTextMetrics, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
-import { DEFAULT_NODE, type ModelNode } from '../model/types'
+import { DEFAULT_NODE, type ModelNode, type TextFormatRange } from '../model/types'
 import type { NodeOverride } from '../flow/types'
+import { textGenFitLabelOf, textGenVisibleLabelOf } from '../audio/TextGenRunner'
 import { drawNodeShape } from './shapes'
 import { cosmeticTip, cosmeticTypeOf } from './cosmeticGeometry'
 import {
@@ -141,10 +142,22 @@ function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
 const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
   `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.previewOf ? 1 : 0}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${JSON.stringify(n.textFormats ?? [])}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
-const labelKeyOf = (n: ModelNode, showLabel: boolean): string => (showLabel && !n.mediaType ? n.label : '')
+interface DisplayLabel {
+  text: string
+  sourceOffset: number
+}
 
-function measuredLabelSize(t: Text): { width: number; height: number } {
-  const text = t.text
+const labelKeyOf = (n: ModelNode, showLabel: boolean): string => labelDisplayOf(n, showLabel).text
+
+function labelDisplayOf(n: ModelNode, showLabel: boolean): DisplayLabel {
+  if (!showLabel || n.mediaType) return { text: '', sourceOffset: 0 }
+  const generated = textGenVisibleLabelOf(n)
+  if (generated) return { text: generated.text, sourceOffset: generated.start }
+  return { text: n.label, sourceOffset: 0 }
+}
+
+function measuredLabelSize(t: Text, fitText?: string): { width: number; height: number } {
+  const text = fitText ?? t.text
   if (!text) return { width: 0, height: 0 }
   const measureText = text
     .split('\n')
@@ -154,8 +167,8 @@ function measuredLabelSize(t: Text): { width: number; height: number } {
   return { width: metrics.width, height: metrics.height }
 }
 
-function fitNodeToLabel(n: ModelNode, t: Text): { w: number; h: number } {
-  const { width, height } = measuredLabelSize(t)
+function fitNodeToLabel(n: ModelNode, t: Text, measured?: { width: number; height: number } | null): { w: number; h: number } {
+  const { width, height } = measured ?? measuredLabelSize(t, textGenFitLabelOf(n))
   const fit = labelFit(n)
   return {
     w: Math.max(NODE_MIN_W, (width / fit.inset / SCENE_W) * 100 + fit.padW),
@@ -201,12 +214,17 @@ function setLabel(t: Text, n: ModelNode, showLabel: boolean, fill: number): void
   const text = labelKeyOf(n, showLabel)
   if (t.text !== text) t.text = text
   applyLabelFormats(t, n, fill)
+  t.rotation = 0
+  t.scale.set(1, 1)
+  t.skew.set(0, 0)
   t.visible = text.length > 0
 }
 
 function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
   const formats = n.textFormats ?? []
   const textLen = String(t.text ?? '').length
+  const sourceOffset = textGenVisibleLabelOf(n)?.start ?? 0
+  const sourceEnd = sourceOffset + textLen
   const style = t.style as typeof t.style & {
     fontWeight?: string
     fontStyle?: string
@@ -218,7 +236,7 @@ function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
   style.fontStyle = 'normal'
   style.textDecoration = 'none'
   for (const f of formats) {
-    if (f.start > 0 || f.end < textLen) continue
+    if (f.start > sourceOffset || f.end < sourceEnd) continue
     if (f.end <= f.start) continue
     if (f.bold) style.fontWeight = '700'
     if (f.italic) style.fontStyle = 'italic'
@@ -237,34 +255,57 @@ function ensureFormattedLabel(pn: PooledNode): PooledFormattedLabel {
   return pn.formattedLabel
 }
 
-function setFormattedLabel(pn: PooledNode, n: ModelNode, showLabel: boolean, fallbackFill: number): void {
+function setFormattedLabel(
+  pn: PooledNode,
+  n: ModelNode,
+  showLabel: boolean,
+  fallbackFill: number,
+): { width: number; height: number } | null {
   const formats = n.textFormats ?? []
-  const text = labelKeyOf(n, showLabel)
-  const partialFormats = formats.filter((f) => f.end > f.start && (f.start > 0 || f.end < text.length))
-  if (!text || partialFormats.length === 0) {
+  const display = labelDisplayOf(n, showLabel)
+  const text = display.text
+  const sourceOffset = display.sourceOffset
+  const displayEnd = sourceOffset + text.length
+  const visibleFormats = formats.filter((f) => f.end > sourceOffset && f.start < displayEnd && f.end > f.start)
+  const needsLayer = visibleFormats.some((f) =>
+    f.start > sourceOffset ||
+    f.end < displayEnd ||
+    hasAnimatedTextTransform(f),
+  )
+  if (!text || !needsLayer) {
     if (pn.formattedLabel) pn.formattedLabel.container.visible = false
-    return
+    return null
   }
+  pn.label.visible = false
   const layer = ensureFormattedLabel(pn)
   layer.container.visible = true
   const lines = text.split('\n')
-  const baseStyle = pn.label.style
-  const lineHeight = CanvasTextMetrics.measureText('Mg', baseStyle).height || NODE_FONT_SIZE * 1.2
-  const totalH = lineHeight * lines.length
   let used = 0
   let globalStart = 0
+  const layouts: Array<{
+    width: number
+    height: number
+    segments: Array<{ text: Text; width: number; format?: TextFormatRange }>
+  }> = []
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li]
     const lineEnd = globalStart + line.length
-    const lineWidth = CanvasTextMetrics.measureText(line || ' ', baseStyle).width
-    const y = -totalH / 2 + li * lineHeight + lineHeight / 2
-    for (const f of partialFormats) {
-      const start = Math.max(globalStart, f.start)
-      const end = Math.min(lineEnd, f.end)
+    const cuts = new Set<number>([globalStart, lineEnd])
+    const lineSourceStart = sourceOffset + globalStart
+    const lineSourceEnd = sourceOffset + lineEnd
+    for (const f of visibleFormats) {
+      const start = Math.max(lineSourceStart, f.start)
+      const end = Math.min(lineSourceEnd, f.end)
       if (end <= start) continue
-      const before = line.slice(0, start - globalStart)
-      const selected = line.slice(start - globalStart, end - globalStart)
-      const beforeW = CanvasTextMetrics.measureText(before, baseStyle).width
+      cuts.add(start - sourceOffset)
+      cuts.add(end - sourceOffset)
+    }
+    const sortedCuts = [...cuts].sort((a, b) => a - b)
+    for (let ci = 0; ci < sortedCuts.length - 1; ci++) {
+      const start = sortedCuts[ci]
+      const end = sortedCuts[ci + 1]
+      if (end <= start) continue
+      const segment = line.slice(start - globalStart, end - globalStart)
       let t = layer.texts[used]
       if (!t) {
         t = new Text({
@@ -281,25 +322,74 @@ function setFormattedLabel(pn: PooledNode, n: ModelNode, showLabel: boolean, fal
         layer.texts.push(t)
       }
       t.visible = true
-      t.text = selected
+      t.text = segment
       const style = t.style as typeof t.style & {
         fontWeight?: string
         fontStyle?: string
         textDecoration?: string
       }
-      style.fontFamily = NODE_FONT_FAMILY
-      style.fontSize = f.fontSize && f.fontSize > 0 ? f.fontSize : NODE_FONT_SIZE
-      style.fill = f.color ?? fallbackFill
-      style.fontWeight = f.bold ? '700' : 'normal'
-      style.fontStyle = f.italic ? 'italic' : 'normal'
-      style.textDecoration = f.strikethrough ? 'line-through' : 'none'
-      t.x = -lineWidth / 2 + beforeW
-      t.y = y
+      const sourceStart = sourceOffset + start
+      const sourceEnd = sourceOffset + end
+      const f = visibleFormats.find((candidate) => candidate.end > sourceStart && candidate.start < sourceEnd)
+      style.fontFamily = f?.fontFamily ?? NODE_FONT_FAMILY
+      style.fontSize = f?.fontSize && f.fontSize > 0 ? f.fontSize : NODE_FONT_SIZE
+      style.fill = f?.color ?? fallbackFill
+      style.fontWeight = f?.bold ? '700' : 'normal'
+      style.fontStyle = f?.italic ? 'italic' : 'normal'
+      style.textDecoration = f?.strikethrough ? 'line-through' : 'none'
+      t.rotation = ((f?.rotationDeg ?? 0) * Math.PI) / 180
+      t.scale.set(f?.scaleX ?? 1, f?.scaleY ?? 1)
+      t.skew.set(((f?.skewXDeg ?? 0) * Math.PI) / 180, 0)
+      const metrics = CanvasTextMetrics.measureText(segment || ' ', t.style)
+      let layout = layouts[li]
+      if (!layout) {
+        layout = { width: 0, height: 0, segments: [] }
+        layouts[li] = layout
+      }
+      const scaleX = f?.scaleX ?? 1
+      const scaleY = f?.scaleY ?? 1
+      const visualWidth = metrics.width * Math.max(0.01, Math.abs(scaleX)) + Math.abs(f?.offsetX ?? 0) * 2
+      layout.segments.push({ text: t, width: visualWidth, format: f })
+      layout.width += visualWidth
+      const offsetY = f?.offsetY ?? 0
+      layout.height = Math.max(layout.height, ((metrics.height || NODE_FONT_SIZE * 1.2) * Math.max(0.01, Math.abs(scaleY))) + Math.abs(offsetY) * 2)
       used++
+    }
+    if (!layouts[li]) {
+      const metrics = CanvasTextMetrics.measureText('Mg', pn.label.style)
+      layouts[li] = { width: 0, height: metrics.height || NODE_FONT_SIZE * 1.2, segments: [] }
     }
     globalStart = lineEnd + 1
   }
+  let totalH = 0
+  let maxW = 0
+  for (const layout of layouts) totalH += layout?.height || NODE_FONT_SIZE * 1.2
+  let yCursor = -totalH / 2
+  for (const layout of layouts) {
+    if (!layout) continue
+    maxW = Math.max(maxW, layout.width)
+    let x = -layout.width / 2
+    const y = yCursor + layout.height / 2
+    for (const segment of layout.segments) {
+      segment.text.x = x + (segment.format?.offsetX ?? 0)
+      segment.text.y = y + (segment.format?.offsetY ?? 0)
+      x += segment.width
+    }
+    yCursor += layout.height
+  }
   for (let i = used; i < layer.texts.length; i++) layer.texts[i].visible = false
+  return { width: maxW, height: totalH }
+}
+
+function hasAnimatedTextTransform(f: TextFormatRange): boolean {
+  return !!(
+    f.offsetX ||
+    f.offsetY ||
+    f.rotationDeg ||
+    f.scaleX ||
+    f.scaleY ||
+    f.skewXDeg
+  )
 }
 
 function mediaPreviewState(n: ModelNode, lod: Lod): MediaPreviewState {
@@ -510,16 +600,15 @@ export class NodePool {
     const labelFill = this.theme?.label ?? NODE_LABEL_FILL
     if (key !== pn.dirtyKey) {
       setLabel(pn.label, n, showLabel, labelFill)
-      if (lod === 'full' && this.onNodeFit && pn.label.visible) {
-        const required = fitNodeToLabel(n, pn.label)
+      const formattedSize = setFormattedLabel(pn, n, lod === 'full' && showLabel, labelFill)
+      if (lod === 'full' && this.onNodeFit && showLabel && !n.mediaType) {
+        const required = fitNodeToLabel(n, pn.label, formattedSize)
         if (Math.abs(required.w - n.w) > 0.01 || Math.abs(required.h - n.h) > 0.01) {
           this.onNodeFit(n.id, required.w, required.h)
         }
       }
       drawShape(pn.shape, n, lod, this.theme)
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, showLabel, labelFill)
-      setFormattedLabel(pn, n, lod === 'full' && showLabel, labelFill)
       pn.dirtyKey = dirtyKeyOf(n, lod, showLabel, this.theme)
       pn.lod = lod
     } else {

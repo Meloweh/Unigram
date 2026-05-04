@@ -101,7 +101,7 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   color: ['tint', 'ms', 'delayMs', 'permanent', 'keepPlaying', 'waitForFinish'],
   jitter: ['intensity', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
   float: ['amp', 'freq', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
-  emerge: ['ms', 'delayMs', 'fromScale', 'waitForFinish'],
+  emerge: ['animation', 'ms', 'delayMs', 'fromScale', 'waitForFinish'],
   dismiss: ['ms', 'delayMs', 'toScale', 'waitForFinish'],
   'cloud-levitate': ['ampX', 'ampY', 'rotAmp', 'speed', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
   'bubble-levitate': ['ampX', 'ampY', 'scaleAmp', 'scalePulse', 'speed', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
@@ -141,7 +141,7 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   color: { tint: 0xff5555, ms: 400, permanent: 0 },
   jitter: { intensity: 4, ms: 1000, keepPlaying: 0 },
   float: { amp: 0.5, freq: 1, ms: 2000 },
-  emerge: { ms: 400, fromScale: 0 },
+  emerge: { animation: 0, ms: 600, fromScale: 0 },
   dismiss: { ms: 400, toScale: 0 },
   'cloud-levitate': { ampX: 0.1667, ampY: 0.7407, rotAmp: 1.5, speed: 0.8, ms: 25000 },
   'bubble-levitate': { ampX: 0.3125, ampY: 0.9259, scaleAmp: 0.03, scalePulse: 1, speed: 0.5, ms: 10000 },
@@ -203,6 +203,15 @@ const FIELD_META: Record<string, FieldMeta> = {
   scaleAmp: { label: 'Scale amp', step: 0.01 },
   scalePulse: { label: 'Scale pulse', kind: 'bool' },
   fromScale: { label: 'From scale', step: 0.05, min: 0 },
+  animation: {
+    label: 'Animation',
+    kind: 'enum',
+    options: [
+      { value: 0, label: 'From source' },
+      { value: 1, label: 'From center' },
+      { value: 2, label: 'Fade in' },
+    ],
+  },
   toScale: { label: 'To scale', step: 0.05, min: 0 },
   panX: { label: 'Pan X', unit: '%' },
   panY: { label: 'Pan Y', unit: '%' },
@@ -378,6 +387,7 @@ interface Props {
 export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkPick }: Props) {
   const [effect, setEffect] = useState<FlowEffect>(() => withEntryNode(deepClone(initial)))
   const [selection, setSelection] = useState<{ pane: PaneId; id: string } | null>(null)
+  const [effectClipboard, setEffectClipboard] = useState<EffectNode | null>(null)
   // Shared cross-pane wire-draft state. Owned at the editor level so a wire
   // started in one pane can be dropped onto a node in the other pane to
   // create a cross-graph link.
@@ -421,10 +431,40 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
   // ESC closes; Delete removes the selected node from whichever pane owns it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTextInput =
+        !!target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      if (isTextInput && e.key !== 'Escape') return
+      const key = e.key.toLowerCase()
+      const mod = e.ctrlKey || e.metaKey
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
         onClose()
+      } else if (mod && key === 'c' && selection) {
+        const sourceEffect = selection.pane === 'primary' ? effect : peerEffect
+        const sourceNode = sourceEffect?.graph.nodes.find((n) => n.id === selection.id) ?? null
+        if (!sourceNode || sourceNode.id === ENTRY_NODE_ID) return
+        e.preventDefault()
+        e.stopPropagation()
+        setEffectClipboard(deepClone(sourceNode))
+      } else if (mod && key === 'v' && effectClipboard) {
+        const targetPane = selection?.pane === 'peer' && peerEffect ? 'peer' : 'primary'
+        const targetEffect = targetPane === 'primary' ? effect : peerEffect
+        if (!targetEffect) return
+        e.preventDefault()
+        e.stopPropagation()
+        const pasted = pasteNodeInto(targetEffect, effectClipboard)
+        if (targetPane === 'primary') {
+          setEffect(pasted.effect)
+        } else {
+          updatePeerEffect(pasted.effect)
+        }
+        setSelection({ pane: targetPane, id: pasted.id })
       } else if (e.key === 'Delete' && selection) {
         e.preventDefault()
         e.stopPropagation()
@@ -438,7 +478,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selection, onClose, peerEffect, updatePeerEffect])
+  }, [selection, onClose, effect, peerEffect, updatePeerEffect, effectClipboard])
 
   // Window-level pointerup listener while a wire is being dragged: resolves
   // cross-pane drops by hit-testing the element under the cursor for our
@@ -645,7 +685,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
 // ---- Pure effect mutators (used by both panes) ---------------------------
 
 function addNodeTo(effect: FlowEffect, kind: FlowEffectKind, atX?: number, atY?: number): FlowEffect {
-  const id = `n_${Date.now().toString(36)}_${effect.graph.nodes.length}`
+  const id = nextEffectNodeId(effect)
   let x: number
   let y: number
   if (atX != null && atY != null) {
@@ -668,6 +708,38 @@ function addNodeTo(effect: FlowEffect, kind: FlowEffectKind, atX?: number, atY?:
     ...(kind === 'spawn' ? { spawnItems: [] } : {}),
   }
   return { ...effect, graph: { ...effect.graph, nodes: [...effect.graph.nodes, node] } }
+}
+
+function pasteNodeInto(effect: FlowEffect, source: EffectNode): { effect: FlowEffect; id: string } {
+  const id = nextEffectNodeId(effect)
+  const node: EffectNode = {
+    ...deepClone(source),
+    id,
+    x: snapToGrid(source.x + GRID),
+    y: snapToGrid(source.y + GRID),
+    params: { ...source.params },
+    ...(source.spawnItems ? { spawnItems: source.spawnItems.map((item) => ({ ...item })) } : {}),
+  }
+  return {
+    id,
+    effect: {
+      ...effect,
+      graph: {
+        ...effect.graph,
+        nodes: [...effect.graph.nodes, node],
+      },
+    },
+  }
+}
+
+function nextEffectNodeId(effect: FlowEffect): string {
+  const taken = new Set(effect.graph.nodes.map((n) => n.id))
+  let suffix = effect.graph.nodes.length
+  let id = ''
+  do {
+    id = `n_${Date.now().toString(36)}_${suffix++}`
+  } while (taken.has(id))
+  return id
 }
 
 function removeNodeFrom(effect: FlowEffect, id: string): FlowEffect {
@@ -1291,10 +1363,10 @@ const overlayStyle: React.CSSProperties = {
 }
 
 const modalStyle: React.CSSProperties = {
-  width: '90vw',
-  height: '90vh',
-  maxWidth: 2400,
-  maxHeight: 1600,
+  width: '99vw',
+  height: '99vh',
+  maxWidth: 2640,
+  maxHeight: 1760,
   background: '#1e293b',
   borderRadius: 12,
   display: 'flex',

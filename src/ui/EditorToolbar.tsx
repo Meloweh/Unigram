@@ -53,6 +53,11 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
   const s = useOmniStore.getState()
   const canUndo = s.undoStack.canUndo()
   const canRedo = s.undoStack.canRedo()
+  const untangleRaf = useRef(0)
+  const [untangleActive, setUntangleActive] = useState(false)
+  useEffect(() => () => {
+    if (untangleRaf.current) cancelAnimationFrame(untangleRaf.current)
+  }, [])
   // Play root: prefer the first selected node; otherwise auto-pick the
   // first node with no *incoming* flow edge (cascade source); falling back
   // to the first node in the model. Matches legacy "Play from root" UX.
@@ -115,14 +120,44 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
       <Separator />
       <ToolbarButton
         onClick={() => {
+          if (!renderer || untangleActive) return
           const cur = useOmniStore.getState()
           if (cur.model.nodes.size === 0) return
           const targets = computeUntangledPositions(cur.model.nodes.values(), cur.model.edges.values())
-          const updates: { id: string; x: number; y: number }[] = []
-          for (const [id, p] of targets) updates.push({ id, x: p.x, y: p.y })
-          cur.moveNodes(updates)
+          const baselines: Array<{ id: string; x: number; y: number }> = []
+          const final: Array<{ id: string; x: number; y: number }> = []
+          for (const [id, p] of targets) {
+            const node = cur.model.nodes.get(id)
+            if (!node || node.locked) continue
+            if (Math.abs(node.x - p.x) < 0.001 && Math.abs(node.y - p.y) < 0.001) continue
+            baselines.push({ id, x: node.x, y: node.y })
+            final.push({ id, x: p.x, y: p.y })
+          }
+          if (baselines.length === 0) return
+          setUntangleActive(true)
+          const startedAt = performance.now()
+          const durationMs = 650
+          const tick = (now: number) => {
+            const raw = Math.min(1, (now - startedAt) / durationMs)
+            const t = raw < 0.5 ? 4 * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 3) / 2
+            renderer.moveNodesDirect(final.map((p, i) => ({
+              id: p.id,
+              x: baselines[i].x + (p.x - baselines[i].x) * t,
+              y: baselines[i].y + (p.y - baselines[i].y) * t,
+            })), { updateIndex: false })
+            if (raw < 1) {
+              untangleRaf.current = requestAnimationFrame(tick)
+              return
+            }
+            untangleRaf.current = 0
+            renderer.reindexNodes(baselines.map((b) => b.id))
+            useOmniStore.getState().commitDrag(baselines)
+            setUntangleActive(false)
+          }
+          if (untangleRaf.current) cancelAnimationFrame(untangleRaf.current)
+          untangleRaf.current = requestAnimationFrame(tick)
         }}
-        disabled={s.model.nodes.size === 0 || isPlaying}
+        disabled={!renderer || s.model.nodes.size === 0 || isPlaying || untangleActive}
         title="Auto-arrange nodes to reduce edge crossings (force-directed)"
       >
         🪢 Untangle

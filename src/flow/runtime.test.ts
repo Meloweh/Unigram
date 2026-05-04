@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimateFlowEffectDuration, FlowRuntime } from './runtime'
+import { estimateFlowEffectDuration, FlowRuntime, scheduleFlowEffect } from './runtime'
 import type { FlowEffect, FlowEffectKind } from './types'
 import { mergeOverride } from './types'
 
@@ -330,7 +330,7 @@ describe('FlowRuntime — extended kinds', () => {
     expect(rt.getCameraOverride()?.screenShakeX ?? 0).toBe(0)
   })
 
-  it('repeater rewinds the run a finite number of times', () => {
+  it('repeater does not rewind the whole run without a circuit path', () => {
     const rt = new FlowRuntime()
     rt.start(
       'n1',
@@ -345,14 +345,7 @@ describe('FlowRuntime — extended kinds', () => {
     )
     rt.tick(50)
     expect(rt.hasActiveRuns).toBe(true)
-    // Cycle 1 ends at 100; repeater consumes 1 → cycle 2 starts.
     rt.tick(150)
-    expect(rt.hasActiveRuns).toBe(true)
-    // Cycle 2 ends at 200; repeater consumes 2nd → cycle 3 starts.
-    rt.tick(250)
-    expect(rt.hasActiveRuns).toBe(true)
-    // Past the 3rd cycle end (300).
-    rt.tick(350)
     expect(rt.hasActiveRuns).toBe(false)
   })
 
@@ -373,7 +366,7 @@ describe('FlowRuntime — extended kinds', () => {
         [
           { from: '__entry__', to: 'r' },
           { from: 'r', to: 'fmt', fromPort: 'circuit' },
-          { from: 'fmt', to: 'r' },
+          { from: 'fmt', to: 'r', toPort: 'circuit' },
           { from: 'r', to: 'gen', fromPort: 'default' },
         ],
       ),
@@ -384,6 +377,35 @@ describe('FlowRuntime — extended kinds', () => {
     rt.tick(21)
     rt.tick(31)
     expect(starts).toEqual(['circuit', 'circuit', 'exit'])
+  })
+
+  it('repeater does not treat default input as a circuit return', () => {
+    const rt = new FlowRuntime()
+    const starts: string[] = []
+    rt.onTextFormat = () => starts.push('circuit')
+    rt.onTextGen = () => starts.push('exit')
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: '__entry__', kind: 'wait', params: { ms: 0 } },
+          { id: 'r', kind: 'repeater', params: { repeatCount: 3 } },
+          { id: 'fmt', kind: 'text-format', params: { ms: 10 } },
+          { id: 'gen', kind: 'text-generator', params: { ms: 10 } },
+        ],
+        [
+          { from: '__entry__', to: 'r' },
+          { from: 'r', to: 'fmt', fromPort: 'circuit' },
+          { from: 'fmt', to: 'r' },
+          { from: 'r', to: 'gen', fromPort: 'default' },
+        ],
+      ),
+      0,
+    )
+    rt.tick(1)
+    rt.tick(11)
+    rt.tick(21)
+    expect(starts).toEqual(['circuit', 'exit'])
   })
 
   it('color with permanent flag holds tint after task ends', () => {
@@ -553,6 +575,73 @@ describe('FlowRuntime — text-generator side-effect', () => {
     rt.tick(50) // start fires here
     rt.cancel(runId)
     expect(stops).toEqual(['n1'])
+  })
+})
+
+describe('FlowRuntime — emerge effect', () => {
+  it('keeps the target hidden at the incoming source until the emerge task starts', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'w', kind: 'wait', params: { ms: 100 } },
+          { id: 'em', kind: 'emerge', params: { ms: 100, fromDx: -12, fromDy: 4, hasSource: 1 } },
+        ],
+        [{ from: 'w', to: 'em' }],
+      ),
+      0,
+    )
+    rt.tick(50)
+    const waiting = rt.getOverride('n1')
+    expect(waiting?.alphaMul).toBe(0)
+    expect(waiting?.scaleMul).toBe(0)
+    expect(waiting?.dx).toBeCloseTo(-12, 3)
+    expect(waiting?.dy).toBeCloseTo(4, 3)
+    expect(waiting?.emergeProgress).toBe(0)
+
+    rt.tick(150)
+    const emerging = rt.getOverride('n1')
+    expect(emerging?.alphaMul).toBeCloseTo(0.5, 3)
+    expect(emerging?.emergeProgress ?? 0).toBeGreaterThan(0.5)
+    expect(Math.abs(emerging?.dx ?? -12)).toBeLessThan(12)
+  })
+
+  it('supports center emerge without source translation', () => {
+    const rt = new FlowRuntime()
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'em', kind: 'emerge', params: { animation: 1, ms: 100, fromScale: 0.2 } }]),
+      0,
+    )
+    rt.tick(50)
+    const ov = rt.getOverride('n1')
+    expect(ov?.dx ?? 0).toBe(0)
+    expect(ov?.dy ?? 0).toBe(0)
+    expect(ov?.alphaMul).toBeCloseTo(0.5, 3)
+    expect(ov?.scaleMul).toBeCloseTo(0.6, 3)
+    expect(ov?.emergeProgress).toBeCloseTo(0.5, 3)
+  })
+})
+
+describe('FlowRuntime — scheduleFlowEffect', () => {
+  it('holds a gated task and its downstream tasks behind a cross-link notBefore time', () => {
+    const effect = mkEffect(
+      [
+        { id: 'entry', kind: 'wait', params: { ms: 100 } },
+        { id: 'gated', kind: 'move', params: { ms: 100, dx: 10 } },
+        { id: 'after', kind: 'color', params: { ms: 100, tint: 0xff0000 } },
+      ],
+      [
+        { from: 'entry', to: 'gated' },
+        { from: 'gated', to: 'after' },
+      ],
+    )
+    const timings = scheduleFlowEffect(effect, new Map([['gated', 500]]))
+    expect(timings.get('entry')?.startAt).toBe(0)
+    expect(timings.get('entry')?.blockEndAt).toBe(100)
+    expect(timings.get('gated')?.startAt).toBe(500)
+    expect(timings.get('after')?.startAt).toBe(600)
   })
 })
 
