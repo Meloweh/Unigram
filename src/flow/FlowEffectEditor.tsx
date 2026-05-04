@@ -19,33 +19,6 @@ const EMPTY_LINKED: readonly string[] = []
 /** Stable empty fallback for `crossLinks` selector. */
 const EMPTY_CROSS_LINKS: readonly CrossEffectLink[] = []
 
-
-const KINDS: FlowEffectKind[] = [
-  'wait',
-  'move',
-  'scale',
-  'color',
-  'jitter',
-  'float',
-  'emerge',
-  'dismiss',
-  'cloud-levitate',
-  'bubble-levitate',
-  'repeater',
-  'camera',
-  'break',
-  'text-generator',
-  'record',
-  'obs-record',
-  'handoff-rmm',
-  'return-rmm',
-  'handoff-mpd',
-  'spawn',
-  'spawn-circular',
-  'expand',
-  'collapse',
-]
-
 const NODE_W = 160
 const NODE_H = 56
 const PORT_R = 6
@@ -64,6 +37,7 @@ const KIND_COLORS: Record<FlowEffectKind, string> = {
   repeater: '#facc15',
   camera: '#818cf8',
   break: '#f87171',
+  'text-format': '#e879f9',
   'text-generator': '#c084fc',
   record: '#dc2626',
   'obs-record': '#ef4444',
@@ -90,6 +64,7 @@ const KIND_LABELS: Record<FlowEffectKind, string> = {
   repeater: 'Repeater',
   camera: 'Camera',
   break: 'Break Apart',
+  'text-format': 'Text Format',
   'text-generator': 'Text Generator',
   record: 'Record',
   'obs-record': 'OBS Record',
@@ -102,6 +77,23 @@ const KIND_LABELS: Record<FlowEffectKind, string> = {
   collapse: 'Collapse',
 }
 
+const RAW_EFFECT_GROUPS = [
+  { title: 'Animation', kinds: ['bubble-levitate', 'cloud-levitate', 'float', 'jitter', 'move', 'scale'] },
+  { title: 'Appearance', kinds: ['color', 'text-format', 'text-generator'] },
+  { title: 'Lifecycle', kinds: ['break', 'collapse', 'dismiss', 'emerge', 'expand'] },
+  { title: 'Navigation', kinds: ['camera', 'handoff-mpd', 'handoff-rmm', 'return-rmm'] },
+  { title: 'Recording', kinds: ['obs-record', 'record'] },
+  { title: 'Spawn', kinds: ['spawn', 'spawn-circular'] },
+  { title: 'Structure', kinds: ['repeater', 'wait'] },
+] satisfies Array<{ title: string; kinds: FlowEffectKind[] }>
+
+const EFFECT_GROUPS: Array<{ title: string; kinds: FlowEffectKind[] }> = RAW_EFFECT_GROUPS
+  .map((group) => ({
+    ...group,
+    kinds: [...group.kinds].sort((a, b) => KIND_LABELS[a].localeCompare(KIND_LABELS[b])),
+  }))
+  .sort((a, b) => a.title.localeCompare(b.title))
+
 const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   wait: ['ms', 'delayMs', 'waitForFinish'],
   move: ['dx', 'dy', 'ms', 'delayMs', 'roundtrip', 'permanent', 'keepPlaying', 'waitForFinish'],
@@ -113,9 +105,10 @@ const PARAM_FIELDS: Record<FlowEffectKind, string[]> = {
   dismiss: ['ms', 'delayMs', 'toScale', 'waitForFinish'],
   'cloud-levitate': ['ampX', 'ampY', 'rotAmp', 'speed', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
   'bubble-levitate': ['ampX', 'ampY', 'scaleAmp', 'scalePulse', 'speed', 'ms', 'delayMs', 'keepPlaying', 'waitForFinish'],
-  repeater: ['times', 'delayMs'],
+  repeater: ['repeatCount', 'delayMs'],
   camera: ['panX', 'panY', 'zoom', 'ms', 'delayMs', 'permanent', 'waitForFinish'],
   break: ['axis', 'shakeIntensity', 'shakeDurationMs', 'fallDurationMs', 'ms', 'delayMs', 'waitForFinish'],
+  'text-format': ['formatMode', 'startIndex', 'endIndex', 'bold', 'italic', 'strikethrough', 'tint', 'fontSize', 'ms', 'delayMs', 'waitForFinish'],
   'text-generator': ['charsPerSec', 'soundPreset', 'loop', 'endHoldMs', 'startIndex', 'endIndex', 'degenerationMs', 'ms', 'delayMs', 'waitForFinish'],
   record: ['ms', 'fps', 'delayMs', 'waitForFinish'],
   'obs-record': ['ms', 'delayMs', 'waitForFinish'],
@@ -152,9 +145,10 @@ const DEFAULT_PARAMS: Record<FlowEffectKind, Record<string, number>> = {
   dismiss: { ms: 400, toScale: 0 },
   'cloud-levitate': { ampX: 0.1667, ampY: 0.7407, rotAmp: 1.5, speed: 0.8, ms: 25000 },
   'bubble-levitate': { ampX: 0.3125, ampY: 0.9259, scaleAmp: 0.03, scalePulse: 1, speed: 0.5, ms: 10000 },
-  repeater: { times: 1 },
+  repeater: { repeatCount: 3 },
   camera: { panX: 0, panY: 0, zoom: 1, ms: 600, permanent: 0 },
   break: { axis: 0, shakeIntensity: 8, shakeDurationMs: 300, fallDurationMs: 600, ms: 900 },
+  'text-format': { formatMode: 0, startIndex: 0, endIndex: -1, bold: 1, italic: 0, strikethrough: 0, tint: 0xe879f9, fontSize: 0, ms: 1000 },
   'text-generator': { charsPerSec: 24, soundPreset: 0, loop: 0, endHoldMs: 1000, startIndex: 0, endIndex: -1, degenerationMs: 0, ms: 1500 },
   // Record canvas to .webm for `ms` while task is active. `fps` is the
   // capture frame rate; defaults to 30. The recording downloads on stop.
@@ -215,6 +209,10 @@ const FIELD_META: Record<string, FieldMeta> = {
   keepPlaying: { label: 'Keep playing', kind: 'bool', hint: 'Loop visual motion while the run is active.' },
   roundtrip: { label: 'Round-trip', kind: 'bool', hint: 'Animate back to start.' },
   loop: { label: 'Loop', kind: 'bool' },
+  bold: { label: 'Bold', kind: 'bool' },
+  italic: { label: 'Italic', kind: 'bool' },
+  strikethrough: { label: 'Strikethrough', kind: 'bool' },
+  fontSize: { label: 'Font size', step: 1, min: 0, hint: '0 keeps the default label size.' },
   charsPerSec: { label: 'Chars / sec', step: 1, min: 1 },
   soundPreset: {
     label: 'Sound',
@@ -229,6 +227,15 @@ const FIELD_META: Record<string, FieldMeta> = {
     ],
   },
   endHoldMs: { label: 'End hold', unit: 'ms', step: 50, min: 0 },
+  formatMode: {
+    label: 'Mode',
+    kind: 'enum',
+    hint: 'Preset holds formatting for downstream text generation.',
+    options: [
+      { value: 0, label: 'Temporary' },
+      { value: 1, label: 'Preset downstream' },
+    ],
+  },
   startIndex: { label: 'Start index', step: 1, min: 0 },
   endIndex: { label: 'End index', step: 1, hint: '-1 = end of string.' },
   degenerationMs: { label: 'Degeneration', unit: 'ms', step: 50, min: 0 },
@@ -237,6 +244,7 @@ const FIELD_META: Record<string, FieldMeta> = {
   radius: { label: 'Radius', unit: '%', step: 0.5, min: 0 },
   fadeMs: { label: 'Fade', unit: 'ms', step: 50, min: 0 },
   times: { label: 'Times', step: 1, min: 1 },
+  repeatCount: { label: 'Repeat count', step: 1, min: 1 },
   axis: {
     label: 'Axis',
     kind: 'enum',
@@ -270,9 +278,10 @@ const KIND_HINTS: Partial<Record<FlowEffectKind, string>> = {
   dismiss: 'Fade + scale the node out to `toScale`.',
   'cloud-levitate': 'Slow XY drift, suited to thinking-cloud nodes.',
   'bubble-levitate': 'Vertical bob with subtle scale pulse.',
-  repeater: 'Re-fire the downstream graph N times.',
+  repeater: 'Loop the circuit output N times, then leave through the default output.',
   camera: 'Pan + zoom the viewport.',
   break: 'Shake, then fly apart along the chosen axis.',
+  'text-format': 'Format the node label temporarily, or preset formatting for a downstream text generator.',
   'text-generator': 'Reveal the node label one character at a time.',
   record: 'Capture the canvas to a .webm for `ms`.',
   'obs-record': 'Trigger OBS recording for `ms`.',
@@ -396,8 +405,13 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
   // ESC closes; Delete removes the selected node from whichever pane owns it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-      else if (e.key === 'Delete' && selection) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      } else if (e.key === 'Delete' && selection) {
+        e.preventDefault()
+        e.stopPropagation()
         if (selection.pane === 'primary') {
           setEffect((cur) => removeNodeFrom(cur, selection.id))
         } else if (peerEffect) {
@@ -421,6 +435,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
       const target = el?.closest('[data-effect-node-id]') as HTMLElement | null
       const toId = target?.getAttribute('data-effect-node-id') ?? null
       const toPane = (target?.getAttribute('data-pane-id') as PaneId | null) ?? null
+      const targetPortEl = el?.closest('[data-effect-input-port]') as Element | null
+      const toPort = (targetPortEl?.getAttribute('data-effect-input-port') as EffectPortId | null) ?? 'default'
       if (toId && toPane && toPane !== wireDraft.pane) {
         // Cross-pane drop \u2192 create a CrossEffectLink (only succeeds if the
         // hosts are linked, which they must be for the peer pane to exist).
@@ -439,9 +455,9 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
       } else if (toId && toPane === wireDraft.pane && toId !== wireDraft.fromId) {
         // Same-pane drop \u2192 toggle a regular edge.
         if (toPane === 'primary') {
-          setEffect((cur) => toggleEdgeIn(cur, wireDraft.fromId, toId))
+          setEffect((cur) => toggleEdgeIn(cur, wireDraft.fromId, toId, wireDraft.fromPort, toPort))
         } else if (peerEffect) {
-          updatePeerEffect(toggleEdgeIn(peerEffect, wireDraft.fromId, toId))
+          updatePeerEffect(toggleEdgeIn(peerEffect, wireDraft.fromId, toId, wireDraft.fromPort, toPort))
         }
       }
       setWireDraft(null)
@@ -491,7 +507,7 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
 
   const modal = (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+      <div data-omnigram-keyboard-scope="modal" style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <header style={headerStyle}>
           <input
             value={effect.label}
@@ -507,19 +523,24 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
         <div ref={setBodyEl} style={bodyStyle}>
           <aside style={sidebarStyle}>
             <div style={panelTitleStyle}>Add node</div>
-            {KINDS.map((k) => (
-              <button
-                key={k}
-                onClick={() => setEffect((cur) => addNodeTo(cur, k))}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('application/omnigram-effect-kind', k)
-                  e.dataTransfer.effectAllowed = 'copy'
-                }}
-                style={{ ...paletteBtnStyle, borderColor: KIND_COLORS[k], cursor: 'grab' }}
-              >
-                <span style={{ color: KIND_COLORS[k], fontWeight: 700 }}>+</span> {KIND_LABELS[k]}
-              </button>
+            {EFFECT_GROUPS.map((group) => (
+              <div key={group.title} style={paletteGroupStyle}>
+                <div style={paletteGroupTitleStyle}>{group.title}</div>
+                {group.kinds.map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setEffect((cur) => addNodeTo(cur, k))}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/omnigram-effect-kind', k)
+                      e.dataTransfer.effectAllowed = 'copy'
+                    }}
+                    style={{ ...paletteBtnStyle, borderColor: KIND_COLORS[k], cursor: 'grab' }}
+                  >
+                    <span style={{ color: KIND_COLORS[k], fontWeight: 700 }}>+</span> {KIND_LABELS[k]}
+                  </button>
+                ))}
+              </div>
             ))}
             {wireDraft && (
               <div style={{ marginTop: 12, fontSize: 13, color: '#cfe' }}>
@@ -534,8 +555,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
             selectedId={selection?.pane === 'primary' ? selection.id : null}
             onSelect={(id) => setSelection(id ? { pane: 'primary', id } : null)}
             wireDraft={wireDraft}
-            onBeginWire={(fromId, x, y) => {
-              setWireDraft({ pane: 'primary', fromId })
+            onBeginWire={(fromId, x, y, fromPort = 'default') => {
+              setWireDraft({ pane: 'primary', fromId, fromPort })
               setCursorClient({ x, y })
             }}
             svgRef={setPrimarySvg}
@@ -548,8 +569,8 @@ export function FlowEffectEditor({ initial, onSave, onClose, hostNodeId, onLinkP
               selectedId={selection?.pane === 'peer' ? selection.id : null}
               onSelect={(id) => setSelection(id ? { pane: 'peer', id } : null)}
               wireDraft={wireDraft}
-              onBeginWire={(fromId, x, y) => {
-                setWireDraft({ pane: 'peer', fromId })
+              onBeginWire={(fromId, x, y, fromPort = 'default') => {
+                setWireDraft({ pane: 'peer', fromId, fromPort })
                 setCursorClient({ x, y })
               }}
               svgRef={setPeerSvg}
@@ -655,21 +676,41 @@ function moveNodeIn(effect: FlowEffect, id: string, x: number, y: number): FlowE
   }
 }
 
-function toggleEdgeIn(effect: FlowEffect, from: string, to: string): FlowEffect {
+function toggleEdgeIn(
+  effect: FlowEffect,
+  from: string,
+  to: string,
+  fromPort: EffectPortId = 'default',
+  toPort: EffectPortId = 'default',
+): FlowEffect {
   if (from === to) return effect
-  const exists = effect.graph.edges.some((ed) => ed.from === from && ed.to === to)
+  const exists = effect.graph.edges.some((ed) =>
+    ed.from === from &&
+    ed.to === to &&
+    (ed.fromPort ?? 'default') === fromPort &&
+    (ed.toPort ?? 'default') === toPort,
+  )
   const edges = exists
-    ? effect.graph.edges.filter((ed) => !(ed.from === from && ed.to === to))
-    : [...effect.graph.edges, { from, to }]
+    ? effect.graph.edges.filter((ed) =>
+        !(
+          ed.from === from &&
+          ed.to === to &&
+          (ed.fromPort ?? 'default') === fromPort &&
+          (ed.toPort ?? 'default') === toPort
+        ),
+      )
+    : [...effect.graph.edges, { from, to, fromPort, toPort }]
   return { ...effect, graph: { ...effect.graph, edges } }
 }
 
 // ---- Shared canvas pane (primary + peer) ---------------------------------
 
 type PaneId = 'primary' | 'peer'
+type EffectPortId = 'default' | 'circuit'
 interface WireDraft {
   pane: PaneId
   fromId: string
+  fromPort?: EffectPortId
 }
 
 interface CanvasPaneProps {
@@ -679,7 +720,7 @@ interface CanvasPaneProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
   wireDraft: WireDraft | null
-  onBeginWire: (fromId: string, clientX: number, clientY: number) => void
+  onBeginWire: (fromId: string, clientX: number, clientY: number, fromPort?: EffectPortId) => void
   /** Forward the mounted SVG element so the editor can position cross-pane overlays. */
   svgRef?: (el: SVGSVGElement | null) => void
   /** Render a dashed left-edge divider when this pane is the right-hand peer. */
@@ -777,17 +818,19 @@ function CanvasPane({
         const a = nodeIndex.get(e.from)
         const b = nodeIndex.get(e.to)
         if (!a || !b) return null
-        const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H
-        const x2 = b.x + NODE_W / 2, y2 = b.y
+        const fromPort = e.fromPort ?? 'default'
+        const toPort = e.toPort ?? 'default'
+        const from = portPosition(a, 'out', fromPort)
+        const to = portPosition(b, 'in', toPort)
         return (
           <path
-            key={`${e.from}->${e.to}`}
-            d={curvePath(x1, y1, x2, y2)}
+            key={`${e.from}:${fromPort}->${e.to}:${toPort}`}
+            d={curvePath(from.x, from.y, to.x, to.y)}
             fill="none"
-            stroke="#94a3b8"
+            stroke={fromPort === 'circuit' ? '#facc15' : '#94a3b8'}
             strokeWidth={2}
             markerEnd={`url(#fx-arrow-${paneId})`}
-            onClick={() => onChangeEffect(toggleEdgeIn(effect, e.from, e.to))}
+            onClick={() => onChangeEffect(toggleEdgeIn(effect, e.from, e.to, fromPort, toPort))}
             style={{ cursor: 'pointer' }}
           />
         )
@@ -821,28 +864,85 @@ function CanvasPane({
             <text x={NODE_W / 2} y={40} fill="#cbd5e1" fontSize={12} textAnchor="middle">
               {n.label?.trim() || KIND_LABELS[n.kind]}
             </text>
-            {/* Output port (bottom edge) */}
-            <circle
-              cx={NODE_W / 2}
-              cy={NODE_H}
-              r={PORT_R}
-              fill={color}
-              stroke="#0f172a"
-              strokeWidth={2}
-              onPointerDown={(e) => {
-                e.stopPropagation()
-                onBeginWire(n.id, e.clientX, e.clientY)
-              }}
-              style={{ cursor: 'crosshair' }}
-            />
-            {!isEntry && (
-              <circle cx={NODE_W / 2} cy={0} r={PORT_R} fill={color} stroke="#0f172a" strokeWidth={2} />
-            )}
+            {renderPorts(n, color, isEntry, onBeginWire)}
           </g>
         )
       })}
     </svg>
   )
+}
+
+function renderPorts(
+  n: EffectNode,
+  color: string,
+  isEntry: boolean,
+  onBeginWire: (fromId: string, clientX: number, clientY: number, fromPort?: EffectPortId) => void,
+): React.ReactNode {
+  const isRepeater = n.kind === 'repeater'
+  const inputPorts = isEntry
+    ? []
+    : isRepeater
+      ? (['default', 'circuit'] as EffectPortId[])
+      : (['default'] as EffectPortId[])
+  const outputPorts = isRepeater
+    ? (['default', 'circuit'] as EffectPortId[])
+    : (['default'] as EffectPortId[])
+  return (
+    <>
+      {inputPorts.map((port) => {
+        const p = portPosition(n, 'in', port, true)
+        return (
+          <circle
+            key={`in-${port}`}
+            cx={p.x}
+            cy={p.y}
+            r={PORT_R}
+            data-effect-input-port={port}
+            fill={port === 'circuit' ? '#facc15' : color}
+            stroke="#0f172a"
+            strokeWidth={2}
+          >
+            <title>{port === 'circuit' ? 'Circuit input' : 'Default input'}</title>
+          </circle>
+        )
+      })}
+      {outputPorts.map((port) => {
+        const p = portPosition(n, 'out', port, true)
+        return (
+          <circle
+            key={`out-${port}`}
+            cx={p.x}
+            cy={p.y}
+            r={PORT_R}
+            fill={port === 'circuit' ? '#facc15' : color}
+            stroke="#0f172a"
+            strokeWidth={2}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              onBeginWire(n.id, e.clientX, e.clientY, port)
+            }}
+            style={{ cursor: 'crosshair' }}
+          >
+            <title>{port === 'circuit' ? 'Circuit output' : 'Default output'}</title>
+          </circle>
+        )
+      })}
+    </>
+  )
+}
+
+function portPosition(
+  n: EffectNode,
+  side: 'in' | 'out',
+  port: EffectPortId = 'default',
+  local = false,
+): { x: number; y: number } {
+  const isRepeater = n.kind === 'repeater'
+  const xLocal = isRepeater
+    ? (port === 'circuit' ? NODE_W * 0.75 : NODE_W * 0.25)
+    : NODE_W / 2
+  const yLocal = side === 'out' ? NODE_H : 0
+  return local ? { x: xLocal, y: yLocal } : { x: n.x + xLocal, y: n.y + yLocal }
 }
 
 
@@ -1058,7 +1158,7 @@ const bodyStyle: React.CSSProperties = {
 }
 
 const sidebarStyle: React.CSSProperties = {
-  width: 220,
+  width: 280,
   padding: 12,
   borderRight: '1px solid rgba(255, 255, 255, 0.08)',
   display: 'flex',
@@ -1090,6 +1190,8 @@ const paletteBtnStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
+  width: '100%',
+  minHeight: 30,
   padding: '5px 8px',
   background: 'rgba(15, 23, 42, 0.55)',
   border: '1px solid rgba(255, 255, 255, 0.12)',
@@ -1098,6 +1200,22 @@ const paletteBtnStyle: React.CSSProperties = {
   fontSize: 12,
   cursor: 'pointer',
   textAlign: 'left',
+}
+
+const paletteGroupStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  marginTop: 8,
+}
+
+const paletteGroupTitleStyle: React.CSSProperties = {
+  color: '#7a8aa0',
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: 0,
+  textTransform: 'uppercase',
+  padding: '4px 2px 2px',
 }
 
 const saveBtnStyle: React.CSSProperties = {
@@ -1228,12 +1346,12 @@ function CrossOverlay({
     paneSvg: SVGSVGElement | null,
     node: EffectNode | undefined,
     side: 'out' | 'in',
+    port: EffectPortId = 'default',
   ): { x: number; y: number } | null => {
     if (!paneSvg || !node) return null
     const r = paneSvg.getBoundingClientRect()
-    const cx = r.left - bodyRect.left + node.x + NODE_W / 2
-    const cy = r.top - bodyRect.top + (side === 'out' ? node.y + NODE_H : node.y)
-    return { x: cx, y: cy }
+    const p = portPosition(node, side, port)
+    return { x: r.left - bodyRect.left + p.x, y: r.top - bodyRect.top + p.y }
   }
 
   const lines: { d: string; key: string; color: string; dash?: string; arrow?: boolean }[] = []
@@ -1270,7 +1388,7 @@ function CrossOverlay({
     const sourceEffect = wireDraft.pane === 'primary' ? primaryEffect : peerEffect
     const sourceSvg = wireDraft.pane === 'primary' ? primarySvg : peerSvg
     const fromNode = sourceEffect?.graph.nodes.find((n) => n.id === wireDraft.fromId)
-    const a = portPos(sourceSvg, fromNode, 'out')
+    const a = portPos(sourceSvg, fromNode, 'out', wireDraft.fromPort ?? 'default')
     if (a) {
       const cx = cursorClient.x - bodyRect.left
       const cy = cursorClient.y - bodyRect.top
@@ -1352,4 +1470,3 @@ function LinkPicker({ hostNodeId, onPick }: { hostNodeId: string; onPick: () => 
     </button>
   )
 }
-

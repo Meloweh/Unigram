@@ -81,7 +81,7 @@ function RichNodeContent({ node }: { node: ModelNode }) {
           src={node.mediaSrc}
           alt={node.label || node.mediaFileName || node.mediaType}
           draggable={false}
-          style={mediaFillStyle('contain', 'none')}
+          style={mediaFillStyle('cover', 'none')}
         />
       ) : null
     case 'video':
@@ -92,7 +92,7 @@ function RichNodeContent({ node }: { node: ModelNode }) {
           preload="metadata"
           draggable={false}
           data-testid={`video-node-${node.id}`}
-          style={mediaFillStyle('contain', 'auto')}
+          style={mediaFillStyle('cover', 'auto')}
         />
       ) : <MediaPlaceholder label="Drop video here" />
     case 'audio':

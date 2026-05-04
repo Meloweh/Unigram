@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import { useOmniStore } from '../model/store'
-import type { ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
+import type { Connection, ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
 import { animatedContentStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
 import { ALL_THEME_OPTIONS } from '../theme/themes'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
@@ -104,11 +104,12 @@ function renderInner(
   state: ReturnType<typeof useOmniStore.getState>,
   renderer: import('../scene/SceneRenderer').SceneRenderer | null,
 ): React.ReactNode {
+  const selectedEdges = selectedConnections(state)
   if (nodes.length === 0) {
     // Edge inspector takes precedence over the diagram panel.
-    const edgeIds = state.selectedEdgeIds
-    if (edgeIds.size > 0) {
-      const eid = [...edgeIds][0]
+    if (selectedEdges.length > 1) return <MultiConnectionInspector edges={selectedEdges} />
+    if (selectedEdges.length > 0) {
+      const eid = selectedEdges[0].id
       const edge = state.model.edges.get(eid)
       if (edge) {
         const fromNode = state.model.nodes.get(edge.from)
@@ -301,7 +302,13 @@ function renderInner(
 
   return (
     <>
-      <Title>{isMulti ? `${nodes.length} nodes` : 'Node'}</Title>
+      <Title>
+        {isMulti
+          ? `${nodes.length} nodes${selectedEdges.length > 0 ? `, ${selectedEdges.length} connections` : ''}`
+          : selectedEdges.length > 0
+            ? 'Node + connections'
+            : 'Node'}
+      </Title>
 
       <Field label="Node shape">
         <select
@@ -394,6 +401,7 @@ function renderInner(
       </button>
 
       <BehaviourFlags nodes={nodes} updateAll={updateAll} />
+      {selectedEdges.length > 0 && <ConnectionSelectionFlags edges={selectedEdges} />}
 
       {!isMulti && <MpdSection node={nodes[0]} />}
       {!isMulti && <RmmSection node={nodes[0]} />}
@@ -406,6 +414,15 @@ function renderInner(
 // ---- field helpers --------------------------------------------------------
 
 const MIXED = '\u0000__MIXED__\u0000'
+
+function selectedConnections(state: ReturnType<typeof useOmniStore.getState>): Connection[] {
+  const edges: Connection[] = []
+  for (const id of state.selectedEdgeIds) {
+    const edge = state.model.edges.get(id)
+    if (edge) edges.push(edge)
+  }
+  return edges
+}
 
 function sharedField<T>(nodes: ModelNode[], pick: (n: ModelNode) => T): T | string {
   if (nodes.length === 0) return MIXED
@@ -689,6 +706,46 @@ function normaliseHex(c: string): string {
     return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3]
   }
   return '#365f8f'
+}
+
+function MultiConnectionInspector({ edges }: { edges: Connection[] }) {
+  return (
+    <>
+      <Title>{edges.length} connections</Title>
+      <Hint>Bulk connection settings</Hint>
+      <ConnectionSelectionFlags edges={edges} />
+      <button
+        onClick={() => useOmniStore.getState().removeEdges(edges.map((e) => e.id))}
+        style={dangerButtonStyle}
+      >
+        Delete connections
+      </button>
+    </>
+  )
+}
+
+function ConnectionSelectionFlags({ edges }: { edges: Connection[] }) {
+  const allHave = (pick: (e: Connection) => boolean | undefined) => edges.every((e) => !!pick(e))
+  const someHave = (pick: (e: Connection) => boolean | undefined) => edges.some((e) => !!pick(e))
+  const triState = (pick: (e: Connection) => boolean | undefined): boolean | 'mixed' => {
+    const all = allHave(pick)
+    if (all) return true
+    return someHave(pick) ? 'mixed' : false
+  }
+  const cameraTracked = triState((e) => e.cameraTracked)
+  const updateAll = (patch: Partial<Connection>) => {
+    for (const e of edges) useOmniStore.getState().updateEdge(e.id, patch)
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+      <span style={{ fontSize: 14, color: 'var(--ug-text-muted)' }}>Connections</span>
+      <Checkbox
+        label="Tracked by camera"
+        checked={cameraTracked}
+        onChange={(v) => updateAll({ cameraTracked: v || undefined })}
+      />
+    </div>
+  )
 }
 
 /**

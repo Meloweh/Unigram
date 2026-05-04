@@ -20,6 +20,9 @@ export class KeyboardController {
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
       return
     }
+    if (document.querySelector('[data-omnigram-keyboard-scope="modal"]')) {
+      return
+    }
     const ctrl = e.ctrlKey || e.metaKey
     if (ctrl && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault()

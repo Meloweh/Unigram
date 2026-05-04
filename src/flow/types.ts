@@ -29,6 +29,7 @@ export type FlowEffectKind =
   | 'repeater'
   | 'camera'
   | 'break'
+  | 'text-format'
   | 'text-generator'
   | 'record'
   | 'obs-record'
@@ -60,9 +61,9 @@ export interface EffectNode {
    *                                                    (prototype-style X/Y drift + sway)
    *  - bubble-levitate:  { ampX?, ampY, scaleAmp, speed?, ms, scalePulse? }
     *                                                    (prototype-style X/Y drift + scale pulse)
-   *  - repeater:         { times }                    (when reached, rewinds the run;
-   *                                                    times<0 means infinite, otherwise
-   *                                                    decrements until exhausted. 0 contribution.)
+   *  - repeater:         { repeatCount }              (routes its circuit output N times,
+   *                                                    then exits through the default output.
+   *                                                    0 contribution.)
    *  - camera:           { panX?, panY?, zoom?, ms,    (drives the renderer's camera as a
    *                        permanent? }                 transient additive override; panX/panY in
    *                                                    scene-percent deltas, zoom multiplicative.
@@ -70,7 +71,11 @@ export interface EffectNode {
    *                                                    cancels. Does NOT mutate the store.)
     *  - break:            { axis, shakeIntensity, shakeDurationMs, fallDurationMs, ms }
     *                                                    (shake, then fall/fly apart)
-    *  - text-generator:   { charsPerSec?, sound?, loop?,(progressive label reveal on the target
+    *  - text-format:      { startIndex?, endIndex?, bold?, italic?,
+   *                         strikethrough?, tint?, fontSize?, ms,
+   *                         formatMode? }              (formatMode=1 keeps the format
+   *                                                    alive for downstream text generators.)
+   *  - text-generator:   { charsPerSec?, sound?, loop?,(progressive label reveal on the target
    *                        endHoldMs? }                 node. Resolves text from the node's label.
    *                                                    `sound` is the index into TEXT_GEN_SOUND_PRESETS;
    *                                                    -1 = none. Bridged to TextGenRunner via the
@@ -85,6 +90,10 @@ export interface EffectNode {
 export interface EffectEdge {
   from: string
   to: string
+  /** Repeater-only output routing. Missing means the normal default output. */
+  fromPort?: 'default' | 'circuit'
+  /** Editor-only input port for repeater nodes. Missing means default. */
+  toPort?: 'default' | 'circuit'
 }
 
 export interface FlowEffect {

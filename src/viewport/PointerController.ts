@@ -40,6 +40,8 @@ interface ActiveDrag {
   additive?: boolean
   /** Snapshot of selection at gesture start (for additive box-select). */
   baseSelection?: ReadonlySet<string>
+  /** Snapshot of edge selection at gesture start (for additive box-select). */
+  baseEdgeSelection?: ReadonlySet<string>
   totalMoved?: number
   tipBaseline?: { id: string; tipAngle?: number; tipLength?: number; tip?: import('../model/types').ModelNode['tip'] }
   resizeDir?: ResizeHandleDir
@@ -178,6 +180,7 @@ export class PointerController {
         startScene: scene,
         additive: shift,
         baseSelection: new Set(useOmniStore.getState().selectedIds),
+        baseEdgeSelection: new Set(useOmniStore.getState().selectedEdgeIds),
         totalMoved: 0,
       }
       this.renderer.setBoxSelect({
@@ -433,11 +436,15 @@ export class PointerController {
         maxX: Math.max(a.startScene.x, sceneNow.x),
         maxY: Math.max(a.startScene.y, sceneNow.y),
       }
-      const hits: string[] = []
-      this.renderer.queryAabb(aabb, hits)
-      const next = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
-      for (let i = 0; i < hits.length; i++) next.add(hits[i])
-      useOmniStore.getState().selectMany(next)
+      const nodeHits: string[] = []
+      const edgeHits: string[] = []
+      this.renderer.queryAabb(aabb, nodeHits)
+      this.renderer.queryEdgesAabb(aabb, edgeHits)
+      const nextNodes = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
+      const nextEdges = a.additive && a.baseEdgeSelection ? new Set(a.baseEdgeSelection) : new Set<string>()
+      for (let i = 0; i < nodeHits.length; i++) nextNodes.add(nodeHits[i])
+      for (let i = 0; i < edgeHits.length; i++) nextEdges.add(edgeHits[i])
+      useOmniStore.getState().selectMany(nextNodes, nextEdges)
       return
     }
 
@@ -500,7 +507,7 @@ export class PointerController {
     // Single click on empty space — try an edge hit before clearing selection.
     const edgeId = this.renderer.pickEdge(scene.x, scene.y)
     if (edgeId) {
-      useOmniStore.getState().selectEdge(edgeId)
+      useOmniStore.getState().selectEdge(edgeId, e.shiftKey)
       return
     }
     useOmniStore.getState().clearSelection()

@@ -32,6 +32,7 @@ import { ParticleLayer } from '../theme/ParticleLayer'
 import { estimateFlowEffectDuration, FlowRuntime } from '../flow/runtime'
 import { TextGenRunner, type TextGenConfig } from '../audio/TextGenRunner'
 import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
+import { TextFormatRunner } from '../flow/TextFormatRunner'
 import type { FlowEffect } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
@@ -175,6 +176,7 @@ export class SceneRenderer {
   private cameraTrackOffsetX = 0
   private cameraTrackOffsetY = 0
   readonly textGen = new TextGenRunner()
+  readonly textFormat = new TextFormatRunner()
   /**
    * Active recording sessions by target node id. The `record` flow kind
    * spins up a `MediaRecorder` against the canvas; the `obs-record` kind
@@ -212,6 +214,7 @@ export class SceneRenderer {
   // Reusable scratch buffers — keep hot path GC-free.
   private visibleIds: string[] = []
   private visibleEdgeIds: string[] = []
+  private queryEdgeIds: string[] = []
   private prevVisibleNodes = new Set<string>()
   private visibleNodesScratch = new Set<string>()
   private visibleEdgesScratch = new Set<string>()
@@ -357,10 +360,11 @@ export class SceneRenderer {
     this.nodePool.onNodeFit = (id, w, h) => {
       const n = this.model.nodes.get(id) as ModelNode | undefined
       if (!n) return
-      if (n.w >= w && n.h >= h) return
-      ;(n as { w: number; h: number }).w = Math.max(n.w, w)
-      ;(n as { w: number; h: number }).h = Math.max(n.h, h)
+      if (Math.abs(n.w - w) <= 0.01 && Math.abs(n.h - h) <= 0.01) return
+      ;(n as { w: number; h: number }).w = w
+      ;(n as { w: number; h: number }).h = h
       this.quadtree.update(id, nodeAabb(n))
+      this.updateIncidentEdges(id)
       this.dirty = true
     }
     this.edgePool = new EdgePool(this.edgesLayer)
@@ -392,6 +396,18 @@ export class SceneRenderer {
       const node = this.model.nodes.get(targetId)
       if (!node) return
       this.textGen.stop(node)
+      this.dirty = true
+    }
+    this.flow.onTextFormat = (targetId, params) => {
+      const node = this.model.nodes.get(targetId)
+      if (!node) return
+      this.textFormat.start(node, params)
+      this.dirty = true
+    }
+    this.flow.onTextFormatStop = (targetId) => {
+      const node = this.model.nodes.get(targetId)
+      if (!node) return
+      this.textFormat.stop(node)
       this.dirty = true
     }
     // Bridge `record` flow kind to MediaRecorder. `targetId` is the node
@@ -714,7 +730,7 @@ export class SceneRenderer {
   }
 
   /**
-   * Global Play: walk the diagram from `rootNodeId` along `kind:'flow'`
+   * Global Play: walk the diagram from `rootNodeId` along playable
    * connections, triggering each visited node's *one-shot* effects (those
    * with `alwaysPlay !== true`). Always-play loops are left alone since
    * they are already running. Returns the number of runs started.
@@ -729,12 +745,14 @@ export class SceneRenderer {
   playFlowFromNode(rootNodeId: string): number {
     const root = this.model.nodes.get(rootNodeId)
     if (!root) return 0
-    // Build flow-only adjacency from the current edge map (kind === 'flow').
+    // Build playback adjacency from the current edge map. Camera-tracked
+    // structural edges participate too so the tracking flag works without
+    // first opening an effect graph or converting the connection kind.
     // Track edge ids as well so the wire-reveal animation can be keyed off
     // the actual connection that was traversed.
     const adj = new Map<string, { to: string; edgeId: string }[]>()
     for (const e of this.model.edges.values()) {
-      if (e.kind !== 'flow') continue
+      if (!edgeParticipatesInFlow(e)) continue
       let list = adj.get(e.from)
       if (!list) { list = []; adj.set(e.from, list) }
       list.push({ to: e.to, edgeId: e.id })
@@ -959,6 +977,21 @@ export class SceneRenderer {
   /** Query node ids whose AABB intersects `aabb`. Reuses caller-supplied buffer. */
   queryAabb(aabb: SceneAabb, out: string[] = []): string[] {
     return this.quadtree.query(aabb, out)
+  }
+
+  /** Query connection ids whose segment intersects `aabb`. Reuses caller-supplied buffer. */
+  queryEdgesAabb(aabb: SceneAabb, out: string[] = []): string[] {
+    out.length = 0
+    this.edgeQuadtree.query(aabb, this.queryEdgeIds)
+    for (let i = 0; i < this.queryEdgeIds.length; i++) {
+      const e = this.model.edges.get(this.queryEdgeIds[i])
+      if (!e) continue
+      const from = this.model.nodes.get(e.from)
+      const to = this.model.nodes.get(e.to)
+      if (!from || !to) continue
+      if (lineSegmentIntersectsAabb(from.x, from.y, to.x, to.y, aabb)) out.push(e.id)
+    }
+    return out
   }
 
   /** Hot path: pan/zoom directly. Does NOT touch the store. Stores RAW camera. */
@@ -1210,6 +1243,7 @@ export class SceneRenderer {
       const changed = this.textGen.tick(this.model.nodes, performance.now())
       if (changed) this.cullAndDraw()
     }
+    if (this.textFormat.hasActiveRuns) this.cullAndDraw()
     // MPD curtain animates each frame; runs only when active.
     if (this.curtainDurationMs > 0) this.tickMpdCurtain()
     // Ephemeral spawn fade in/out animation.
@@ -1647,7 +1681,7 @@ export class SceneRenderer {
       // Crisp blue membrane frame. The amber wave is below the node only,
       // so it never paints an inner orange membrane over the node face.
       drawNodeShapePath(ring, visual.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
-      ring.stroke({ color: RING_COLOR, width: 2.4, alignment: 1, alpha: 0.98 })
+      ring.stroke({ color: RING_COLOR, width: 2.4, alignment: 0.5, alpha: 0.98 })
       used++
     }
     for (let i = used; i < this.selectionAuraOuterPool.length; i++) {
@@ -1863,7 +1897,7 @@ export class SceneRenderer {
 
   /**
    * Draw the Play cascade overlay: a brighter pulse that progressively
-   * reveals each `kind:'flow'` wire as the cascade traverses it, plus a
+   * reveals each playable wire as the cascade traverses it, plus a
    * pulsing halo ring around each visited node. Ports the legacy
    * `useFlowEngine.startFlowAnimation` visual feedback, but driven by
    * pre-baked schedule maps instead of a per-frame DAG walker. Coordinates
@@ -2473,6 +2507,10 @@ function resizeHandlesFor(n: ModelNode): Array<{ dir: ResizeHandleDir; x: number
   ]
 }
 
+function edgeParticipatesInFlow(e: Connection): boolean {
+  return e.kind === 'flow' || e.cameraTracked === true
+}
+
 /** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by). */
 function pointSegmentDistance(
   px: number,
@@ -2492,6 +2530,41 @@ function pointSegmentDistance(
   const cx = ax + t * dx
   const cy = ay + t * dy
   return Math.hypot(px - cx, py - cy)
+}
+
+function lineSegmentIntersectsAabb(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  aabb: SceneAabb,
+): boolean {
+  if (
+    (ax >= aabb.minX && ax <= aabb.maxX && ay >= aabb.minY && ay <= aabb.maxY) ||
+    (bx >= aabb.minX && bx <= aabb.maxX && by >= aabb.minY && by <= aabb.maxY)
+  ) return true
+  let t0 = 0
+  let t1 = 1
+  const dx = bx - ax
+  const dy = by - ay
+  const clip = (p: number, q: number): boolean => {
+    if (Math.abs(p) < 1e-9) return q >= 0
+    const r = q / p
+    if (p < 0) {
+      if (r > t1) return false
+      if (r > t0) t0 = r
+    } else {
+      if (r < t0) return false
+      if (r < t1) t1 = r
+    }
+    return true
+  }
+  return (
+    clip(-dx, ax - aabb.minX) &&
+    clip(dx, aabb.maxX - ax) &&
+    clip(-dy, ay - aabb.minY) &&
+    clip(dy, aabb.maxY - ay)
+  )
 }
 
 /**

@@ -5,7 +5,7 @@ import { mergeOverride } from './types'
 
 const mkEffect = (
   nodes: { id: string; kind: FlowEffectKind; params?: Record<string, number> }[],
-  edges: { from: string; to: string }[] = [],
+  edges: { from: string; to: string; fromPort?: 'default' | 'circuit'; toPort?: 'default' | 'circuit' }[] = [],
 ): FlowEffect => ({
   id: 'eff',
   label: 'eff',
@@ -356,6 +356,36 @@ describe('FlowRuntime — extended kinds', () => {
     expect(rt.hasActiveRuns).toBe(false)
   })
 
+  it('repeater circuit loops a subpath before taking the default output', () => {
+    const rt = new FlowRuntime()
+    const starts: string[] = []
+    rt.onTextFormat = () => starts.push('circuit')
+    rt.onTextGen = () => starts.push('exit')
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: '__entry__', kind: 'wait', params: { ms: 0 } },
+          { id: 'r', kind: 'repeater', params: { repeatCount: 2 } },
+          { id: 'fmt', kind: 'text-format', params: { ms: 10 } },
+          { id: 'gen', kind: 'text-generator', params: { ms: 10 } },
+        ],
+        [
+          { from: '__entry__', to: 'r' },
+          { from: 'r', to: 'fmt', fromPort: 'circuit' },
+          { from: 'fmt', to: 'r' },
+          { from: 'r', to: 'gen', fromPort: 'default' },
+        ],
+      ),
+      0,
+    )
+    rt.tick(1)
+    rt.tick(11)
+    rt.tick(21)
+    rt.tick(31)
+    expect(starts).toEqual(['circuit', 'circuit', 'exit'])
+  })
+
   it('color with permanent flag holds tint after task ends', () => {
     const rt = new FlowRuntime()
     rt.start(
@@ -522,6 +552,52 @@ describe('FlowRuntime — text-generator side-effect', () => {
     )!
     rt.tick(50) // start fires here
     rt.cancel(runId)
+    expect(stops).toEqual(['n1'])
+  })
+})
+
+describe('FlowRuntime — text-format side-effect', () => {
+  it('fires text-format start and stop callbacks', () => {
+    const rt = new FlowRuntime()
+    const starts: { id: string; params: Record<string, number> }[] = []
+    const stops: string[] = []
+    rt.onTextFormat = (id, params) => starts.push({ id, params })
+    rt.onTextFormatStop = (id) => stops.push(id)
+    rt.start(
+      'n1',
+      mkEffect([{ id: 'tf', kind: 'text-format', params: { ms: 100, bold: 1 } }], []),
+      0,
+    )
+    rt.tick(50)
+    expect(starts).toHaveLength(1)
+    expect(starts[0].params.bold).toBe(1)
+    rt.tick(150)
+    expect(stops).toEqual(['n1'])
+  })
+
+  it('keeps preset text formatting alive for a downstream text generator', () => {
+    const rt = new FlowRuntime()
+    const stops: string[] = []
+    const starts: string[] = []
+    rt.onTextFormat = () => starts.push('format')
+    rt.onTextFormatStop = (id) => stops.push(id)
+    rt.onTextGen = () => starts.push('generator')
+    rt.start(
+      'n1',
+      mkEffect(
+        [
+          { id: 'tf', kind: 'text-format', params: { formatMode: 1, ms: 50 } },
+          { id: 'tg', kind: 'text-generator', params: { ms: 150 } },
+        ],
+        [{ from: 'tf', to: 'tg' }],
+      ),
+      0,
+    )
+    rt.tick(1)
+    expect(starts).toEqual(['format', 'generator'])
+    rt.tick(75)
+    expect(stops).toEqual([])
+    rt.tick(200)
     expect(stops).toEqual(['n1'])
   })
 })

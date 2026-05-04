@@ -208,7 +208,7 @@ export class ParticleLayer {
       // Twinkle: animate alpha sin-wave around base.
       let alpha = p.baseOpacity
       if (config.behavior === 'twinkle') {
-        alpha = p.baseOpacity * (0.5 + 0.5 * Math.sin(p.phase))
+        alpha = p.baseOpacity * (0.72 + 0.28 * Math.sin(p.phase))
       }
       p.gfx.alpha = alpha * p.introAlpha
       // Wrap around viewport. For falling/rising particles, reset vertical

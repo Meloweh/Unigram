@@ -18,6 +18,7 @@
 
 import type {
   CameraOverride,
+  EffectEdge,
   EffectNode,
   FlowEffect,
   NodeOverride,
@@ -88,6 +89,8 @@ export class FlowRuntime {
    */
   onTextGen: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
   onTextGenStop: ((targetNodeId: string) => void) | null = null
+  onTextFormat: ((targetNodeId: string, params: Record<string, number>) => void) | null = null
+  onTextFormatStop: ((targetNodeId: string) => void) | null = null
   /**
    * Recording side-effects — mirror the text-generator pattern. The renderer
    * owns the actual `MediaRecorder` / OBS-WebSocket session; the runtime only
@@ -122,6 +125,26 @@ export class FlowRuntime {
   start(targetNodeId: string, effect: FlowEffect, now: number): string | null {
     const { nodes, edges } = effect.graph
     if (nodes.length === 0) return null
+    const repeaterTasks = nodes.some((n) => n.kind === 'repeater' && edges.some((e) => e.from === n.id && e.fromPort === 'circuit'))
+      ? buildRepeaterTasks(nodes, edges)
+      : null
+    if (repeaterTasks) {
+      if (repeaterTasks.size === 0) return null
+      const runId = `run_${++RUN_COUNTER}`
+      this.runs.set(runId, {
+        id: runId,
+        targetNodeId,
+        startedAt: now,
+        tasks: repeaterTasks,
+        active: new Set(),
+        dependents: new Map(),
+        loop: effect.alwaysPlay === true,
+        held: null,
+        cameraHeld: null,
+        repeatLeft: 0,
+      })
+      return runId
+    }
     const tasks = new Map<string, Task>()
     const incoming = new Map<string, string[]>()
     const dependents = new Map<string, string[]>()
@@ -166,7 +189,7 @@ export class FlowRuntime {
     let repeatLeft = 0
     for (const n of nodes) {
       if (n.kind === 'repeater') {
-        const t = (n.params.times ?? 0) | 0
+        const t = (n.params.repeatCount ?? n.params.times ?? 0) | 0
         if (t < 0) { repeatLeft = -1; break }
         repeatLeft += t
       }
@@ -224,6 +247,7 @@ export class FlowRuntime {
         }
         if (anyAlive) break
         if (!run.loop && run.repeatLeft === 0) {
+          this.fireSideEffectStops(run)
           this.runs.delete(id)
           break
         }
@@ -308,14 +332,24 @@ export class FlowRuntime {
           // Side-effect tasks: fire stop on completion.
           if (t.node.kind === 'text-generator' && t.sideEffectFired) {
             this.onTextGenStop?.(run.targetNodeId)
+            t.sideEffectFired = false
+          } else if (t.node.kind === 'text-format' && t.sideEffectFired) {
+            if (!shouldKeepPlaying(t.node)) {
+              this.onTextFormatStop?.(run.targetNodeId)
+              t.sideEffectFired = false
+            }
           } else if (t.node.kind === 'record' && t.sideEffectFired) {
             this.onRecordStop?.(run.targetNodeId)
+            t.sideEffectFired = false
           } else if (t.node.kind === 'obs-record' && t.sideEffectFired) {
             this.onObsRecordStop?.(run.targetNodeId)
+            t.sideEffectFired = false
           } else if (t.node.kind === 'spawn' && t.sideEffectFired) {
             this.onSpawnStop?.(run.targetNodeId)
+            t.sideEffectFired = false
           } else if (t.node.kind === 'spawn-circular' && t.sideEffectFired) {
             this.onSpawnCircularStop?.(run.targetNodeId)
+            t.sideEffectFired = false
           }
           // Capture final value for permanent-flagged kinds.
           if ((t.node.params.permanent ?? 0) !== 0) {
@@ -364,6 +398,11 @@ export class FlowRuntime {
         if (!t.sideEffectFired) {
           t.sideEffectFired = true
           this.onTextGen?.(run.targetNodeId, t.node.params)
+        }
+      } else if (t.node.kind === 'text-format') {
+        if (!t.sideEffectFired) {
+          t.sideEffectFired = true
+          this.onTextFormat?.(run.targetNodeId, t.node.params)
         }
       } else if (t.node.kind === 'record') {
         if (!t.sideEffectFired) {
@@ -423,12 +462,14 @@ export class FlowRuntime {
    */
   private fireSideEffectStops(run: Run): void {
     for (const t of run.tasks.values()) {
-      if (!t.sideEffectFired || t.endedAt >= 0) continue
+      if (!t.sideEffectFired) continue
       if (t.node.kind === 'text-generator') this.onTextGenStop?.(run.targetNodeId)
+      else if (t.node.kind === 'text-format') this.onTextFormatStop?.(run.targetNodeId)
       else if (t.node.kind === 'record') this.onRecordStop?.(run.targetNodeId)
       else if (t.node.kind === 'obs-record') this.onObsRecordStop?.(run.targetNodeId)
       else if (t.node.kind === 'spawn') this.onSpawnStop?.(run.targetNodeId)
       else if (t.node.kind === 'spawn-circular') this.onSpawnCircularStop?.(run.targetNodeId)
+      t.sideEffectFired = false
     }
   }
 
@@ -439,13 +480,103 @@ function runHasUnfinishedTasks(run: Run): boolean {
   return false
 }
 
+function buildRepeaterTasks(nodes: EffectNode[], edges: EffectEdge[]): Map<string, Task> | null {
+  const byId = new Map<string, EffectNode>()
+  const outgoing = new Map<string, EffectEdge[]>()
+  const incomingCount = new Map<string, number>()
+  for (const n of nodes) {
+    byId.set(n.id, n)
+    outgoing.set(n.id, [])
+    incomingCount.set(n.id, 0)
+  }
+  for (const e of edges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) continue
+    outgoing.get(e.from)?.push(e)
+    incomingCount.set(e.to, (incomingCount.get(e.to) ?? 0) + 1)
+  }
+
+  let frontier = nodes.filter((n) => (incomingCount.get(n.id) ?? 0) === 0).map((n) => n.id)
+  if (frontier.length === 0) {
+    const entry = nodes.find((n) => n.id === '__entry__')
+    const repeater = nodes.find((n) => n.kind === 'repeater')
+    frontier = [entry?.id ?? repeater?.id ?? nodes[0]?.id].filter(Boolean) as string[]
+  }
+  if (frontier.length === 0) return new Map()
+
+  const visited = new Set(frontier)
+  const repeaterCounters = new Map<string, number>()
+  const tasks = new Map<string, Task>()
+  let delay = 0
+  let seq = 0
+  let safety = 0
+
+  const clearCircuitPath = (startIds: string[], repeaterId: string) => {
+    const q = [...startIds]
+    const seen = new Set<string>()
+    while (q.length > 0) {
+      const id = q.shift()!
+      if (id === repeaterId || seen.has(id)) continue
+      seen.add(id)
+      visited.delete(id)
+      for (const e of outgoing.get(id) ?? []) q.push(e.to)
+    }
+    visited.delete(repeaterId)
+  }
+
+  while (frontier.length > 0 && safety++ < 10000) {
+    const next: string[] = []
+    let layerMax = 0
+    for (const id of frontier) {
+      const node = byId.get(id)
+      if (!node) continue
+      const startAt = delay + delayOf(node)
+      const taskId = `${id}#${seq++}`
+      tasks.set(taskId, {
+        id: taskId,
+        node,
+        startAt,
+        durationMs: durationOf(node),
+        blockMs: blockDurationOf(node),
+        dependsOn: [],
+        scheduled: true,
+        endedAt: -1,
+      })
+      layerMax = Math.max(layerMax, delayOf(node) + blockDurationOf(node))
+
+      const outs = outgoing.get(id) ?? []
+      let targets: string[]
+      if (node.kind === 'repeater') {
+        const count = (repeaterCounters.get(id) ?? 0) + 1
+        repeaterCounters.set(id, count)
+        const repeatCount = Math.max(0, Math.floor(node.params.repeatCount ?? node.params.times ?? 3))
+        if (count <= repeatCount) {
+          targets = outs.filter((e) => e.fromPort === 'circuit').map((e) => e.to)
+          clearCircuitPath(targets, id)
+        } else {
+          targets = outs.filter((e) => (e.fromPort ?? 'default') !== 'circuit').map((e) => e.to)
+        }
+      } else {
+        targets = outs.map((e) => e.to)
+      }
+      for (const target of targets) {
+        if (visited.has(target)) continue
+        visited.add(target)
+        next.push(target)
+      }
+    }
+    delay += layerMax
+    frontier = next
+  }
+  return tasks
+}
+
 function shouldKeepPlaying(n: EffectNode): boolean {
-  return (n.params.keepPlaying ?? 0) !== 0
+  return (n.params.keepPlaying ?? 0) !== 0 || (n.kind === 'text-format' && (n.params.formatMode ?? 0) === 1)
 }
 
 function durationOf(n: EffectNode): number {
   if (n.kind === 'wait') return Math.max(0, n.params.ms ?? 0)
-  if (n.kind === 'text-generator') {
+  if (n.kind === 'text-generator' || n.kind === 'text-format') {
     // Side-effect tasks need a duration so the runtime can fire `onTextGenStop`
     // on completion. Default 1.5 s is enough for short labels at 24 cps;
     // editor exposes `ms` for longer text.
@@ -475,6 +606,7 @@ function delayOf(n: EffectNode): number {
 }
 
 function blockDurationOf(n: EffectNode): number {
+  if (n.kind === 'text-format' && (n.params.formatMode ?? 0) === 1) return 0
   const waits = (n.params.waitForFinish ?? 1) !== 0
   return waits ? durationOf(n) : 0
 }
@@ -482,6 +614,13 @@ function blockDurationOf(n: EffectNode): number {
 export function estimateFlowEffectDuration(effect: FlowEffect): number {
   const { nodes, edges } = effect.graph
   if (nodes.length === 0) return 0
+  if (nodes.some((n) => n.kind === 'repeater' && edges.some((e) => e.from === n.id && e.fromPort === 'circuit'))) {
+    const tasks = buildRepeaterTasks(nodes, edges)
+    if (!tasks) return 0
+    let maxEnd = 0
+    for (const t of tasks.values()) maxEnd = Math.max(maxEnd, t.startAt + durationOf(t.node))
+    return maxEnd
+  }
   const incoming = new Map<string, string[]>()
   const dependents = new Map<string, string[]>()
   for (const n of nodes) {
@@ -681,6 +820,7 @@ function contribution(
       // handles per-node overrides. The runtime branches before calling.
       return null
     case 'text-generator':
+    case 'text-format':
       // Side-effect kind: bridged via `onTextGen` / `onTextGenStop`. No
       // per-frame override contribution.
       return null

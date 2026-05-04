@@ -7,7 +7,7 @@
  * culling, and store mediation happen one layer up in `SceneRenderer`.
  */
 
-import { Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
+import { CanvasTextMetrics, Container, Graphics, Sprite, Text, Texture } from 'pixi.js'
 import { SCENE_W, SCENE_H } from './sceneConstants'
 import { DEFAULT_NODE, type ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
@@ -105,10 +105,17 @@ interface MediaPreviewState {
   fontSize: number
 }
 
-/** Fraction of node interior available for label text after shape inset. */
-const TEXT_INSET = 0.82
-/** Extra scene-percent padding around the text bounding box. */
-const TEXT_PAD_PCT = 1.0
+/** Fixed label breathing room. Kept in pixels so long labels do not grow excess whitespace. */
+const TEXT_PAD_X_PX = 30
+const TEXT_PAD_Y_PX = 18
+
+function pctW(px: number): number {
+  return (px / SCENE_W) * 100
+}
+
+function pctH(px: number): number {
+  return (px / SCENE_H) * 100
+}
 
 function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
   const type = cosmeticTypeOf(n)
@@ -116,13 +123,39 @@ function labelFit(n: ModelNode): { inset: number; padW: number; padH: number } {
     return { inset: 0.58, padW: (100 / SCENE_W) * 100, padH: (80 / SCENE_H) * 100 }
   }
   if (type === 'chat-bubble') return { inset: 0.74, padW: 1.6, padH: 1.4 }
-  return { inset: TEXT_INSET, padW: TEXT_PAD_PCT, padH: TEXT_PAD_PCT }
+  if (n.shape === 'circle') return { inset: 0.7, padW: pctW(TEXT_PAD_X_PX), padH: pctH(TEXT_PAD_Y_PX) }
+  if (n.shape === 'oval') return { inset: 0.78, padW: pctW(TEXT_PAD_X_PX), padH: pctH(TEXT_PAD_Y_PX) }
+  if (n.shape === 'diamond' || n.shape === 'triangle') {
+    return { inset: 0.6, padW: pctW(TEXT_PAD_X_PX), padH: pctH(TEXT_PAD_Y_PX) }
+  }
+  if (n.shape === 'hexagon') return { inset: 0.86, padW: pctW(TEXT_PAD_X_PX), padH: pctH(TEXT_PAD_Y_PX) }
+  return { inset: 1, padW: pctW(TEXT_PAD_X_PX), padH: pctH(TEXT_PAD_Y_PX) }
 }
 
 const dirtyKeyOf = (n: ModelNode, lod: Lod, showLabel: boolean, theme: ThemeColors | null): string =>
-  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
+  `${lod}|${showLabel ? 1 : 0}|${n.shape}|${n.cosmeticType ?? ''}|${n.w}|${n.h}|${effectiveCellColor(n, theme)}|${effectiveMembraneColor(n, theme)}|${n.membraneVisible === false ? 0 : 1}|${n.tip?.x ?? 0}|${n.tip?.y ?? 0}|${n.tipAngle ?? ''}|${n.tipLength ?? ''}|${n.label}|${JSON.stringify(n.textFormats ?? [])}|${n.mediaType ?? ''}|${n.mediaSrc ?? ''}|${n.audioCoverSrc ?? ''}|${n.mediaFileName ?? ''}|${n.contentSource ?? ''}|${n.contentCollapsed ?? ''}|${n.contentFontSize ?? ''}`
 
 const labelKeyOf = (n: ModelNode, showLabel: boolean): string => (showLabel && !n.mediaType ? n.label : '')
+
+function measuredLabelSize(t: Text): { width: number; height: number } {
+  const text = t.text
+  if (!text) return { width: 0, height: 0 }
+  const measureText = text
+    .split('\n')
+    .map((line) => (line.length > 0 ? line : ' '))
+    .join('\n')
+  const metrics = CanvasTextMetrics.measureText(measureText, t.style)
+  return { width: metrics.width, height: metrics.height }
+}
+
+function fitNodeToLabel(n: ModelNode, t: Text): { w: number; h: number } {
+  const { width, height } = measuredLabelSize(t)
+  const fit = labelFit(n)
+  return {
+    w: Math.max(NODE_MIN_W, (width / fit.inset / SCENE_W) * 100 + fit.padW),
+    h: Math.max(NODE_MIN_H, (height / fit.inset / SCENE_H) * 100 + fit.padH),
+  }
+}
 
 function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | null): void {
   g.clear()
@@ -158,10 +191,33 @@ function drawBreakShape(g: Graphics, n: ModelNode, theme: ThemeColors | null): v
   drawShape(g, n, 'full', theme)
 }
 
-function setLabel(t: Text, n: ModelNode, showLabel: boolean): void {
+function setLabel(t: Text, n: ModelNode, showLabel: boolean, fill: number): void {
   const text = labelKeyOf(n, showLabel)
   if (t.text !== text) t.text = text
+  applyLabelFormats(t, n, fill)
   t.visible = text.length > 0
+}
+
+function applyLabelFormats(t: Text, n: ModelNode, fallbackFill: number): void {
+  const formats = n.textFormats ?? []
+  const style = t.style as typeof t.style & {
+    fontWeight?: string
+    fontStyle?: string
+    textDecoration?: string
+  }
+  style.fontSize = NODE_FONT_SIZE
+  style.fill = fallbackFill
+  style.fontWeight = 'normal'
+  style.fontStyle = 'normal'
+  style.textDecoration = 'none'
+  for (const f of formats) {
+    if (f.end <= f.start) continue
+    if (f.bold) style.fontWeight = '700'
+    if (f.italic) style.fontStyle = 'italic'
+    if (f.strikethrough) style.textDecoration = 'line-through'
+    if (f.color) style.fill = f.color
+    if (f.fontSize && f.fontSize > 0) style.fontSize = f.fontSize
+  }
 }
 
 function mediaPreviewState(n: ModelNode, lod: Lod): MediaPreviewState {
@@ -172,7 +228,8 @@ function mediaPreviewState(n: ModelNode, lod: Lod): MediaPreviewState {
 
   const wPx = (n.w / 100) * SCENE_W
   const hPx = (n.h / 100) * SCENE_H
-  const pad = Math.min(14, Math.max(4, Math.min(wPx, hPx) * 0.08))
+  const fillsNode = n.mediaType === 'image' || n.mediaType === 'gif' || n.mediaType === 'video'
+  const pad = fillsNode ? 0 : Math.min(14, Math.max(4, Math.min(wPx, hPx) * 0.08))
   const innerW = Math.max(1, wPx - pad * 2)
   const innerH = Math.max(1, hPx - pad * 2)
   const spriteSrc = n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc
@@ -368,35 +425,22 @@ export class NodePool {
     }
     const key = dirtyKeyOf(n, lod, showLabel, this.theme)
     if (key !== pn.dirtyKey) {
-      drawShape(pn.shape, n, lod, this.theme)
-      setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, showLabel)
-      pn.dirtyKey = key
-      pn.lod = lod
-      // Auto-grow the node to fit its label. Only grows; never shrinks (so
-      // a user-resized node sticks). The renderer hook updates the model +
-      // quadtree on our behalf. Floor the result at NODE_MIN_W/H to match
-      // the legacy minimum chrome size.
+      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
       if (lod === 'full' && this.onNodeFit && pn.label.visible) {
-        const labelWPx = pn.label.width
-        const labelHPx = pn.label.height
-        const fit = labelFit(n)
-        const requiredW = Math.max(
-          NODE_MIN_W,
-          (labelWPx / fit.inset / SCENE_W) * 100 + fit.padW,
-        )
-        const requiredH = Math.max(
-          NODE_MIN_H,
-          (labelHPx / fit.inset / SCENE_H) * 100 + fit.padH,
-        )
-        if (requiredW > n.w + 0.01 || requiredH > n.h + 0.01) {
-          this.onNodeFit(n.id, Math.max(n.w, requiredW), Math.max(n.h, requiredH))
+        const required = fitNodeToLabel(n, pn.label)
+        if (Math.abs(required.w - n.w) > 0.01 || Math.abs(required.h - n.h) > 0.01) {
+          this.onNodeFit(n.id, required.w, required.h)
         }
       }
+      drawShape(pn.shape, n, lod, this.theme)
+      setMediaPreview(pn, n, lod)
+      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
+      pn.dirtyKey = dirtyKeyOf(n, lod, showLabel, this.theme)
+      pn.lod = lod
     } else {
       // Label text can change while shape stays stable.
       setMediaPreview(pn, n, lod)
-      setLabel(pn.label, n, showLabel)
+      setLabel(pn.label, n, showLabel, this.theme?.label ?? NODE_LABEL_FILL)
     }
     this.syncBreakApart(pn, n, breaking)
   }

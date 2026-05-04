@@ -32,7 +32,7 @@ function resolvePlayRoot(s: ReturnType<typeof useOmniStore.getState>): string | 
   if (nodes.size === 0) return null
   const incomingFlow = new Set<string>()
   for (const e of s.model.edges.values()) {
-    if (e.kind === 'flow') incomingFlow.add(e.to)
+    if (e.kind === 'flow' || e.cameraTracked === true) incomingFlow.add(e.to)
   }
   for (const id of nodes.keys()) {
     if (!incomingFlow.has(id)) return id

@@ -107,11 +107,11 @@ interface Actions {
 
   // Selection (NOT undoable).
   select(id: string | null, additive?: boolean): void
-  selectMany(ids: Iterable<string>): void
+  selectMany(ids: Iterable<string>, edgeIds?: Iterable<string>): void
   clearSelection(): void
 
   /** Select a single edge (clears node selection). Pass null to clear. */
-  selectEdge(id: string | null): void
+  selectEdge(id: string | null, additive?: boolean): void
 
   /** Begin / end inline label editing for a node (NOT undoable; UI state). */
   setEditingNode(id: string | null): void
@@ -286,8 +286,8 @@ export const useOmniStore = create<Store>((set, get) => ({
       return { selectedIds: next, selectedEdgeIds: new Set(), selRev: s.selRev + 1 }
     })
   },
-  selectMany(ids) {
-    set((s) => ({ selectedIds: new Set(ids), selectedEdgeIds: new Set(), selRev: s.selRev + 1 }))
+  selectMany(ids, edgeIds) {
+    set((s) => ({ selectedIds: new Set(ids), selectedEdgeIds: new Set(edgeIds ?? []), selRev: s.selRev + 1 }))
   },
   clearSelection() {
     set((s) => {
@@ -296,16 +296,20 @@ export const useOmniStore = create<Store>((set, get) => ({
     })
   },
 
-  selectEdge(id) {
+  selectEdge(id, additive = false) {
     set((s) => {
-      const next = id == null ? new Set<string>() : new Set<string>([id])
+      const next = additive ? new Set(s.selectedEdgeIds) : new Set<string>()
+      if (id != null) {
+        if (additive && next.has(id)) next.delete(id)
+        else next.add(id)
+      }
       const sameAsBefore =
         next.size === s.selectedEdgeIds.size &&
-        (next.size === 0 || s.selectedEdgeIds.has([...next][0]))
-      if (sameAsBefore && s.selectedIds.size === 0) return s
+        (next.size === 0 || [...next].every((eid) => s.selectedEdgeIds.has(eid)))
+      if (sameAsBefore && (additive || s.selectedIds.size === 0)) return s
       return {
         selectedEdgeIds: next,
-        selectedIds: new Set(),
+        selectedIds: additive ? new Set(s.selectedIds) : new Set(),
         selRev: s.selRev + 1,
       }
     })
