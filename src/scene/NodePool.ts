@@ -12,7 +12,7 @@ import { SCENE_W, SCENE_H } from './sceneConstants'
 import { DEFAULT_NODE, type ModelNode, type TextFormatRange } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 import { textGenFitLabelOf, textGenVisibleLabelOf } from '../audio/TextGenRunner'
-import { drawNodeShape } from './shapes'
+import { drawNodeShape, drawNodeShapePath } from './shapes'
 import { cosmeticTip, cosmeticTypeOf } from './cosmeticGeometry'
 import {
   NODE_FONT_FAMILY,
@@ -75,6 +75,7 @@ interface PooledNode {
 interface PooledMedia {
   bg: Graphics
   sprite: Sprite
+  mask: Graphics
   text: Text
 }
 
@@ -108,8 +109,10 @@ interface MediaPreviewState {
   text: string
   innerW: number
   innerH: number
+  pad: number
   alpha: number
   fontSize: number
+  bgVisible: boolean
 }
 
 /** Fixed label breathing room. Kept in pixels so long labels do not grow excess whitespace. */
@@ -395,25 +398,32 @@ function hasAnimatedTextTransform(f: TextFormatRange): boolean {
 function mediaPreviewState(n: ModelNode, lod: Lod): MediaPreviewState {
   const active = lod === 'full' && !!n.mediaType
   if (!active) {
-    return { active: false, spriteSrc: '', text: '', innerW: 0, innerH: 0, alpha: 0, fontSize: 0 }
+    return { active: false, spriteSrc: '', text: '', innerW: 0, innerH: 0, pad: 0, alpha: 0, fontSize: 0, bgVisible: false }
   }
 
   const wPx = (n.w / 100) * SCENE_W
   const hPx = (n.h / 100) * SCENE_H
   const fillsNode = n.mediaType === 'image' || n.mediaType === 'gif' || n.mediaType === 'video'
-  const pad = fillsNode ? 0 : Math.min(14, Math.max(4, Math.min(wPx, hPx) * 0.08))
+  const pad = fillsNode && n.membraneVisible !== false
+    ? NODE_STROKE_WIDTH * 0.5
+    : fillsNode
+      ? 0
+      : Math.min(14, Math.max(4, Math.min(wPx, hPx) * 0.08))
   const innerW = Math.max(1, wPx - pad * 2)
   const innerH = Math.max(1, hPx - pad * 2)
   const spriteSrc = n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc
   const canSprite = !!spriteSrc && (n.mediaType === 'image' || n.mediaType === 'gif' || n.mediaType === 'video' || n.mediaType === 'audio')
+  const text = mediaPreviewText(n)
   return {
     active: true,
     spriteSrc: canSprite ? spriteSrc : '',
-    text: mediaPreviewText(n),
+    text,
     innerW,
     innerH,
+    pad,
     alpha: n.mediaType === 'audio' ? 0.7 : 0.9,
     fontSize: Math.max(10, Math.min(18, innerH * 0.22)),
+    bgVisible: !fillsNode || !canSprite || text.length > 0,
   }
 }
 
@@ -421,15 +431,18 @@ function setMediaPreview(pn: PooledNode, n: ModelNode, lod: Lod): void {
   const state = mediaPreviewState(n, lod)
   if (!state.active && !pn.mediaPreviewActive && !pn.media) return
   const media = pn.media ?? ensureMedia(pn)
-  media.bg.visible = state.active
+  media.bg.visible = state.active && state.bgVisible
   media.sprite.visible = false
+  media.mask.visible = false
   media.text.visible = false
   pn.mediaPreviewActive = state.active
   if (!state.active) return
 
   media.bg.clear()
-  media.bg.roundRect(-state.innerW / 2, -state.innerH / 2, state.innerW, state.innerH, Math.min(10, state.innerH * 0.2))
-    .fill({ color: 0xffffff, alpha: 0.32 })
+  if (state.bgVisible) {
+    drawMediaPreviewShape(media.bg, n, state.innerW, state.innerH, state.pad)
+    media.bg.fill({ color: 0xffffff, alpha: 0.32 })
+  }
 
   if (state.spriteSrc) {
     media.sprite.texture = Texture.from(state.spriteSrc)
@@ -439,11 +452,16 @@ function setMediaPreview(pn: PooledNode, n: ModelNode, lod: Lod): void {
     media.sprite.x = -state.innerW / 2
     media.sprite.y = -state.innerH / 2
     media.sprite.alpha = state.alpha
+    media.mask.clear()
+    drawMediaPreviewShape(media.mask, n, state.innerW, state.innerH, state.pad)
+    media.mask.fill({ color: 0xffffff, alpha: 1 })
+    media.mask.visible = true
   }
 
   media.text.text = state.text
   media.text.visible = media.text.text.length > 0
   media.text.style.fontSize = state.fontSize
+  media.text.style.wordWrapWidth = Math.max(20, state.innerW - 12)
   media.text.x = 0
   media.text.y = 0
 }
@@ -455,10 +473,20 @@ function mediaPreviewText(n: ModelNode): string {
     const first = source.split('\n')[0]
     return first.length > 42 ? `${first.slice(0, 42)}...` : first
   }
-  if (n.mediaType === 'audio') return n.mediaFileName ? `Audio\n${n.mediaFileName}` : 'Audio'
-  if (!n.mediaSrc) return `Drop ${n.mediaType ?? 'media'} here`
-  if (n.mediaType === 'video') return n.mediaFileName ? `Video\n${n.mediaFileName}` : 'Video'
   return ''
+}
+
+function drawMediaPreviewShape(g: Graphics, n: ModelNode, wPx: number, hPx: number, insetPx: number): void {
+  if (n.shape === 'rounded-rect') {
+    const outerRadius = Math.min(wPx + insetPx * 2, hPx + insetPx * 2) * 0.18
+    g.roundRect(-wPx / 2, -hPx / 2, wPx, hPx, Math.max(0, outerRadius - insetPx))
+    return
+  }
+  const tip = n.tip
+    ? { x: (n.tip.x / 100) * wPx, y: (n.tip.y / 100) * hPx }
+    : undefined
+  const resolvedTip = cosmeticTip(n)
+  drawNodeShapePath(g, n.shape, wPx, hPx, tip, resolvedTip.angle, resolvedTip.length)
 }
 
 function ensureMedia(pn: PooledNode): PooledMedia {
@@ -469,6 +497,10 @@ function ensureMedia(pn: PooledNode): PooledMedia {
   const sprite = new Sprite()
   sprite.eventMode = 'none'
   sprite.visible = false
+  const mask = new Graphics()
+  mask.eventMode = 'none'
+  mask.visible = false
+  sprite.mask = mask
   const text = new Text({
     text: '',
     style: {
@@ -477,6 +509,7 @@ function ensureMedia(pn: PooledNode): PooledMedia {
       fill: NODE_LABEL_FILL,
       align: 'center',
       wordWrap: true,
+      breakWords: true,
       wordWrapWidth: 180,
     },
   })
@@ -485,8 +518,9 @@ function ensureMedia(pn: PooledNode): PooledMedia {
   const labelIndex = pn.container.getChildIndex(pn.label)
   pn.container.addChildAt(bg, labelIndex)
   pn.container.addChildAt(sprite, labelIndex + 1)
-  pn.container.addChildAt(text, labelIndex + 2)
-  pn.media = { bg, sprite, text }
+  pn.container.addChildAt(mask, labelIndex + 2)
+  pn.container.addChildAt(text, labelIndex + 3)
+  pn.media = { bg, sprite, mask, text }
   return pn.media
 }
 
@@ -713,8 +747,10 @@ export class NodePool {
       pn.label.visible = pn.label.text.length > 0
       if (pn.formattedLabel) pn.formattedLabel.container.visible = (n.textFormats?.length ?? 0) > 0
       if (pn.media) {
-        pn.media.bg.visible = pn.mediaPreviewActive
-        pn.media.sprite.visible = pn.mediaPreviewActive && !!(n.mediaType === 'audio' ? n.audioCoverSrc : n.mediaSrc)
+        const mediaState = mediaPreviewState(n, pn.lod)
+        pn.media.bg.visible = pn.mediaPreviewActive && mediaState.bgVisible
+        pn.media.sprite.visible = pn.mediaPreviewActive && mediaState.spriteSrc.length > 0
+        pn.media.mask.visible = pn.media.sprite.visible
         pn.media.text.visible = pn.mediaPreviewActive && pn.media.text.text.length > 0
       }
       if (pn.breaking) pn.breaking.container.visible = false
@@ -729,6 +765,7 @@ export class NodePool {
     if (pn.media) {
       pn.media.bg.visible = false
       pn.media.sprite.visible = false
+      pn.media.mask.visible = false
       pn.media.text.visible = false
     }
     split.container.visible = true

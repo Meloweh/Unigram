@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { Container } from 'pixi.js'
+import { Container, Text } from 'pixi.js'
 import type { ModelNode } from '../model/types'
 import type { NodeOverride } from '../flow/types'
 
@@ -64,7 +64,28 @@ describe('NodePool lazy visual subtrees', () => {
     expect(container.children).toHaveLength(2)
 
     pool.update(node({ mediaType: 'markdown', contentSource: 'preview' }), 'full')
-    expect(container.children).toHaveLength(5)
+    expect(container.children).toHaveLength(6)
+  })
+
+  it('does not paint descriptions over binary media nodes', () => {
+    pool.acquire(node({
+      mediaType: 'video',
+      mediaSrc: 'blob:clip',
+      mediaFileName: 'clip.mp4',
+    }), 'full')
+
+    const container = layer.children[0] as Container
+    const text = container.children[4] as Text
+    expect(text.text).toBe('')
+    expect(text.visible).toBe(false)
+
+    pool.update(node({
+      mediaType: 'audio',
+      mediaSrc: 'blob:song',
+      mediaFileName: 'song.mp3',
+    }), 'full')
+    expect(text.text).toBe('')
+    expect(text.visible).toBe(false)
   })
 
   it('creates break-apart children only while breaking', () => {

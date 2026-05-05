@@ -20,7 +20,7 @@ import {
   visibleSceneAabb,
 } from './sceneConstants'
 import { Quadtree, type Aabb } from '../spatial/quadtree'
-import type { Connection, Model, ModelNode } from '../model/types'
+import { DEFAULT_NODE, type Connection, type Model, type ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
 import { EdgePool, type EdgeRevealGap } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
@@ -56,6 +56,8 @@ export interface RichOverlayTarget {
   node: ModelNode
   rect: { left: number; top: number; width: number; height: number }
   scale: number
+  selected: boolean
+  membraneColor: string
 }
 
 export type ResizeHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
@@ -92,6 +94,7 @@ export class SceneRenderer {
   private viewport: ViewportSize = { width: 0, height: 0 }
   private selectedIds: ReadonlySet<string> = new Set()
   private selectedEdgeIds: ReadonlySet<string> = new Set()
+  private themePalette: import('./NodePool').ThemeColors | null = null
   private connectionPopupMetrics: { edgeId: string; w: number; h: number; progress: number } | null = null
   private selectionGfxPool: Graphics[] = []
   /**
@@ -719,6 +722,7 @@ export class SceneRenderer {
    * changes.
    */
   setThemePalette(theme: import('./NodePool').ThemeColors | null): void {
+    this.themePalette = theme
     this.nodePool?.setThemePalette(theme)
     this.dirty = true
   }
@@ -1305,7 +1309,16 @@ export class SceneRenderer {
         height: h,
       },
       scale,
+      selected: this.selectedIds.has(node.id),
+      membraneColor: this.effectiveMembraneColor(node),
     }
+  }
+
+  private effectiveMembraneColor(node: ModelNode): string {
+    if (this.themePalette && node.membraneColor === DEFAULT_NODE.membraneColor) {
+      return this.themePalette.membrane
+    }
+    return node.membraneColor
   }
 
   // ---- internals ----------------------------------------------------------
