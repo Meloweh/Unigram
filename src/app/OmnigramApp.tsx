@@ -16,6 +16,7 @@ import { PointerController } from '../viewport/PointerController'
 import { WheelController } from '../viewport/WheelController'
 import { KeyboardController } from '../viewport/KeyboardController'
 import { useOmniStore } from '../model/store'
+import { exportBundle } from '../model/projectBundle'
 import { spawnGrid, spawnNested } from '../bench/spawnGrid'
 import { runScenario, listScenarios, type BenchResult } from '../bench/harness'
 import { applyThemeToDOM, resolvePalette } from '../theme/themes'
@@ -33,10 +34,26 @@ import type { ModelNode, NodeShape } from '../model/types'
 import { DEFAULT_NODE } from '../model/types'
 import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
 import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
+import { blobToBase64, saveCloudDiagram } from '../social/cloudClient'
 
-export function OmnigramApp() {
+interface OmnigramAppProps {
+  cloudDiagramId?: string
+  onHome?: () => void
+  chrome?: {
+    sidebars?: boolean
+    devPanel?: boolean
+    fps?: boolean
+    toolbar?: boolean
+  }
+}
+
+export function OmnigramApp({ cloudDiagramId, onHome, chrome }: OmnigramAppProps = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [renderer, setRenderer] = useState<SceneRenderer | null>(null)
+  const showSidebars = chrome?.sidebars ?? true
+  const showDevPanel = chrome?.devPanel ?? true
+  const showFps = chrome?.fps ?? true
+  const showToolbar = chrome?.toolbar ?? true
   const cosmetics = useSyncExternalStore(
     useOmniStore.subscribe,
     () => useOmniStore.getState().model.cosmetics,
@@ -101,6 +118,8 @@ export function OmnigramApp() {
       setRenderer(null)
     }
   }, [])
+
+  useCloudAutosave(cloudDiagramId)
 
   return (
     <div
@@ -227,11 +246,11 @@ export function OmnigramApp() {
           store.select(id)
         }}
       />
-      <FpsOverlay renderer={renderer} />
-      <EditorToolbar renderer={renderer} />
-      <DevPanel renderer={renderer} />
-      <LeftSidebar />
-      <RightSidebar renderer={renderer} />
+      {showFps && <FpsOverlay renderer={renderer} />}
+      {showToolbar && <EditorToolbar renderer={renderer} onHome={onHome} />}
+      {showDevPanel && <DevPanel renderer={renderer} />}
+      {showSidebars && <LeftSidebar />}
+      {showSidebars && <RightSidebar renderer={renderer} />}
       <ConnectionReferencePopup renderer={renderer} />
       <RichNodeOverlay renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
@@ -289,6 +308,61 @@ function fitMediaNode(nodeId: string, naturalW: number, naturalH: number, minW: 
   const w = Math.max(minW, Math.round(naturalW * ratio))
   const h = Math.max(minH, Math.round(naturalH * ratio))
   useOmniStore.getState().updateNode(nodeId, pxSize(w, h))
+}
+
+function useCloudAutosave(diagramId: string | undefined): void {
+  useEffect(() => {
+    if (!diagramId) return
+    let timer = 0
+    let saving = false
+    let pending = false
+    let lastSavedRev = -1
+    let disposed = false
+
+    const flush = async () => {
+      if (disposed) return
+      if (saving) {
+        pending = true
+        return
+      }
+      const state = useOmniStore.getState()
+      const rev = state.rev
+      if (rev === lastSavedRev) return
+      saving = true
+      pending = false
+      try {
+        const models = new Map(state.models)
+        models.set(state.model.id, state.model)
+        const blob = await exportBundle({ rootModelId: state.model.id, models })
+        await saveCloudDiagram(diagramId, {
+          title: state.model.name || 'Untitled diagram',
+          bundleBase64: await blobToBase64(blob),
+        })
+        lastSavedRev = rev
+      } catch (err) {
+        console.error('Autosave failed:', err)
+      } finally {
+        saving = false
+        if (!disposed && (pending || useOmniStore.getState().rev !== lastSavedRev)) schedule()
+      }
+    }
+
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void flush(), 800)
+    }
+
+    const unsubscribe = useOmniStore.subscribe((state) => {
+      if (state.rev !== lastSavedRev) schedule()
+    })
+    schedule()
+
+    return () => {
+      disposed = true
+      window.clearTimeout(timer)
+      unsubscribe()
+    }
+  }, [diagramId])
 }
 
 /**

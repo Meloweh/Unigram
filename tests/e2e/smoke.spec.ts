@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test'
 
-test('home page mounts the Omnigram shell with toolbar', async ({ page }) => {
+test('home page mounts the social diagram search', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('button', { name: 'Spawn 2000' })).toBeVisible()
-  // Pixi canvas mounted into the host div.
-  await expect(page.locator('canvas')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Search diagrams' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /\+ New/ })).toBeVisible()
+  await expect(page.getByLabel('Future suggestions')).toBeVisible()
 })

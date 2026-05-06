@@ -1,7 +1,7 @@
 /**
  * EditorToolbar — chrome row mounted at the top of the canvas.
  *
- * Owns Undo / Redo / Delete / Play / Stop and the Save / Load / Record
+ * Owns Undo / Redo / Delete / Play / Stop
  * cluster. Buttons disable themselves contextually (no undo stack, no
  * selection, no flow running, recording already in flight) so the chrome
  * accurately mirrors the available actions — same contract as legacy
@@ -12,13 +12,12 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useOmniStore } from '../model/store'
-import { exportBundle, importBundle } from '../model/projectBundle'
-import { importLegacyBundle, type LegacyFetcher } from '../model/legacyImport'
 import { computeUntangledPositions } from '../viewport/untangle'
 import type { SceneRenderer } from '../scene/SceneRenderer'
 
 interface EditorToolbarProps {
   renderer: SceneRenderer | null
+  onHome?: () => void
 }
 
 /**
@@ -40,7 +39,7 @@ function resolvePlayRoot(s: ReturnType<typeof useOmniStore.getState>): string | 
   return [...nodes.keys()][0]
 }
 
-export function EditorToolbar({ renderer }: EditorToolbarProps) {
+export function EditorToolbar({ renderer, onHome }: EditorToolbarProps) {
   // Re-render on store rev / selection changes to refresh enabled states.
   useSyncExternalStore(
     useOmniStore.subscribe,
@@ -80,6 +79,14 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
 
   return (
     <div style={barStyle} role="toolbar" aria-label="Editor toolbar">
+      {onHome && (
+        <>
+          <ToolbarButton onClick={onHome} title="Back to diagram search">
+            Home
+          </ToolbarButton>
+          <Separator />
+        </>
+      )}
       <ToolbarButton
         onClick={() => useOmniStore.getState().undo()}
         disabled={!canUndo}
@@ -162,8 +169,6 @@ export function EditorToolbar({ renderer }: EditorToolbarProps) {
       >
         🪢 Untangle
       </ToolbarButton>
-      <Separator />
-      <SaveLoadButtons />
     </div>
   )
 }
@@ -212,92 +217,6 @@ function Separator() {
         margin: '0 2px',
       }}
     />
-  )
-}
-
-function SaveLoadButtons() {
-  const fileRef = useRef<HTMLInputElement | null>(null)
-  const onSave = async () => {
-    const s = useOmniStore.getState()
-    const models = new Map(s.models)
-    models.set(s.model.id, s.model)
-    const blob = await exportBundle({ rootModelId: s.model.id, models })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${s.model.name || 'project'}.unigram`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-  const onPick = () => fileRef.current?.click()
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    try {
-      // Heuristic: legacy v0 model files are plain JSON and are loaded via
-      // the multi-file walker. New bundles are zips (`.unigram` / `.zip`).
-      const isJson = /\.json$/i.test(file.name) || file.type === 'application/json'
-      if (isJson) {
-        // Build a synthetic fetcher that resolves sibling files via the same
-        // directory as the picked file. The user must pick the *root* JSON;
-        // referenced JSONs are loaded as same-directory blobs.
-        const text = await file.text()
-        const siblings = new Map<string, string>([[`/${file.name}`, text]])
-        const fetcher: LegacyFetcher = async (url) => {
-          const t = siblings.get(url)
-          if (t) return JSON.parse(t)
-          // Fall back to network (e.g. when loading the demo from `public/`).
-          const r = await fetch(url)
-          if (!r.ok) throw new Error(`Cannot resolve ${url}`)
-          return r.json()
-        }
-        const snap = await importLegacyBundle(`/${file.name}`, fetcher)
-        useOmniStore.getState().loadProject(snap)
-        return
-      }
-      const snap = await importBundle(file)
-      useOmniStore.getState().loadProject(snap)
-    } catch (err) {
-      console.error('Failed to load:', err)
-      alert(`Failed to load: ${(err as Error).message}`)
-    }
-  }
-  // Ctrl/Cmd+S → Save, Ctrl/Cmd+O → Load. Suppressed when typing in a form
-  // field so editor inputs keep their normal behaviour.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      const ctrl = e.ctrlKey || e.metaKey
-      if (!ctrl) return
-      if (e.key === 's' || e.key === 'S') {
-        e.preventDefault()
-        void onSave()
-      } else if (e.key === 'o' || e.key === 'O') {
-        e.preventDefault()
-        onPick()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-  return (
-    <>
-      <ToolbarButton onClick={onSave} title="Save project as .unigram (Ctrl+S)">
-        💾 Save
-      </ToolbarButton>
-      <ToolbarButton onClick={onPick} title="Load .unigram bundle (Ctrl+O)">
-        📂 Load
-      </ToolbarButton>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".unigram,.zip,application/zip,.json,application/json"
-        style={{ display: 'none' }}
-        onChange={onFile}
-      />
-    </>
   )
 }
 
