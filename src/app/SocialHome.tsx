@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
 import type { DiagramSummary } from '../social/cloudClient'
 import { createCloudDiagram, searchCloudDiagrams } from '../social/cloudClient'
 
@@ -12,7 +12,16 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
-  const newTitle = useMemo(() => query.trim() || 'Untitled diagram', [query])
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [setupTitle, setSetupTitle] = useState('')
+  const [setupTopic, setSetupTopic] = useState('')
+  const [setupDescription, setSetupDescription] = useState('')
+  const newTitle = useMemo(() => query.trim(), [query])
+  const hasExactTitle = useMemo(
+    () => results.some((diagram) => normalizeTitle(diagram.title) === normalizeTitle(newTitle)),
+    [results, newTitle],
+  )
+  const canCreate = newTitle.length > 0 && !hasExactTitle
 
   useEffect(() => {
     let cancelled = false
@@ -48,11 +57,28 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
     }
   }
 
-  const createNew = async () => {
+  const openSetup = () => {
+    setSetupTitle(newTitle)
+    setSetupTopic(`${newTitle} forum`)
+    setSetupDescription('')
+    setSetupOpen(true)
+  }
+
+  const createNew = async (event: FormEvent) => {
+    event.preventDefault()
+    const title = setupTitle.trim()
+    if (!title) {
+      setError('Project name is required')
+      return
+    }
     setOpeningId('__new__')
     setError(null)
     try {
-      const diagram = await createCloudDiagram(newTitle)
+      const diagram = await createCloudDiagram({
+        title,
+        topic: setupTopic.trim(),
+        description: setupDescription.trim(),
+      })
       await onOpenDiagram(diagram)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create diagram')
@@ -85,36 +111,45 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
 
         <div style={resultsPanelStyle}>
           <div style={resultsHeaderStyle}>
-            <span>Results</span>
+            <span>Suggestions</span>
             {loading && <span style={mutedStyle}>Searching...</span>}
           </div>
           {error && <div style={errorStyle}>{error}</div>}
-          {!error && results.map((diagram) => (
-            <button
-              key={diagram.id}
-              type="button"
-              onClick={() => void open(diagram)}
-              disabled={openingId !== null}
-              style={resultButtonStyle}
-            >
-              <span style={resultTitleStyle}>{diagram.title}</span>
-              <span style={resultMetaStyle}>
-                {diagram.visits} visits · updated {formatDate(diagram.updatedAt)}
-              </span>
-            </button>
-          ))}
-          {!loading && !error && results.length === 0 && (
+          {!error && results.length > 0 && (
+            <div style={suggestionsListStyle}>
+              {results.map((diagram) => (
+                <button
+                  key={diagram.id}
+                  type="button"
+                  onClick={() => void open(diagram)}
+                  disabled={openingId !== null}
+                  style={resultButtonStyle}
+                >
+                  <span style={resultTitleStyle}>{diagram.title}</span>
+                  <span style={resultMetaStyle}>
+                    {diagram.visits} visits · updated {formatDate(diagram.updatedAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {!loading && !error && results.length === 0 && newTitle.length > 0 && (
             <div style={emptyStyle}>No matching diagrams yet.</div>
           )}
-          <button
-            type="button"
-            onClick={() => void createNew()}
-            disabled={openingId !== null}
-            style={{ ...resultButtonStyle, ...newButtonStyle }}
-          >
-            <span style={resultTitleStyle}>+ New</span>
-            <span style={resultMetaStyle}>Create “{newTitle}”</span>
-          </button>
+          {!loading && !error && newTitle.length === 0 && (
+            <div style={emptyStyle}>Type a diagram title to search or create.</div>
+          )}
+          {canCreate && (
+            <button
+              type="button"
+              onClick={openSetup}
+              disabled={openingId !== null}
+              style={newButtonStyle}
+            >
+              <span style={newBadgeStyle}>+ New</span>
+              <span style={newButtonTextStyle}>Create “{newTitle}”</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -124,6 +159,58 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
         <PlaceholderCard title="Personalized" text="Prepared for account-based recommendations." />
         <PlaceholderCard title="Last visited" text="Prepared for local and cloud visit history." />
       </aside>
+      {setupOpen && (
+        <div style={setupBackdropStyle} role="presentation">
+          <form
+            style={setupDialogStyle}
+            role="dialog"
+            aria-modal="true"
+            aria-label="New graph setup"
+            onSubmit={(event) => void createNew(event)}
+          >
+            <header style={setupHeaderStyle}>
+              <h2 style={setupTitleStyle}>New graph</h2>
+              <button
+                type="button"
+                onClick={() => setSetupOpen(false)}
+                disabled={openingId !== null}
+                style={setupGhostButtonStyle}
+              >
+                Cancel
+              </button>
+            </header>
+            <label style={setupLabelStyle}>
+              Project name
+              <input
+                value={setupTitle}
+                onChange={(e) => setSetupTitle(e.target.value)}
+                style={setupInputStyle}
+              />
+            </label>
+            <label style={setupLabelStyle}>
+              Topic
+              <input
+                value={setupTopic}
+                onChange={(e) => setSetupTopic(e.target.value)}
+                placeholder="Diagram forum"
+                style={setupInputStyle}
+              />
+            </label>
+            <label style={setupLabelStyle}>
+              Project description
+              <textarea
+                value={setupDescription}
+                onChange={(e) => setSetupDescription(e.target.value)}
+                placeholder="Briefly describe what this graph is about."
+                style={setupTextareaStyle}
+              />
+            </label>
+            <button type="submit" disabled={openingId !== null} style={setupPrimaryButtonStyle}>
+              Create graph
+            </button>
+          </form>
+        </div>
+      )}
     </main>
   )
 }
@@ -141,6 +228,10 @@ function formatDate(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return 'unknown'
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function normalizeTitle(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
 const pageStyle: CSSProperties = {
@@ -213,12 +304,12 @@ const searchInputStyle: CSSProperties = {
 
 const resultsPanelStyle: CSSProperties = {
   display: 'grid',
-  gap: 8,
-  padding: 10,
+  gap: 10,
+  padding: 12,
   border: '1px solid #c8d8ea',
   borderRadius: 8,
-  background: 'rgba(255,255,255,0.72)',
-  boxShadow: '0 10px 30px rgba(19, 41, 73, 0.10)',
+  background: 'rgba(255,255,255,0.82)',
+  boxShadow: '0 14px 36px rgba(19, 41, 73, 0.11)',
 }
 
 const resultsHeaderStyle: CSSProperties = {
@@ -229,23 +320,40 @@ const resultsHeaderStyle: CSSProperties = {
   font: '700 13px system-ui, sans-serif',
 }
 
-const resultButtonStyle: CSSProperties = {
-  minHeight: 64,
+const suggestionsListStyle: CSSProperties = {
   display: 'grid',
+  gap: 6,
+}
+
+const resultButtonStyle: CSSProperties = {
+  minHeight: 62,
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr)',
   justifyItems: 'start',
-  gap: 4,
-  padding: '10px 12px',
-  border: '1px solid transparent',
+  gap: 5,
+  padding: '11px 13px',
+  border: '1px solid #edf2f8',
   borderRadius: 6,
-  background: '#fff',
+  background: 'linear-gradient(180deg, #fff, #f9fcff)',
   color: '#17314f',
   cursor: 'pointer',
   textAlign: 'left',
+  boxShadow: '0 1px 0 rgba(19, 41, 73, 0.03)',
 }
 
 const newButtonStyle: CSSProperties = {
-  borderColor: '#9bb7d2',
-  background: '#edf6ff',
+  minHeight: 56,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  padding: '12px 14px',
+  border: '1px solid #96b7d6',
+  borderRadius: 6,
+  background: 'linear-gradient(180deg, #edf7ff, #dfefff)',
+  color: '#17314f',
+  cursor: 'pointer',
+  textAlign: 'left',
+  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.72)',
 }
 
 const resultTitleStyle: CSSProperties = {
@@ -255,6 +363,24 @@ const resultTitleStyle: CSSProperties = {
 const resultMetaStyle: CSSProperties = {
   color: '#5f7790',
   font: '13px system-ui, sans-serif',
+}
+
+const newBadgeStyle: CSSProperties = {
+  flex: '0 0 auto',
+  display: 'grid',
+  placeItems: 'center',
+  minWidth: 58,
+  minHeight: 30,
+  borderRadius: 6,
+  background: '#365f8f',
+  color: '#fff',
+  font: '800 13px system-ui, sans-serif',
+}
+
+const newButtonTextStyle: CSSProperties = {
+  minWidth: 0,
+  color: '#21486f',
+  font: '700 15px system-ui, sans-serif',
 }
 
 const placeholderPanelStyle: CSSProperties = {
@@ -300,4 +426,80 @@ const emptyStyle: CSSProperties = {
   padding: 12,
   color: '#6b7f93',
   font: '14px system-ui, sans-serif',
+}
+
+const setupBackdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  display: 'grid',
+  placeItems: 'center',
+  padding: 24,
+  background: 'rgba(15, 28, 44, 0.34)',
+  boxSizing: 'border-box',
+}
+
+const setupDialogStyle: CSSProperties = {
+  width: 'min(620px, 100%)',
+  display: 'grid',
+  gap: 16,
+  padding: 22,
+  border: '1px solid #b9cde2',
+  borderRadius: 8,
+  background: '#ffffff',
+  color: '#17314f',
+  boxShadow: '0 24px 70px rgba(19, 41, 73, 0.22)',
+}
+
+const setupHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+}
+
+const setupTitleStyle: CSSProperties = {
+  margin: 0,
+  font: '700 22px system-ui, sans-serif',
+}
+
+const setupLabelStyle: CSSProperties = {
+  display: 'grid',
+  gap: 7,
+  color: '#365f8f',
+  font: '700 13px system-ui, sans-serif',
+}
+
+const setupInputStyle: CSSProperties = {
+  minHeight: 42,
+  border: '1px solid #b9cde2',
+  borderRadius: 6,
+  padding: '8px 11px',
+  color: '#17314f',
+  font: '15px system-ui, sans-serif',
+}
+
+const setupTextareaStyle: CSSProperties = {
+  ...setupInputStyle,
+  minHeight: 118,
+  resize: 'vertical',
+}
+
+const setupPrimaryButtonStyle: CSSProperties = {
+  minHeight: 44,
+  border: '1px solid #284f79',
+  borderRadius: 6,
+  background: '#365f8f',
+  color: '#fff',
+  cursor: 'pointer',
+  font: '800 14px system-ui, sans-serif',
+}
+
+const setupGhostButtonStyle: CSSProperties = {
+  border: '1px solid #c8d8ea',
+  borderRadius: 6,
+  background: '#f8fbff',
+  color: '#365f8f',
+  cursor: 'pointer',
+  padding: '8px 12px',
+  font: '700 13px system-ui, sans-serif',
 }

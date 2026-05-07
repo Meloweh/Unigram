@@ -195,7 +195,7 @@ function drawShape(g: Graphics, n: ModelNode, lod: Lod, theme: ThemeColors | nul
     : undefined
   const resolvedTip = cosmeticTip(n)
   // `simple` LOD draws a flat fill (cheap); `full` uses the cached gradient
-  // for the legacy 145° cell→darker look.
+  // for the legacy 145deg cell-to-darker look.
   const fill = lod === 'simple' ? cell : nodeFillGradient(cell)
   drawNodeShape(g, n.shape, {
     w: wPx,
@@ -699,7 +699,16 @@ export class NodePool {
 
   destroy(): void {
     this.releaseAll()
-    for (const pn of this.free) pn.container.destroy({ children: true })
+    for (const pn of this.free) {
+      pn.container.parent?.removeChild(pn.container)
+      try {
+        if (!(pn.container as { destroyed?: boolean }).destroyed) {
+          pn.container.destroy({ children: true })
+        }
+      } catch (err) {
+        console.warn('[NodePool] pooled node destroy failed:', err)
+      }
+    }
     this.free.length = 0
   }
 

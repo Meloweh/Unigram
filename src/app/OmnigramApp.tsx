@@ -30,14 +30,17 @@ import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
 import { RichNodeOverlay } from '../ui/RichNodeOverlay'
 import { MpdDial } from '../mpd/MpdDial'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
-import type { ModelNode, NodeShape } from '../model/types'
-import { DEFAULT_NODE } from '../model/types'
+import type { GridSettings, ModelNode, NodeShape } from '../model/types'
+import { DEFAULT_GRID, DEFAULT_NODE } from '../model/types'
 import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
 import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
 import { blobToBase64, saveCloudDiagram } from '../social/cloudClient'
+import { SocialForumLayer } from './SocialForum'
 
 interface OmnigramAppProps {
   cloudDiagramId?: string
+  cloudDiagramTopic?: string
+  cloudDiagramDescription?: string
   onHome?: () => void
   chrome?: {
     sidebars?: boolean
@@ -47,9 +50,16 @@ interface OmnigramAppProps {
   }
 }
 
-export function OmnigramApp({ cloudDiagramId, onHome, chrome }: OmnigramAppProps = {}) {
+export function OmnigramApp({
+  cloudDiagramId,
+  cloudDiagramTopic,
+  cloudDiagramDescription,
+  onHome,
+  chrome,
+}: OmnigramAppProps = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [renderer, setRenderer] = useState<SceneRenderer | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const showSidebars = chrome?.sidebars ?? true
   const showDevPanel = chrome?.devPanel ?? true
   const showFps = chrome?.fps ?? true
@@ -246,6 +256,28 @@ export function OmnigramApp({ cloudDiagramId, onHome, chrome }: OmnigramAppProps
           store.select(id)
         }}
       />
+      {onHome && (
+        <>
+          <button
+            type="button"
+            className="social-home-button"
+            onClick={onHome}
+            aria-label="Back to diagram search"
+            title="Back to diagram search"
+          >
+            <span className="social-home-icon" aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="social-settings-button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Graph settings"
+            title="Graph settings"
+          >
+            <span className="social-settings-icon" aria-hidden />
+          </button>
+        </>
+      )}
       {showFps && <FpsOverlay renderer={renderer} />}
       {showToolbar && <EditorToolbar renderer={renderer} onHome={onHome} />}
       {showDevPanel && <DevPanel renderer={renderer} />}
@@ -255,6 +287,13 @@ export function OmnigramApp({ cloudDiagramId, onHome, chrome }: OmnigramAppProps
       <RichNodeOverlay renderer={renderer} />
       <MpdDialOverlay renderer={renderer} />
       <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
+      <SocialForumLayer
+        diagramId={cloudDiagramId}
+        projectTopic={cloudDiagramTopic}
+        projectDescription={cloudDiagramDescription}
+        renderer={renderer}
+      />
+      {settingsOpen && <GraphSettingsDialog onClose={() => setSettingsOpen(false)} />}
       {pickMode === 'link-node' && <PickModeBanner />}
     </div>
   )
@@ -363,6 +402,73 @@ function useCloudAutosave(diagramId: string | undefined): void {
       unsubscribe()
     }
   }, [diagramId])
+}
+
+function GraphSettingsDialog({ onClose }: { onClose: () => void }) {
+  useSyncExternalStore(
+    useOmniStore.subscribe,
+    () => useOmniStore.getState().rev,
+    () => 0,
+  )
+  const grid = useOmniStore.getState().model.grid ?? DEFAULT_GRID
+  const updateGrid = (patch: Partial<GridSettings>) => useOmniStore.getState().setGrid(patch)
+
+  return (
+    <div className="social-modal-backdrop" role="presentation">
+      <section className="social-settings-modal" role="dialog" aria-label="Graph settings">
+        <header>
+          <h3>Settings</h3>
+          <button type="button" onClick={onClose} aria-label="Close settings">Close</button>
+        </header>
+        <div className="social-settings-group">
+          <h4>Grid</h4>
+          <label className="social-settings-check">
+            <input
+              type="checkbox"
+              checked={grid.enabled}
+              onChange={(e) => updateGrid({ enabled: e.target.checked })}
+            />
+            Show grid
+          </label>
+          <label className="social-settings-check">
+            <input
+              type="checkbox"
+              checked={grid.snap}
+              onChange={(e) => updateGrid({ snap: e.target.checked })}
+            />
+            Snap to grid
+          </label>
+          <label>
+            Grid size %
+            <input
+              type="number"
+              min={0.5}
+              max={50}
+              step={0.5}
+              value={grid.sizePercent}
+              onChange={(e) => {
+                const next = Number(e.target.value)
+                if (Number.isFinite(next)) updateGrid({ sizePercent: next })
+              }}
+            />
+          </label>
+          <label>
+            Grid appearance
+            <select
+              value={grid.appearance ?? 'lines'}
+              onChange={(e) =>
+                updateGrid({ appearance: e.target.value as NonNullable<GridSettings['appearance']> })
+              }
+            >
+              <option value="lines">Lines</option>
+              <option value="dots">Dots</option>
+              <option value="tile">Tile</option>
+            </select>
+          </label>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 /**

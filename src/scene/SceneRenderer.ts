@@ -35,6 +35,7 @@ import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import { TextFormatRunner } from '../flow/TextFormatRunner'
 import type { FlowEffect, SpawnItem } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
+import type { GraphProposal, GraphProposalAction } from '../social/forumTypes'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
 
 export interface ModelView {
@@ -62,6 +63,11 @@ export interface RichOverlayTarget {
 
 export type ResizeHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
+interface SceneRendererOptions {
+  /** Read-only miniature renderer: draw graph state without starting runtime effects. */
+  preview?: boolean
+}
+
 const CULL_PADDING = 5 // scene percent
 const DETAILED_SELECTION_LIMIT = 80
 const FLOW_CINEMATIC_EFFECTIVE_SCALE = 1.18
@@ -76,6 +82,10 @@ export class SceneRenderer {
   private gridLayer!: Graphics
   /** Selection rings, drawn over `nodesLayer` and rebuilt only on dirty. */
   private selectionLayer!: Container
+  /** Pending social proposal visuals, drawn in Pixi world coords. */
+  private proposalLayer!: Container
+  private proposalGfx!: Graphics
+  private graphProposals: readonly GraphProposal[] = []
   /** Box-select rectangle (single Graphics). */
   private boxSelectGfx!: Graphics
   private cosmeticTipHandleGfx!: Graphics
@@ -122,6 +132,7 @@ export class SceneRenderer {
   private flowAuraLayer!: Container
   private flowAuraGlow!: Container
   private flowAuraGlowBlur: BlurFilter | null = null
+  private flowAuraGlowFilters: BlurFilter[] = []
   /** Per-active-node aura graphics, lazily expanded. */
   private flowAuraPool: Graphics[] = []
   /** Per-active-node crisp ring graphics (no filter), pooled. */
@@ -239,13 +250,19 @@ export class SceneRenderer {
   private dirty = true
   /** Set by `destroy()`; prevents async init from resuming after teardown. */
   private disposed = false
+  private renderErrorLogged = false
+  private readonly options: SceneRendererOptions
+
+  constructor(options: SceneRendererOptions = {}) {
+    this.options = options
+  }
 
   async init(host: HTMLElement): Promise<void> {
     if (this.disposed) return
     if (this.app) throw new Error('SceneRenderer already initialised')
     const app = new Application()
     await app.init({
-      preference: 'webgl',
+      preference: 'webgpu',
       resizeTo: host,
       antialias: true,
       // Transparent canvas — diagram background is rendered by a DOM layer
@@ -257,7 +274,7 @@ export class SceneRenderer {
     if (this.disposed) {
       // We were torn down while awaiting; clean up the orphan and bail.
       try {
-        app.destroy(true, { children: true })
+        app.destroy({ removeView: true }, { children: true })
       } catch {
         /* ignore */
       }
@@ -274,6 +291,11 @@ export class SceneRenderer {
     this.gridLayer.visible = false
     this.nodesLayer = new Container()
     this.nodesLayer.eventMode = 'none'
+    this.proposalLayer = new Container()
+    this.proposalLayer.eventMode = 'none'
+    this.proposalGfx = new Graphics()
+    this.proposalGfx.eventMode = 'none'
+    this.proposalLayer.addChild(this.proposalGfx)
     this.selectionLayer = new Container()
     this.selectionLayer.eventMode = 'none'
     // Aura layer sits BELOW nodes so the wavey glow bleeds outward but the
@@ -317,11 +339,14 @@ export class SceneRenderer {
     this.flowAuraLayer.eventMode = 'none'
     this.flowAuraGlow = new Container()
     this.flowAuraGlow.eventMode = 'none'
-    this.flowAuraGlowBlur = new BlurFilter({ strength: 14, quality: 4, kernelSize: 9 })
     this.flowWireGlowGfx = new Graphics()
     this.flowWireGlowGfx.eventMode = 'none'
     this.flowAuraGlow.addChild(this.flowWireGlowGfx)
-    this.flowAuraGlow.filters = [this.flowAuraGlowBlur]
+    if (!this.options.preview) {
+      this.flowAuraGlowBlur = new BlurFilter({ strength: 14, quality: 4, kernelSize: 9 })
+      this.flowAuraGlowFilters = [this.flowAuraGlowBlur]
+    }
+    this.flowAuraGlow.filters = []
     this.flowAuraLayer.addChild(this.flowAuraGlow)
     this.flowOverlayGfx = new Graphics()
     this.flowOverlayGfx.eventMode = 'none'
@@ -332,6 +357,7 @@ export class SceneRenderer {
     this.world.addChild(this.selectionAuraLayer)
     this.world.addChild(this.flowAuraLayer)
     this.world.addChild(this.nodesLayer)
+    this.world.addChild(this.proposalLayer)
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
     // Ephemeral spawn layer sits above nodes so spawned decorations are
@@ -367,6 +393,7 @@ export class SceneRenderer {
     app.stage.addChild(this.connectGhost)
     this.nodePool = new NodePool(this.nodesLayer)
     this.nodePool.onNodeFit = (id, w, h) => {
+      if (this.options.preview) return
       const n = this.model.nodes.get(id) as ModelNode | undefined
       if (!n) return
       if (Math.abs(n.w - w) <= 0.01 && Math.abs(n.h - h) <= 0.01) return
@@ -540,37 +567,58 @@ export class SceneRenderer {
     this.flow.onSpawnCircularStop = (targetId, effectNodeId) => {
       this.beginEphemeralFadeOut(targetId, 'spawn-circular', effectNodeId)
     }
+    app.ticker.remove(app.render, app)
     app.ticker.add(this.onTick)
   }
 
   destroy(): void {
     this.disposed = true
-    if (!this.app) return
+    const app = this.app
+    if (!app) return
+    this.app = null
     try {
-      this.app.ticker?.remove(this.onTick)
+      const stoppable = app as Application & { stop?: () => void }
+      stoppable.stop?.()
+      app.ticker?.remove(app.render, app)
+      app.ticker?.stop()
+      app.ticker?.remove(this.onTick)
     } catch {
       /* ticker may not exist if init failed */
     }
+    try {
+      this.setFlowGlowFilter(false)
+      this.selectionAuraOuter.filters = []
+      this.selectionAuraInner.filters = []
+    } catch {
+      /* layers may not exist if init failed */
+    }
     this.cancelMpdCurtain()
-    this.nodePool?.destroy()
-    this.edgePool?.destroy()
-    this.particleLayer?.destroy()
     let canvas: HTMLCanvasElement | null = null
     try {
-      canvas = this.app.canvas
+      canvas = app.canvas
     } catch {
       /* renderer not initialised (happy-dom path) */
-    }
-    try {
-      this.app.destroy(true, { children: true })
-    } catch {
-      /* destroy may fail on a half-initialised app */
     }
     // Pixi v8 doesn't always remove the canvas from its parent — do it ourselves.
     if (canvas && canvas.parentElement) {
       canvas.parentElement.removeChild(canvas)
     }
-    this.app = null
+    // Pixi can still have a browser rAF already queued while React is tearing
+    // down the canvas. Defer GPU resource destruction to the next turn so a
+    // stale render instruction cannot see half-destroyed Graphics geometry.
+    const nodePool = this.nodePool
+    const edgePool = this.edgePool
+    const particleLayer = this.particleLayer
+    globalThis.setTimeout(() => {
+      try { nodePool?.destroy() } catch (err) { console.warn('[SceneRenderer] node pool destroy failed', err) }
+      try { edgePool?.destroy() } catch (err) { console.warn('[SceneRenderer] edge pool destroy failed', err) }
+      try { particleLayer?.destroy() } catch (err) { console.warn('[SceneRenderer] particle layer destroy failed', err) }
+      try {
+        app.destroy({ removeView: true }, { children: true })
+      } catch {
+        /* destroy may fail on a half-initialised app */
+      }
+    }, 32)
     this.quadtree.clear()
     this.edgeQuadtree.clear()
     this.incidentEdges.clear()
@@ -583,7 +631,7 @@ export class SceneRenderer {
   setModel(model: ModelView): void {
     this.model = model
     this.rebuildQuadtree()
-    this.syncAlwaysPlayEffects(model.nodes)
+    if (!this.options.preview) this.syncAlwaysPlayEffects(model.nodes)
     this.dirty = true
   }
 
@@ -704,6 +752,11 @@ export class SceneRenderer {
       return
     }
     this.connectionPopupMetrics = { edgeId, ...metrics }
+    this.dirty = true
+  }
+
+  setGraphProposals(proposals: readonly GraphProposal[]): void {
+    this.graphProposals = proposals
     this.dirty = true
   }
 
@@ -1008,6 +1061,8 @@ export class SceneRenderer {
     this.activatedPreviewNodes.clear()
     this.activePreviewGroups.clear()
     this.flowOverlayGfx?.clear()
+    this.flowWireGlowGfx?.clear()
+    this.setFlowGlowFilter(false)
     this.dirty = true
   }
 
@@ -1324,6 +1379,7 @@ export class SceneRenderer {
   // ---- internals ----------------------------------------------------------
 
   private onTick = (ticker: { deltaMS: number }): void => {
+    if (this.disposed) return
     if (!this.app) return
     // Resize tracking: Pixi's resizeTo handles canvas; we mirror viewport size.
     if (
@@ -1357,6 +1413,8 @@ export class SceneRenderer {
     } else if (this.flowOverlayGfx && (this.flowOverlayGfx as { geometry?: unknown }).geometry) {
       // Ensure the overlay is cleared once the cascade ends.
       this.flowOverlayGfx.clear()
+      this.flowWireGlowGfx?.clear()
+      this.setFlowGlowFilter(false)
     }
     // Camera-tracking lerp: keep ticking while either an active cameraTracked
     // halo / wire reveal exists or the offset hasn't fully eased back to zero.
@@ -1435,6 +1493,15 @@ export class SceneRenderer {
       this.fps = Math.round((this.fpsAccumFrames * 1000) / this.fpsAccumTimeMs)
       this.fpsAccumFrames = 0
       this.fpsAccumTimeMs = 0
+    }
+    try {
+      this.app?.render()
+      this.renderErrorLogged = false
+    } catch (err) {
+      if (!this.renderErrorLogged) {
+        this.renderErrorLogged = true
+        console.warn(`[SceneRenderer:${this.options.preview ? 'preview' : 'main'}] render failed:`, err)
+      }
     }
   }
 
@@ -1573,7 +1640,7 @@ export class SceneRenderer {
       this.prevVisibleNodes.delete(id)
     }
     this.rebuildEdgeIndex()
-    this.syncAlwaysPlayEffects(nodes)
+    if (!this.options.preview) this.syncAlwaysPlayEffects(nodes)
     this.dirty = true
   }
 
@@ -1775,7 +1842,207 @@ export class SceneRenderer {
     return progress == null ? null : Math.max(0, Math.min(1, progress))
   }
 
+  private drawGraphProposals(): void {
+    const g = this.proposalGfx
+    if (!g) return
+    g.clear()
+    if (this.graphProposals.length === 0) return
+
+    for (const proposal of this.graphProposals) {
+      if (proposal.status !== 'pending' && proposal.status !== 'accepted') continue
+      const accepted = proposal.status === 'accepted'
+      switch (proposal.payload.action) {
+        case 'add-node': {
+          const existing = this.model.nodes.get(proposalCreatedNodeId(proposal.id))
+          const ghost: ModelNode = existing ?? {
+            id: proposalCreatedNodeId(proposal.id),
+            label: proposal.payload.newNodeLabel,
+            x: 50,
+            y: 50,
+            w: DEFAULT_NODE.w,
+            h: DEFAULT_NODE.h,
+            shape: DEFAULT_NODE.shape,
+            cellColor: DEFAULT_NODE.cellColor,
+            membraneColor: DEFAULT_NODE.membraneColor,
+          }
+          this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          break
+        }
+        case 'add-node-edge': {
+          const source = this.model.nodes.get(proposal.payload.sourceNodeId)
+          if (!source) break
+          const existing = this.model.nodes.get(proposalCreatedNodeId(proposal.id))
+          const ghost: ModelNode = existing ?? {
+            id: proposalCreatedNodeId(proposal.id),
+            label: proposal.payload.newNodeLabel,
+            x: source.x + Math.max(8, source.w + 3),
+            y: source.y,
+            w: DEFAULT_NODE.w,
+            h: DEFAULT_NODE.h,
+            shape: DEFAULT_NODE.shape,
+            cellColor: DEFAULT_NODE.cellColor,
+            membraneColor: DEFAULT_NODE.membraneColor,
+          }
+          this.drawProposalConnectionGhost(g, source, ghost, accepted, proposal.payload.action)
+          this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          break
+        }
+        case 'add-edge': {
+          const source = this.model.nodes.get(proposal.payload.sourceNodeId)
+          const target = this.model.nodes.get(proposal.payload.targetNodeId)
+          if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, proposal.payload.action)
+          break
+        }
+        case 'remove-node':
+        case 'rename-node': {
+          const node = this.model.nodes.get(proposal.payload.nodeId)
+          if (node) this.drawProposalNodeConstruction(g, node, accepted, proposal.payload.action)
+          break
+        }
+        case 'remove-edge':
+        case 'rename-edge':
+        case 'rewire-edge': {
+          const edge = this.model.edges.get(proposal.payload.edgeId)
+          if (!edge) break
+          this.drawProposalEdgeConstruction(g, edge, accepted, proposal.payload.action)
+          if (proposal.payload.action === 'rewire-edge') {
+            const source = this.model.nodes.get(edge.from)
+            const target = this.model.nodes.get(proposal.payload.nextTargetNodeId)
+            if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, proposal.payload.action)
+          }
+          break
+        }
+      }
+    }
+  }
+
+  private drawProposalNodeGhost(
+    g: Graphics,
+    node: ModelNode,
+    accepted: boolean,
+    action: GraphProposalAction,
+  ): void {
+    const visual = this.visualNode(node)
+    const cx = (visual.x / 100) * SCENE_W
+    const cy = (visual.y / 100) * SCENE_H
+    const w = (visual.w / 100) * SCENE_W
+    const h = (visual.h / 100) * SCENE_H
+    const alpha = accepted ? 0.2 : 0.12
+    drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
+    g.fill({ color: 0x2563eb, alpha })
+    drawDottedRect(g, cx - w / 2, cy - h / 2, w, h, 12, 0x2563eb, accepted ? 3.4 : 2.4, accepted ? 0.82 : 0.58)
+    this.drawProposalBadge(g, cx + w / 2, cy - h / 2, action)
+  }
+
+  private drawProposalNodeConstruction(
+    g: Graphics,
+    node: ModelNode,
+    accepted: boolean,
+    action: GraphProposalAction,
+  ): void {
+    const visual = this.visualNode(node)
+    const cx = (visual.x / 100) * SCENE_W
+    const cy = (visual.y / 100) * SCENE_H
+    const w = (visual.w / 100) * SCENE_W + 18
+    const h = (visual.h / 100) * SCENE_H + 18
+    drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
+    g.fill({ color: 0xf8c84b, alpha: accepted ? 0.2 : 0.14 })
+    drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
+    g.stroke({ color: 0x1f252d, width: 7, alpha: accepted ? 0.28 : 0.2, alignment: 0.5 })
+    drawConstructionTicks(g, cx - w / 2, cy - h / 2, w, h)
+    this.drawProposalBadge(g, cx + w / 2 + 4, cy - h / 2 - 2, action)
+  }
+
+  private drawProposalConnectionGhost(
+    g: Graphics,
+    source: ModelNode,
+    target: ModelNode,
+    accepted: boolean,
+    action: GraphProposalAction,
+  ): void {
+    const endpoints = this.edgeEndpointPixels(source, target)
+    if (!endpoints) return
+    drawDottedLine(g, endpoints.sx, endpoints.sy, endpoints.tx, endpoints.ty, 18, 0x2563eb, accepted ? 4.4 : 3.4, accepted ? 0.9 : 0.58)
+    this.drawProposalBadge(g, (endpoints.sx + endpoints.tx) / 2, (endpoints.sy + endpoints.ty) / 2, action)
+  }
+
+  private drawProposalEdgeConstruction(
+    g: Graphics,
+    edge: Connection,
+    accepted: boolean,
+    action: GraphProposalAction,
+  ): void {
+    const source = this.model.nodes.get(edge.from)
+    const target = this.model.nodes.get(edge.to)
+    if (!source || !target) return
+    const endpoints = this.edgeEndpointPixels(source, target)
+    if (!endpoints) return
+    const base = Math.max(2, (edge.width / 100) * SCENE_W)
+    g.moveTo(endpoints.sx, endpoints.sy).lineTo(endpoints.tx, endpoints.ty)
+    g.stroke({ color: 0xf8c84b, width: base + 11, alpha: accepted ? 0.56 : 0.42, alignment: 0.5 })
+    drawDottedLine(g, endpoints.sx, endpoints.sy, endpoints.tx, endpoints.ty, 14, 0x1f252d, base + 5, accepted ? 0.48 : 0.35)
+    this.drawProposalBadge(g, (endpoints.sx + endpoints.tx) / 2, (endpoints.sy + endpoints.ty) / 2 - 16, action)
+  }
+
+  private drawProposalBadge(g: Graphics, x: number, y: number, action: GraphProposalAction): void {
+    const r = 11
+    g.circle(x, y, r)
+    g.fill({ color: 0xdc2626, alpha: 0.96 })
+    g.stroke({ color: 0xffffff, width: 2, alpha: 0.95, alignment: 0.5 })
+    const icon = proposalIconKind(action)
+    const s = 5.2
+    if (icon === 'plus') {
+      g.moveTo(x - s, y).lineTo(x + s, y)
+      g.moveTo(x, y - s).lineTo(x, y + s)
+    } else if (icon === 'minus') {
+      g.moveTo(x - s, y).lineTo(x + s, y)
+    } else if (icon === 'x') {
+      g.moveTo(x - s * 0.75, y - s * 0.75).lineTo(x + s * 0.75, y + s * 0.75)
+      g.moveTo(x + s * 0.75, y - s * 0.75).lineTo(x - s * 0.75, y + s * 0.75)
+    } else if (icon === 'rename') {
+      g.moveTo(x - 5, y + 4).lineTo(x - 1, y - 5).lineTo(x + 3, y + 4)
+      g.moveTo(x - 3, y).lineTo(x + 1, y)
+      g.moveTo(x + 5, y - 5).lineTo(x + 5, y + 4)
+    } else {
+      g.moveTo(x - 5, y + 3).lineTo(x + 2, y + 3).lineTo(x + 2, y - 4)
+      g.moveTo(x + 2, y - 4).lineTo(x + 6, y)
+      g.moveTo(x + 2, y - 4).lineTo(x - 2, y)
+    }
+    g.stroke({ color: 0xffffff, width: 2.1, alpha: 0.98, alignment: 0.5 })
+  }
+
+  private edgeEndpointPixels(from: ModelNode, to: ModelNode): {
+    sx: number
+    sy: number
+    tx: number
+    ty: number
+  } | null {
+    const av = this.visualNode(from)
+    const bv = this.visualNode(to)
+    const ax = (av.x / 100) * SCENE_W
+    const ay = (av.y / 100) * SCENE_H
+    const bx = (bv.x / 100) * SCENE_W
+    const by = (bv.y / 100) * SCENE_H
+    const dx = bx - ax
+    const dy = by - ay
+    const len = Math.hypot(dx, dy)
+    if (len <= 1e-3) return null
+    const aHw = ((av.w / 100) * SCENE_W) / 2
+    const aHh = ((av.h / 100) * SCENE_H) / 2
+    const bHw = ((bv.w / 100) * SCENE_W) / 2
+    const bHh = ((bv.h / 100) * SCENE_H) / 2
+    const aEdge = shapeEdgeIntersect(av.shape, aHw, aHh, dx, dy)
+    const bEdge = shapeEdgeIntersect(bv.shape, bHw, bHh, -dx, -dy)
+    return {
+      sx: ax + aEdge.x,
+      sy: ay + aEdge.y,
+      tx: bx + bEdge.x,
+      ty: by + bEdge.y,
+    }
+  }
+
   private drawSelectionAndOverlays(): void {
+    this.drawGraphProposals()
     // Selection halo, legacy-parity (Unigram CSS): a warm wave outside the
     // membrane plus one crisp blue frame. The warm aura is drawn below the
     // node as enlarged shape silhouettes; the node body covers the center,
@@ -2136,6 +2403,7 @@ export class SceneRenderer {
     const glow = this.flowWireGlowGfx
     g.clear()
     glow.clear()
+    let glowUsed = false
     // ---- wire reveals ---------------------------------------------------
     for (const [edgeId, w] of [...this.playWires]) {
       const t = (now - w.startMs) / w.durMs
@@ -2182,6 +2450,7 @@ export class SceneRenderer {
       // Layered wire passes: warm halo (blurred), mid orange, bright core.
       glow.moveTo(fx, fy).lineTo(hx, hy)
       glow.stroke({ color: 0xffd58a, width: baseStrokePx * 4, alpha: 0.28 })
+      glowUsed = true
       g.moveTo(fx, fy).lineTo(hx, hy)
       g.stroke({ color: 0xffaa1f, width: baseStrokePx * 2, alpha: 0.65 })
       g.moveTo(fx, fy).lineTo(hx, hy)
@@ -2192,6 +2461,7 @@ export class SceneRenderer {
         // Bead glow halo (filtered).
         glow.circle(hx, hy, beadR * 1.8)
         glow.fill({ color: 0xffd58a, alpha: 0.55 })
+        glowUsed = true
         // Bead bright core (crisp).
         g.circle(hx, hy, beadR)
         g.fill({ color: 0xfff7d6, alpha: 0.95 })
@@ -2271,6 +2541,13 @@ export class SceneRenderer {
     for (let i = auraUsed; i < this.flowRingPool.length; i++) {
       this.flowRingPool[i].visible = false
     }
+    this.setFlowGlowFilter(glowUsed)
+  }
+
+  private setFlowGlowFilter(enabled: boolean): void {
+    if (!this.flowAuraGlow) return
+    const next = enabled && this.flowAuraGlowFilters.length > 0 ? this.flowAuraGlowFilters : []
+    if (this.flowAuraGlow.filters !== next) this.flowAuraGlow.filters = next
   }
 
   private drawConnectGhost(): void {
@@ -2778,6 +3055,135 @@ interface EphemeralSpawnGroup {
   fadeInMs: number
   fadeOutMs: number
   fadeOutStartedAt: number | null
+}
+
+function proposalCreatedNodeId(proposalId: string): string {
+  return `proposal_${proposalId.replace(/[^a-z0-9_-]+/gi, '_')}_node`
+}
+
+function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' | 'rename' | 'rewire' {
+  switch (action) {
+    case 'add-node':
+    case 'add-node-edge':
+    case 'add-edge':
+      return 'plus'
+    case 'remove-node':
+      return 'minus'
+    case 'remove-edge':
+      return 'x'
+    case 'rename-node':
+    case 'rename-edge':
+      return 'rename'
+    case 'rewire-edge':
+      return 'rewire'
+  }
+}
+
+function drawSceneNodeShapePath(
+  g: Graphics,
+  shape: ModelNode['shape'],
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+): void {
+  switch (shape) {
+    case 'rectangle':
+      g.rect(cx - w / 2, cy - h / 2, w, h)
+      break
+    case 'rounded-rect':
+    case 'chat-bubble':
+    case 'thinking-cloud':
+      g.roundRect(cx - w / 2, cy - h / 2, w, h, Math.min(w, h) * 0.18)
+      break
+    case 'circle':
+      g.circle(cx, cy, Math.min(w, h) / 2)
+      break
+    case 'oval':
+      g.ellipse(cx, cy, w / 2, h / 2)
+      break
+    case 'diamond':
+      g.poly([cx, cy - h / 2, cx + w / 2, cy, cx, cy + h / 2, cx - w / 2, cy])
+      break
+    case 'hexagon': {
+      const hw = w / 2
+      const hh = h / 2
+      const cut = hw * 0.5
+      g.poly([
+        cx - hw + cut, cy - hh,
+        cx + hw - cut, cy - hh,
+        cx + hw, cy,
+        cx + hw - cut, cy + hh,
+        cx - hw + cut, cy + hh,
+        cx - hw, cy,
+      ])
+      break
+    }
+    case 'parallelogram': {
+      const skew = w * 0.18
+      g.poly([
+        cx - w / 2 + skew, cy - h / 2,
+        cx + w / 2, cy - h / 2,
+        cx + w / 2 - skew, cy + h / 2,
+        cx - w / 2, cy + h / 2,
+      ])
+      break
+    }
+    case 'triangle':
+      g.poly([cx, cy - h / 2, cx + w / 2, cy + h / 2, cx - w / 2, cy + h / 2])
+      break
+  }
+}
+
+function drawDottedRect(
+  g: Graphics,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  step: number,
+  color: number,
+  width: number,
+  alpha: number,
+): void {
+  drawDottedLine(g, x, y, x + w, y, step, color, width, alpha)
+  drawDottedLine(g, x + w, y, x + w, y + h, step, color, width, alpha)
+  drawDottedLine(g, x + w, y + h, x, y + h, step, color, width, alpha)
+  drawDottedLine(g, x, y + h, x, y, step, color, width, alpha)
+}
+
+function drawDottedLine(
+  g: Graphics,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  step: number,
+  color: number,
+  width: number,
+  alpha: number,
+): void {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len = Math.hypot(dx, dy)
+  if (len <= 1e-3) return
+  const ux = dx / len
+  const uy = dy / len
+  const radius = Math.max(1.4, width * 0.5)
+  const spacing = Math.max(step, radius * 3)
+  for (let dist = 0; dist <= len; dist += spacing) {
+    g.circle(x1 + ux * dist, y1 + uy * dist, radius)
+    g.fill({ color, alpha })
+  }
+}
+
+function drawConstructionTicks(g: Graphics, x: number, y: number, w: number, h: number): void {
+  const step = 18
+  for (let px = x - h; px < x + w + h; px += step) {
+    g.moveTo(px, y).lineTo(px + h * 0.55, y + h * 0.55)
+    g.moveTo(px, y + h).lineTo(px + h * 0.45, y + h - h * 0.45)
+  }
+  g.stroke({ color: 0x1f252d, width: 2.2, alpha: 0.55, alignment: 0.5 })
 }
 
 function nodeAabb(n: ModelNode) {
