@@ -1,10 +1,11 @@
 /**
- * KeyboardController — Delete/Backspace remove selected entities,
+ * KeyboardController — Delete/Backspace remove selected connections,
  * Ctrl+Z/Ctrl+Shift+Z (or Ctrl+Y) drive undo/redo. Listens on `window` so the
  * canvas does not need focus.
  */
 
 import { useOmniStore } from '../model/store'
+import { clearSocialEdgeDraft } from '../social/graphDraft'
 
 export class KeyboardController {
   constructor() {
@@ -51,12 +52,11 @@ export class KeyboardController {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const s = useOmniStore.getState()
-      const nodeSel = s.selectedIds
       const edgeSel = s.selectedEdgeIds
-      if (nodeSel.size === 0 && edgeSel.size === 0) return
+      if (edgeSel.size === 0) return
       e.preventDefault()
-      if (nodeSel.size > 0) s.removeNodes([...nodeSel])
-      if (edgeSel.size > 0) s.removeEdges([...edgeSel])
+      s.removeEdges([...edgeSel])
+      for (const id of edgeSel) clearSocialEdgeDraft(id)
       return
     }
     if (e.key === 'Escape') {

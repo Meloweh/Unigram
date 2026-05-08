@@ -19,9 +19,9 @@ import { useOmniStore } from '../model/store'
 import { exportBundle } from '../model/projectBundle'
 import { spawnGrid, spawnNested } from '../bench/spawnGrid'
 import { runScenario, listScenarios, type BenchResult } from '../bench/harness'
-import { applyThemeToDOM, resolvePalette } from '../theme/themes'
-import { resolveBackground } from '../theme/backgrounds'
-import type { ThemeMode, BackgroundConfig } from '../theme/types'
+import { ALL_THEME_OPTIONS, applyThemeToDOM, resolvePalette } from '../theme/themes'
+import { GRADIENT_PRESETS, PATTERN_PRESETS, resolveBackground } from '../theme/backgrounds'
+import type { ThemeMode, BackgroundConfig, BackgroundType } from '../theme/types'
 import { FpsOverlay } from './FpsOverlay'
 import { LeftSidebar, DRAG_MIME_SHAPE, DRAG_MIME_MEDIA } from '../ui/LeftSidebar'
 import { RightSidebar } from '../ui/RightSidebar'
@@ -34,8 +34,16 @@ import type { GridSettings, ModelNode, NodeShape } from '../model/types'
 import { DEFAULT_GRID, DEFAULT_NODE } from '../model/types'
 import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry'
 import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
-import { blobToBase64, saveCloudDiagram } from '../social/cloudClient'
+import {
+  blobToBase64,
+  getUserPreferences,
+  saveCloudDiagram,
+  saveUserPreferences,
+} from '../social/cloudClient'
 import { SocialForumLayer } from './SocialForum'
+import { projectWithServerGeometry, recomputeTransformDraft } from '../social/transformDraft'
+import type { SocialUserPreferences } from '../social/forumTypes'
+import { projectWithoutSocialEdgeDrafts } from '../social/graphDraft'
 
 interface OmnigramAppProps {
   cloudDiagramId?: string
@@ -60,21 +68,44 @@ export function OmnigramApp({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [renderer, setRenderer] = useState<SceneRenderer | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [forumOpen, setForumOpen] = useState(false)
+  const [preferences, setPreferences] = useState<SocialUserPreferences>(() => loadLocalPreferences())
   const showSidebars = chrome?.sidebars ?? true
   const showDevPanel = chrome?.devPanel ?? true
   const showFps = chrome?.fps ?? true
   const showToolbar = chrome?.toolbar ?? true
-  const cosmetics = useSyncExternalStore(
-    useOmniStore.subscribe,
-    () => useOmniStore.getState().model.cosmetics,
-  )
   const pickMode = useSyncExternalStore(
     useOmniStore.subscribe,
     () => useOmniStore.getState().pickMode,
     () => null,
   )
-  const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light'
-  const background = cosmetics?.background
+  const themeMode: ThemeMode = preferences.themeMode ?? 'light'
+  const background = preferences.background
+  const graphMounted = !forumOpen
+
+  useEffect(() => {
+    let disposed = false
+    const load = () => void getUserPreferences().then((remote) => {
+      if (disposed || !remote) return
+      setPreferences((current) => ({ ...current, ...remote }))
+      storeLocalPreferences(remote)
+    }).catch(() => undefined)
+    load()
+    window.addEventListener('omnigram-auth-changed', load)
+    return () => {
+      disposed = true
+      window.removeEventListener('omnigram-auth-changed', load)
+    }
+  }, [])
+
+  const updatePreferences = (patch: SocialUserPreferences) => {
+    setPreferences((current) => {
+      const next = { ...current, ...patch }
+      storeLocalPreferences(next)
+      void saveUserPreferences(next).catch(() => undefined)
+      return next
+    })
+  }
 
   // Apply theme palette to documentElement CSS vars + topical body class.
   useEffect(() => {
@@ -96,6 +127,7 @@ export function OmnigramApp({
   }, [renderer, themeMode])
 
   useEffect(() => {
+    if (!graphMounted) return
     const host = hostRef.current
     if (!host) return
     let disposed = false
@@ -127,7 +159,7 @@ export function OmnigramApp({
       r.destroy()
       setRenderer(null)
     }
-  }, [])
+  }, [graphMounted])
 
   useCloudAutosave(cloudDiagramId)
 
@@ -144,8 +176,9 @@ export function OmnigramApp({
       }}
     >
       <BackgroundLayer config={background} />
-      <div
-        ref={hostRef}
+      {graphMounted && (
+        <div
+          ref={hostRef}
         style={{
           position: 'absolute',
           inset: 0,
@@ -255,7 +288,8 @@ export function OmnigramApp({
           })
           store.select(id)
         }}
-      />
+        />
+      )}
       {onHome && (
         <>
           <button
@@ -279,22 +313,29 @@ export function OmnigramApp({
         </>
       )}
       {showFps && <FpsOverlay renderer={renderer} />}
-      {showToolbar && <EditorToolbar renderer={renderer} onHome={onHome} />}
-      {showDevPanel && <DevPanel renderer={renderer} />}
-      {showSidebars && <LeftSidebar />}
-      {showSidebars && <RightSidebar renderer={renderer} />}
-      <ConnectionReferencePopup renderer={renderer} />
-      <RichNodeOverlay renderer={renderer} />
-      <MpdDialOverlay renderer={renderer} />
-      <NodeLabelEditor renderer={renderer} hostRef={hostRef} />
+      {graphMounted && showToolbar && <EditorToolbar renderer={renderer} onHome={onHome} />}
+      {graphMounted && showDevPanel && <DevPanel renderer={renderer} />}
+      {graphMounted && showSidebars && <LeftSidebar />}
+      {graphMounted && showSidebars && <RightSidebar renderer={renderer} />}
+      {graphMounted && <ConnectionReferencePopup renderer={renderer} />}
+      {graphMounted && <RichNodeOverlay renderer={renderer} />}
+      {graphMounted && <MpdDialOverlay renderer={renderer} />}
+      {graphMounted && <NodeLabelEditor renderer={renderer} hostRef={hostRef} />}
       <SocialForumLayer
         diagramId={cloudDiagramId}
         projectTopic={cloudDiagramTopic}
         projectDescription={cloudDiagramDescription}
-        renderer={renderer}
+        renderer={graphMounted ? renderer : null}
+        onOpenChange={setForumOpen}
       />
-      {settingsOpen && <GraphSettingsDialog onClose={() => setSettingsOpen(false)} />}
-      {pickMode === 'link-node' && <PickModeBanner />}
+      {settingsOpen && (
+        <GraphSettingsDialog
+          preferences={preferences}
+          onPreferencesChange={updatePreferences}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {graphMounted && pickMode === 'link-node' && <PickModeBanner />}
     </div>
   )
 }
@@ -372,7 +413,9 @@ function useCloudAutosave(diagramId: string | undefined): void {
       try {
         const models = new Map(state.models)
         models.set(state.model.id, state.model)
-        const blob = await exportBundle({ rootModelId: state.model.id, models })
+        const snapshot = { rootModelId: state.model.id, models }
+        recomputeTransformDraft(snapshot)
+        const blob = await exportBundle(projectWithoutSocialEdgeDrafts(projectWithServerGeometry(snapshot)))
         await saveCloudDiagram(diagramId, {
           title: state.model.name || 'Untitled diagram',
           bundleBase64: await blobToBase64(blob),
@@ -404,14 +447,27 @@ function useCloudAutosave(diagramId: string | undefined): void {
   }, [diagramId])
 }
 
-function GraphSettingsDialog({ onClose }: { onClose: () => void }) {
+function GraphSettingsDialog({
+  preferences,
+  onPreferencesChange,
+  onClose,
+}: {
+  preferences: SocialUserPreferences
+  onPreferencesChange: (patch: SocialUserPreferences) => void
+  onClose: () => void
+}) {
   useSyncExternalStore(
     useOmniStore.subscribe,
     () => useOmniStore.getState().rev,
     () => 0,
   )
   const grid = useOmniStore.getState().model.grid ?? DEFAULT_GRID
+  const themeMode = preferences.themeMode ?? 'light'
+  const background = preferences.background ?? defaultBackgroundForType('gradient')
   const updateGrid = (patch: Partial<GridSettings>) => useOmniStore.getState().setGrid(patch)
+  const updateBackground = (next: BackgroundConfig) => onPreferencesChange({ background: next })
+  const updateTheme = (next: ThemeMode) => onPreferencesChange({ themeMode: next })
+  const backgroundType = background.type === 'image' ? 'gradient' : background.type
 
   return (
     <div className="social-modal-backdrop" role="presentation">
@@ -420,6 +476,87 @@ function GraphSettingsDialog({ onClose }: { onClose: () => void }) {
           <h3>Settings</h3>
           <button type="button" onClick={onClose} aria-label="Close settings">Close</button>
         </header>
+        <div className="social-settings-group">
+          <h4>Appearance</h4>
+          <label>
+            Theme preset
+            <select
+              value={themeMode}
+              onChange={(e) => updateTheme(e.target.value as ThemeMode)}
+            >
+              <optgroup label="Base">
+                {ALL_THEME_OPTIONS.filter((option) => option.group === 'base').map((option) => (
+                  <option key={option.id} value={option.id}>{option.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Topical">
+                {ALL_THEME_OPTIONS.filter((option) => option.group === 'topical').map((option) => (
+                  <option key={option.id} value={option.id}>{option.name}</option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <label>
+            Background style
+            <select
+              value={backgroundType}
+              onChange={(e) => updateBackground(defaultBackgroundForType(e.target.value as BackgroundType))}
+            >
+              <option value="gradient">Gradient</option>
+              <option value="pattern">Pattern</option>
+              <option value="solid">Solid color</option>
+            </select>
+          </label>
+          {backgroundType === 'gradient' && (
+            <label>
+              Gradient preset
+              <select
+                value={presetIdForBackground(background, GRADIENT_PRESETS)}
+                onChange={(e) => {
+                  const preset = GRADIENT_PRESETS.find((item) => item.id === e.target.value)
+                  if (preset) updateBackground({ type: 'gradient', value: preset.value })
+                }}
+              >
+                {presetIdForBackground(background, GRADIENT_PRESETS) === 'custom' && (
+                  <option value="custom">Custom</option>
+                )}
+                {GRADIENT_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {backgroundType === 'pattern' && (
+            <label>
+              Pattern preset
+              <select
+                value={presetIdForBackground(background, PATTERN_PRESETS)}
+                onChange={(e) => {
+                  const preset = PATTERN_PRESETS.find((item) => item.id === e.target.value)
+                  if (preset) updateBackground({ type: 'pattern', value: preset.value })
+                }}
+              >
+                {presetIdForBackground(background, PATTERN_PRESETS) === 'custom' && (
+                  <option value="custom">Custom</option>
+                )}
+                {PATTERN_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {backgroundType === 'solid' && (
+            <label>
+              Background color
+              <input
+                type="color"
+                value={colorInputValue(background.value)}
+                onChange={(e) => updateBackground({ type: 'solid', value: e.target.value })}
+              />
+            </label>
+          )}
+          <div className="social-settings-preview" style={resolveBackground(background)} aria-hidden />
+        </div>
         <div className="social-settings-group">
           <h4>Grid</h4>
           <label className="social-settings-check">
@@ -469,6 +606,49 @@ function GraphSettingsDialog({ onClose }: { onClose: () => void }) {
       </section>
     </div>
   )
+}
+
+function defaultBackgroundForType(type: BackgroundType): BackgroundConfig {
+  if (type === 'pattern') {
+    const preset = PATTERN_PRESETS[0]
+    return { type: 'pattern', value: preset?.value ?? '' }
+  }
+  if (type === 'solid') return { type: 'solid', value: '#e8eef6' }
+  const preset = GRADIENT_PRESETS[0]
+  return {
+    type: 'gradient',
+    value: preset?.value ?? 'radial-gradient(circle at 30% 20%, #f5f9ff, #dfebf8)',
+  }
+}
+
+function presetIdForBackground(
+  background: BackgroundConfig,
+  presets: readonly { id: string; value: string }[],
+): string {
+  return presets.find((preset) => preset.value === background.value)?.id ?? 'custom'
+}
+
+function colorInputValue(value: string): string {
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : '#e8eef6'
+}
+
+const SOCIAL_PREFS_KEY = 'omnigram-social-preferences'
+
+function loadLocalPreferences(): SocialUserPreferences {
+  try {
+    const raw = window.localStorage.getItem(SOCIAL_PREFS_KEY)
+    return raw ? JSON.parse(raw) as SocialUserPreferences : {}
+  } catch {
+    return {}
+  }
+}
+
+function storeLocalPreferences(preferences: SocialUserPreferences): void {
+  try {
+    window.localStorage.setItem(SOCIAL_PREFS_KEY, JSON.stringify(preferences))
+  } catch {
+    /* localStorage can be unavailable */
+  }
 }
 
 /**

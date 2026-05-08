@@ -3,10 +3,10 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
+import type { ConnectionReference } from '../src/model/types'
 import {
   computeAgreementRatio,
   parseForumRef,
-  proposalForumRef,
   resolveExpiredProposalStatus,
   type ForumComment,
   type ForumCommentInput,
@@ -17,6 +17,9 @@ import {
   type GraphProposal,
   type GraphProposalPayload,
   type GraphProposalStatus,
+  type NodeGeometry,
+  type SocialUserPreferences,
+  type TopicVoteValue,
   type VoteStance,
 } from '../src/social/forumTypes'
 
@@ -39,6 +42,8 @@ interface DiagramDb {
   proposals: GraphProposal[]
   users: StoredUser[]
   sessions: StoredSession[]
+  topicVotes: StoredTopicVote[]
+  userPreferences: StoredUserPreference[]
 }
 
 interface StoredForumTopic {
@@ -66,6 +71,21 @@ interface StoredSession {
   token: string
   userId: string
   createdAt: string
+}
+
+interface StoredTopicVote {
+  diagramId: string
+  topicId: string
+  userId: string
+  username: string
+  vote: TopicVoteValue
+  updatedAt: string
+}
+
+interface StoredUserPreference {
+  userId: string
+  preferences: SocialUserPreferences
+  updatedAt: string
 }
 
 const DB_DIR = '.omnigram-cloud'
@@ -131,7 +151,30 @@ async function handleAuthRequest(req: IncomingMessage, res: ServerResponse): Pro
     const db = await readDb()
     const user = authenticatedUser(db, req)
     if (!user) throw new BadRequestError('Not logged in')
-    sendJson(res, 200, { user: publicUser(user) })
+    sendJson(res, 200, { user: publicUser(db, user) })
+    return
+  }
+  if (req.method === 'GET' && route === 'preferences') {
+    const db = await readDb()
+    const user = requireAuthenticatedUser(db, req)
+    sendJson(res, 200, { preferences: preferencesForUser(db, user.id) })
+    return
+  }
+  if (req.method === 'PUT' && route === 'preferences') {
+    const db = await readDb()
+    const user = requireAuthenticatedUser(db, req)
+    const body = await readJsonBody<{ preferences?: unknown }>(req)
+    const preferences = sanitizeUserPreferences(body.preferences)
+    const existing = db.userPreferences.find((item) => item.userId === user.id)
+    const now = new Date().toISOString()
+    if (existing) {
+      existing.preferences = preferences
+      existing.updatedAt = now
+    } else {
+      db.userPreferences.push({ userId: user.id, preferences, updatedAt: now })
+    }
+    await writeDb(db)
+    sendJson(res, 200, { preferences, user: publicUser(db, user) })
     return
   }
   if (req.method === 'POST' && route === 'logout') {
@@ -207,7 +250,7 @@ async function handleForumRequest(
   if (resource === 'topics' && segments.length === 3 && req.method === 'GET') {
     const ref = parseForumRef(url.searchParams.get('forumRef') ?? 'diagram')
     if (!ref) throw new BadRequestError('Invalid forum reference')
-    const topics = await listForumTopics(diagramId, ref)
+    const topics = await listForumTopics(req, diagramId, ref)
     sendJson(res, 200, { topics })
     return
   }
@@ -220,8 +263,15 @@ async function handleForumRequest(
   }
 
   if (resource === 'topics' && segments.length === 4 && req.method === 'GET') {
-    const thread = await getForumThread(diagramId, segments[3])
+    const thread = await getForumThread(req, diagramId, segments[3])
     sendJson(res, 200, thread)
+    return
+  }
+
+  if (resource === 'topics' && segments.length === 5 && segments[4] === 'vote' && req.method === 'POST') {
+    const body = await readJsonBody<{ vote?: unknown }>(req)
+    const topic = await voteForumTopic(req, diagramId, segments[3], body)
+    sendJson(res, 200, topic)
     return
   }
 
@@ -229,6 +279,12 @@ async function handleForumRequest(
     const body = await readJsonBody<Partial<ForumCommentInput>>(req)
     const comment = await createForumComment(req, diagramId, segments[3], body)
     sendJson(res, 201, comment)
+    return
+  }
+
+  if (resource === 'social-scores' && segments.length === 3 && req.method === 'GET') {
+    const scores = await listSocialScores(diagramId)
+    sendJson(res, 200, scores)
     return
   }
 
@@ -302,13 +358,14 @@ async function updateDiagram(id: string, patch: { title?: string; bundleBase64?:
   return diagram
 }
 
-async function listForumTopics(diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
+async function listForumTopics(req: IncomingMessage, diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
   const db = await readDb()
   ensureDiagram(db, diagramId)
+  const viewer = authenticatedUser(db, req)
   const changed = refreshProposalStatuses(db, diagramId)
   const topics = db.topics
     .filter((topic) => topic.diagramId === diagramId && topic.forumRef === forumRef)
-    .map((topic) => summarizeTopic(db, topic))
+    .map((topic) => summarizeTopic(db, topic, viewer))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt))
   if (changed) await writeDb(db)
   return topics
@@ -327,9 +384,7 @@ async function createForumTopic(
   const now = new Date().toISOString()
   const proposalPayload = body.proposal ? sanitizeProposalPayload(body.proposal) : null
   const proposalId = proposalPayload ? randomUUID() : undefined
-  const forumRef = proposalId
-    ? proposalForumRef(proposalId)
-    : sanitizeForumRef(body.forumRef ?? 'diagram')
+  const forumRef = sanitizeForumRef(body.forumRef ?? 'diagram')
   const topic: StoredForumTopic = {
     id: randomUUID(),
     diagramId,
@@ -357,12 +412,13 @@ async function createForumTopic(
   }
   diagram.updatedAt = now
   await writeDb(db)
-  return summarizeTopic(db, topic)
+  return summarizeTopic(db, topic, user)
 }
 
-async function getForumThread(diagramId: string, topicId: string): Promise<ForumThread> {
+async function getForumThread(req: IncomingMessage, diagramId: string, topicId: string): Promise<ForumThread> {
   const db = await readDb()
   ensureDiagram(db, diagramId)
+  const viewer = authenticatedUser(db, req)
   const changed = refreshProposalStatuses(db, diagramId)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
@@ -371,7 +427,7 @@ async function getForumThread(diagramId: string, topicId: string): Promise<Forum
   await writeDb(db)
   void changed
   return {
-    topic: summarizeTopic(db, topic),
+    topic: summarizeTopic(db, topic, viewer),
     comments: db.comments
       .filter((comment) => comment.diagramId === diagramId && comment.topicId === topicId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -405,6 +461,86 @@ async function createForumComment(
   refreshProposalStatuses(db, diagramId)
   await writeDb(db)
   return comment
+}
+
+async function voteForumTopic(
+  req: IncomingMessage,
+  diagramId: string,
+  topicId: string,
+  body: { vote?: unknown },
+): Promise<ForumTopic> {
+  const db = await readDb()
+  ensureDiagram(db, diagramId)
+  const user = requireAuthenticatedUser(db, req)
+  const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
+  if (!topic) throw new NotFoundError('Forum topic not found')
+  if (topic.author.toLowerCase() === user.username.toLowerCase()) {
+    return summarizeTopic(db, topic, user)
+  }
+  const vote = normalizeTopicVote(body.vote)
+  const now = new Date().toISOString()
+  db.topicVotes = db.topicVotes.filter((item) =>
+    !(item.diagramId === diagramId && item.topicId === topicId && item.userId === user.id)
+  )
+  if (vote) {
+    db.topicVotes.push({
+      diagramId,
+      topicId,
+      userId: user.id,
+      username: user.username,
+      vote,
+      updatedAt: now,
+    })
+  }
+  await writeDb(db)
+  return summarizeTopic(db, topic, user)
+}
+
+async function listSocialScores(diagramId: string): Promise<{ nodeScores: Record<string, number>; edgeScores: Record<string, number> }> {
+  const db = await readDb()
+  ensureDiagram(db, diagramId)
+  refreshProposalStatuses(db, diagramId)
+  const nodeScores: Record<string, number> = {}
+  const edgeScores: Record<string, number> = {}
+  for (const topic of db.topics.filter((item) => item.diagramId === diagramId)) {
+    const score = topicScore(db, topic.id)
+    if (topic.forumRef.startsWith('node:')) {
+      addScore(nodeScores, topic.forumRef.slice('node:'.length), score)
+    } else if (topic.forumRef.startsWith('edge:')) {
+      addScore(edgeScores, topic.forumRef.slice('edge:'.length), score)
+    }
+    const proposal = topic.proposalId ? db.proposals.find((item) => item.id === topic.proposalId) : undefined
+    if (!proposal) continue
+    const support = Math.round(computeAgreementRatio(commentsForAgreement(topic, db.comments.filter((c) => c.topicId === topic.id))) * 4)
+    const activity = score + support
+    const payload = proposal.payload
+    switch (payload.action) {
+      case 'add-node-edge':
+        addScore(nodeScores, payload.sourceNodeId, activity)
+        break
+      case 'add-edge':
+        addScore(nodeScores, payload.sourceNodeId, Math.ceil(activity / 2))
+        addScore(nodeScores, payload.targetNodeId, Math.ceil(activity / 2))
+        break
+      case 'remove-node':
+      case 'rename-node':
+        addScore(nodeScores, payload.nodeId, activity)
+        break
+      case 'remove-edge':
+      case 'rename-edge':
+      case 'add-reference':
+      case 'modify-references':
+      case 'rewire-edge':
+        addScore(edgeScores, payload.edgeId, activity)
+        break
+      case 'commit-transform':
+        for (const transform of payload.transforms) addScore(nodeScores, transform.nodeId, Math.max(1, activity))
+        break
+      case 'add-node':
+        break
+    }
+  }
+  return { nodeScores, edgeScores }
 }
 
 async function listActiveProposals(diagramId: string): Promise<GraphProposal[]> {
@@ -466,6 +602,8 @@ async function readDb(): Promise<DiagramDb> {
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
       users: Array.isArray(parsed.users) ? parsed.users : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      topicVotes: Array.isArray(parsed.topicVotes) ? parsed.topicVotes : [],
+      userPreferences: Array.isArray(parsed.userPreferences) ? parsed.userPreferences : [],
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -488,7 +626,16 @@ function dbPath(): string {
 }
 
 function emptyDb(): DiagramDb {
-  return { diagrams: [], topics: [], comments: [], proposals: [], users: [], sessions: [] }
+  return {
+    diagrams: [],
+    topics: [],
+    comments: [],
+    proposals: [],
+    users: [],
+    sessions: [],
+    topicVotes: [],
+    userPreferences: [],
+  }
 }
 
 async function registerUser(body: { username?: unknown; password?: unknown }) {
@@ -511,7 +658,7 @@ async function registerUser(body: { username?: unknown; password?: unknown }) {
   const session = createSession(user)
   db.sessions.push(session)
   await writeDb(db)
-  return { user: publicUser(user), token: session.token }
+  return { user: publicUser(db, user), token: session.token }
 }
 
 async function loginUser(body: { username?: unknown; password?: unknown }) {
@@ -523,7 +670,7 @@ async function loginUser(body: { username?: unknown; password?: unknown }) {
   const session = createSession(user)
   db.sessions.push(session)
   await writeDb(db)
-  return { user: publicUser(user), token: session.token }
+  return { user: publicUser(db, user), token: session.token }
 }
 
 function createSession(user: StoredUser): StoredSession {
@@ -552,8 +699,13 @@ function authToken(req: IncomingMessage): string | null {
   return null
 }
 
-function publicUser(user: StoredUser) {
-  return { id: user.id, username: user.username }
+function publicUser(db: DiagramDb, user: StoredUser) {
+  return {
+    id: user.id,
+    username: user.username,
+    reputation: reputationForUser(db, user),
+    preferences: preferencesForUser(db, user.id),
+  }
 }
 
 function cleanUsername(value: unknown): string {
@@ -588,15 +740,20 @@ function ensureDiagram(db: DiagramDb, id: string): StoredDiagram {
   return diagram
 }
 
-function summarizeTopic(db: DiagramDb, topic: StoredForumTopic): ForumTopic {
+function summarizeTopic(db: DiagramDb, topic: StoredForumTopic, viewer?: StoredUser | null): ForumTopic {
   const comments = db.comments.filter((comment) => comment.topicId === topic.id)
   const proposal = topic.proposalId
     ? db.proposals.find((item) => item.id === topic.proposalId)
     : undefined
+  const viewerVote = viewer
+    ? db.topicVotes.find((vote) => vote.topicId === topic.id && vote.userId === viewer.id)?.vote ?? null
+    : null
   return {
     ...topic,
     commentCount: comments.length,
     agreementRatio: computeAgreementRatio(commentsForAgreement(topic, comments)),
+    score: topicScore(db, topic.id),
+    viewerVote,
     ...(proposal ? { proposal } : {}),
   }
 }
@@ -625,6 +782,38 @@ function commentsForAgreement(
   return [{ author: topic.author, stance: 'agree' }, ...comments]
 }
 
+function topicScore(db: DiagramDb, topicId: string): number {
+  let score = 0
+  for (const vote of db.topicVotes) {
+    if (vote.topicId !== topicId) continue
+    score += vote.vote === 'like' ? 1 : -1
+  }
+  return score
+}
+
+function reputationForUser(db: DiagramDb, user: StoredUser): number {
+  const authoredTopicIds = new Set(
+    db.topics
+      .filter((topic) => topic.author.toLowerCase() === user.username.toLowerCase())
+      .map((topic) => topic.id),
+  )
+  let score = 0
+  for (const vote of db.topicVotes) {
+    if (!authoredTopicIds.has(vote.topicId)) continue
+    score += vote.vote === 'like' ? 1 : -1
+  }
+  return score
+}
+
+function preferencesForUser(db: DiagramDb, userId: string): SocialUserPreferences {
+  return db.userPreferences.find((item) => item.userId === userId)?.preferences ?? {}
+}
+
+function addScore(target: Record<string, number>, id: string, score: number): void {
+  if (!id || score === 0) return
+  target[id] = (target[id] ?? 0) + score
+}
+
 function cleanRequired(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new BadRequestError(`${label} is required`)
   const trimmed = value.trim()
@@ -641,6 +830,12 @@ function sanitizeForumRef(value: unknown): ForumRef {
 
 function normalizeStance(value: unknown): VoteStance {
   return value === 'agree' || value === 'disagree' || value === 'neutral' ? value : 'neutral'
+}
+
+function normalizeTopicVote(value: unknown): TopicVoteValue | null {
+  if (value === null || value === undefined || value === '') return null
+  if (value === 'like' || value === 'dislike') return value
+  throw new BadRequestError('Invalid topic vote')
 }
 
 function normalizeProposalStatus(value: unknown): GraphProposalStatus {
@@ -706,9 +901,89 @@ function sanitizeProposalPayload(value: unknown): GraphProposalPayload {
         edgeId: cleanRequired(value.edgeId, 'Connection'),
         nextTargetNodeId: cleanRequired(value.nextTargetNodeId, 'New target node'),
       }
+    case 'add-reference':
+      return {
+        action: value.action,
+        edgeId: cleanRequired(value.edgeId, 'Connection'),
+        reference: sanitizeReference(value.reference),
+      }
+    case 'modify-references': {
+      if (!Array.isArray(value.references)) throw new BadRequestError('References are required')
+      if (value.references.length > 50) throw new BadRequestError('Reference list is too large')
+      return {
+        action: value.action,
+        edgeId: cleanRequired(value.edgeId, 'Connection'),
+        references: value.references.map((item) => sanitizeReference(item)),
+      }
+    }
+    case 'commit-transform': {
+      if (!Array.isArray(value.transforms) || value.transforms.length === 0) {
+        throw new BadRequestError('Transform list is required')
+      }
+      if (value.transforms.length > 2000) throw new BadRequestError('Transform list is too large')
+      return {
+        action: value.action,
+        transforms: value.transforms.map((item) => sanitizeTransformEntry(item)),
+      }
+    }
     default:
       throw new BadRequestError('Unsupported proposal action')
   }
+}
+
+function sanitizeReference(value: unknown): ConnectionReference {
+  if (!isRecord(value)) throw new BadRequestError('Reference is required')
+  return {
+    title: cleanRequired(value.title, 'Reference title'),
+    citation: typeof value.citation === 'string' ? value.citation.trim().slice(0, 1000) : '',
+    url: typeof value.url === 'string' ? value.url.trim().slice(0, 2000) : '',
+  }
+}
+
+function sanitizeTransformEntry(value: unknown): { nodeId: string; from: NodeGeometry; to: NodeGeometry } {
+  if (!isRecord(value)) throw new BadRequestError('Invalid transform entry')
+  return {
+    nodeId: cleanRequired(value.nodeId, 'Node'),
+    from: sanitizeGeometry(value.from, 'Previous geometry'),
+    to: sanitizeGeometry(value.to, 'Next geometry'),
+  }
+}
+
+function sanitizeGeometry(value: unknown, label: string): NodeGeometry {
+  if (!isRecord(value)) throw new BadRequestError(`${label} is required`)
+  return {
+    x: cleanFinite(value.x, `${label} x`),
+    y: cleanFinite(value.y, `${label} y`),
+    w: cleanFinite(value.w, `${label} width`),
+    h: cleanFinite(value.h, `${label} height`),
+  }
+}
+
+function cleanFinite(value: unknown, label: string): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) throw new BadRequestError(`${label} is invalid`)
+  return n
+}
+
+function sanitizeUserPreferences(value: unknown): SocialUserPreferences {
+  if (!isRecord(value)) return {}
+  const preferences: SocialUserPreferences = {}
+  if (typeof value.themeMode === 'string' && value.themeMode.length <= 64) {
+    preferences.themeMode = value.themeMode as SocialUserPreferences['themeMode']
+  }
+  if (isRecord(value.background) && typeof value.background.type === 'string' && typeof value.background.value === 'string') {
+    const type = value.background.type
+    if (type !== 'gradient' && type !== 'solid' && type !== 'image' && type !== 'pattern') return preferences
+    const background: NonNullable<SocialUserPreferences['background']> = {
+      type,
+      value: value.background.value.slice(0, 4000),
+    }
+    if (typeof value.background.fit === 'string') background.fit = value.background.fit as NonNullable<SocialUserPreferences['background']>['fit']
+    if (typeof value.background.opacity === 'number') background.opacity = value.background.opacity
+    if (typeof value.background.blur === 'number') background.blur = value.background.blur
+    preferences.background = background
+  }
+  return preferences
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

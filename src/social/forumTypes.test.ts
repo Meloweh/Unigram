@@ -48,5 +48,7 @@ describe('forumTypes', () => {
     expect(proposalActionLabel({ action: 'add-node' })).toBe('Add node')
     expect(proposalActionLabel({ action: 'add-node-edge' })).toBe('Add node')
     expect(proposalActionLabel({ action: 'rewire-edge' })).toBe('Rewire connection')
+    expect(proposalActionLabel({ action: 'commit-transform' })).toBe('Commit transform')
+    expect(proposalActionLabel({ action: 'add-reference' })).toBe('Add reference')
   })
 })

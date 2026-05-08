@@ -32,6 +32,31 @@ import {
 let idCounter = 0
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(idCounter++).toString(36)}`
 
+function uniqueNodeLabel(
+  label: string | undefined,
+  nodes: ReadonlyMap<string, ModelNode>,
+  selfId: string,
+): string {
+  const trimmed = label ?? ''
+  if (!trimmed.trim()) return trimmed
+  const exists = (candidate: string) => {
+    const needle = candidate.trim().toLowerCase()
+    for (const node of nodes.values()) {
+      if (node.id === selfId) continue
+      if (node.label.trim().toLowerCase() === needle) return true
+    }
+    return false
+  }
+  if (!exists(trimmed)) return trimmed
+  let index = 2
+  let candidate = `${trimmed} ${index}`
+  while (exists(candidate)) {
+    index += 1
+    candidate = `${trimmed} ${index}`
+  }
+  return candidate
+}
+
 function withPreviewSpawnOffset(host: ModelNode, preview: ModelNode): ModelNode | null {
   const ref = preview.previewOf
   if (!ref || !host.flowEffects) return null
@@ -356,6 +381,7 @@ export const useOmniStore = create<Store>((set, get) => ({
       ...partial,
       id,
     }
+    node.label = uniqueNodeLabel(node.label, get().model.nodes, id)
     get().applyTransaction([{ kind: 'node', op: 'add', node }])
     return id
   },
@@ -421,6 +447,9 @@ export const useOmniStore = create<Store>((set, get) => ({
     const before = get().model.nodes.get(id)
     if (!before) return
     const after = { ...before, ...patch, id }
+    if (typeof patch.label === 'string') {
+      after.label = uniqueNodeLabel(patch.label, get().model.nodes, id)
+    }
     get().applyTransaction([{ kind: 'node', op: 'update', id, before, after }])
   },
 
@@ -504,6 +533,7 @@ export const useOmniStore = create<Store>((set, get) => ({
     const idMap = new Map<string, string>()
     const tx: Patch[] = []
     const newIds: string[] = []
+    const labelRegistry = new Map(s.model.nodes)
     for (const src of clip.nodes) {
       const id = newId('n')
       idMap.set(src.id, id)
@@ -515,9 +545,11 @@ export const useOmniStore = create<Store>((set, get) => ({
         id,
         x: src.x + offsetX,
         y: src.y + offsetY,
+        label: uniqueNodeLabel(src.label, labelRegistry, id),
         flowEffects: src.flowEffects ? src.flowEffects.map((e) => ({ ...e })) : undefined,
         mpdDimensions: src.mpdDimensions ? [...src.mpdDimensions] : undefined,
       }
+      labelRegistry.set(id, node)
       tx.push({ kind: 'node', op: 'add', node })
     }
     for (const src of clip.edges) {

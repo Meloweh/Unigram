@@ -35,7 +35,7 @@ import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import { TextFormatRunner } from '../flow/TextFormatRunner'
 import type { FlowEffect, SpawnItem } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
-import type { GraphProposal, GraphProposalAction } from '../social/forumTypes'
+import type { EntitySocialScores, GraphProposal, GraphProposalAction, TransformProposalEntry } from '../social/forumTypes'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
 
 export interface ModelView {
@@ -85,7 +85,12 @@ export class SceneRenderer {
   /** Pending social proposal visuals, drawn in Pixi world coords. */
   private proposalLayer!: Container
   private proposalGfx!: Graphics
+  private importanceLayer!: Container
+  private importanceGfx!: Graphics
+  private proposalLabelPool: Text[] = []
   private graphProposals: readonly GraphProposal[] = []
+  private socialScores: EntitySocialScores = { nodeScores: {}, edgeScores: {} }
+  private transformPreview: readonly TransformProposalEntry[] = []
   /** Box-select rectangle (single Graphics). */
   private boxSelectGfx!: Graphics
   private cosmeticTipHandleGfx!: Graphics
@@ -291,11 +296,17 @@ export class SceneRenderer {
     this.gridLayer.visible = false
     this.nodesLayer = new Container()
     this.nodesLayer.eventMode = 'none'
+    this.importanceLayer = new Container()
+    this.importanceLayer.eventMode = 'none'
+    this.importanceGfx = new Graphics()
+    this.importanceGfx.eventMode = 'none'
+    this.importanceLayer.addChild(this.importanceGfx)
     this.proposalLayer = new Container()
     this.proposalLayer.eventMode = 'none'
     this.proposalGfx = new Graphics()
     this.proposalGfx.eventMode = 'none'
     this.proposalLayer.addChild(this.proposalGfx)
+    this.proposalLabelPool = []
     this.selectionLayer = new Container()
     this.selectionLayer.eventMode = 'none'
     // Aura layer sits BELOW nodes so the wavey glow bleeds outward but the
@@ -353,6 +364,7 @@ export class SceneRenderer {
     this.overlayLayer.addChild(this.flowOverlayGfx)
     this.world.addChild(this.gridLayer)
     this.world.addChild(this.edgesLayer)
+    this.world.addChild(this.importanceLayer)
     // Glow layers go BELOW nodes so they bleed outward only.
     this.world.addChild(this.selectionAuraLayer)
     this.world.addChild(this.flowAuraLayer)
@@ -757,6 +769,16 @@ export class SceneRenderer {
 
   setGraphProposals(proposals: readonly GraphProposal[]): void {
     this.graphProposals = proposals
+    this.dirty = true
+  }
+
+  setSocialScores(scores: EntitySocialScores): void {
+    this.socialScores = scores
+    this.dirty = true
+  }
+
+  setTransformPreview(transforms: readonly TransformProposalEntry[]): void {
+    this.transformPreview = transforms
     this.dirty = true
   }
 
@@ -1846,7 +1868,12 @@ export class SceneRenderer {
     const g = this.proposalGfx
     if (!g) return
     g.clear()
-    if (this.graphProposals.length === 0) return
+    this.drawTransformPreview(g)
+    let labelIndex = 0
+    if (this.graphProposals.length === 0) {
+      this.hideUnusedProposalLabels(labelIndex)
+      return
+    }
 
     for (const proposal of this.graphProposals) {
       if (proposal.status !== 'pending' && proposal.status !== 'accepted') continue
@@ -1866,6 +1893,7 @@ export class SceneRenderer {
             membraneColor: DEFAULT_NODE.membraneColor,
           }
           this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-node-edge': {
@@ -1885,6 +1913,7 @@ export class SceneRenderer {
           }
           this.drawProposalConnectionGhost(g, source, ghost, accepted, proposal.payload.action)
           this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-edge': {
@@ -1901,6 +1930,8 @@ export class SceneRenderer {
         }
         case 'remove-edge':
         case 'rename-edge':
+        case 'add-reference':
+        case 'modify-references':
         case 'rewire-edge': {
           const edge = this.model.edges.get(proposal.payload.edgeId)
           if (!edge) break
@@ -1912,7 +1943,81 @@ export class SceneRenderer {
           }
           break
         }
+        case 'commit-transform':
+          this.drawTransformPreview(g, proposal.payload.transforms)
+          break
       }
+    }
+    this.hideUnusedProposalLabels(labelIndex)
+  }
+
+  private drawSocialImportance(): void {
+    const g = this.importanceGfx
+    if (!g) return
+    g.clear()
+    const nodeScores = this.socialScores.nodeScores
+    const edgeScores = this.socialScores.edgeScores
+    for (const id of this.prevVisibleEdges) {
+      const score = edgeScores[id] ?? 0
+      if (score === 0) continue
+      const edge = this.model.edges.get(id)
+      if (!edge) continue
+      const source = this.model.nodes.get(edge.from)
+      const target = this.model.nodes.get(edge.to)
+      if (!source || !target) continue
+      const endpoints = this.edgeEndpointPixels(source, target)
+      if (!endpoints) continue
+      const power = socialPower(Math.abs(score))
+      const color = score > 0 ? 0x5aa7d8 : 0xd87575
+      const base = Math.max(1, (edge.width / 100) * SCENE_W)
+      g.moveTo(endpoints.sx, endpoints.sy).lineTo(endpoints.tx, endpoints.ty)
+      g.stroke({ color, width: base + 3 + power * 5, alpha: 0.05 + power * 0.08, alignment: 0.5 })
+    }
+    for (const id of this.prevVisibleNodes) {
+      const score = nodeScores[id] ?? 0
+      if (score === 0) continue
+      const node = this.model.nodes.get(id)
+      if (!node) continue
+      const visual = this.visualNode(node)
+      const power = socialPower(Math.abs(score))
+      const color = score > 0 ? 0x6fb7df : 0xdc8b8b
+      const cx = (visual.x / 100) * SCENE_W
+      const cy = (visual.y / 100) * SCENE_H
+      const w = (visual.w / 100) * SCENE_W + 16 + power * 24
+      const h = (visual.h / 100) * SCENE_H + 16 + power * 24
+      drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
+      g.fill({ color, alpha: 0.025 + power * 0.045 })
+    }
+  }
+
+  private drawTransformPreview(g: Graphics, transforms: readonly TransformProposalEntry[] = this.transformPreview): void {
+    for (const transform of transforms) {
+      const node = this.model.nodes.get(transform.nodeId)
+      if (!node) continue
+      const from: ModelNode = { ...node, ...transform.from }
+      const to: ModelNode = { ...node, ...transform.to }
+      this.drawTransformOutline(g, from, 0xef4444, 0.38, true)
+      this.drawTransformOutline(g, to, 0x22c55e, 0.62, false)
+    }
+  }
+
+  private drawTransformOutline(
+    g: Graphics,
+    node: ModelNode,
+    color: number,
+    alpha: number,
+    dotted: boolean,
+  ): void {
+    const visual = this.visualNode(node)
+    const cx = (visual.x / 100) * SCENE_W
+    const cy = (visual.y / 100) * SCENE_H
+    const w = (visual.w / 100) * SCENE_W + 10
+    const h = (visual.h / 100) * SCENE_H + 10
+    if (dotted) {
+      drawDottedRect(g, cx - w / 2, cy - h / 2, w, h, 14, color, 3, alpha)
+    } else {
+      drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
+      g.stroke({ color, width: 4, alpha, alignment: 0.5 })
     }
   }
 
@@ -1932,6 +2037,49 @@ export class SceneRenderer {
     g.fill({ color: 0x2563eb, alpha })
     drawDottedRect(g, cx - w / 2, cy - h / 2, w, h, 12, 0x2563eb, accepted ? 3.4 : 2.4, accepted ? 0.82 : 0.58)
     this.drawProposalBadge(g, cx + w / 2, cy - h / 2, action)
+  }
+
+  private drawProposalNodeLabel(node: ModelNode, accepted: boolean, index: number): number {
+    const visual = this.visualNode(node)
+    const cx = (visual.x / 100) * SCENE_W
+    const cy = (visual.y / 100) * SCENE_H
+    const w = (visual.w / 100) * SCENE_W
+    const h = (visual.h / 100) * SCENE_H
+    const raw = (node.label || 'New node').trim() || 'New node'
+    const text = raw.length > 42 ? `${raw.slice(0, 39)}...` : raw
+    let label = this.proposalLabelPool[index]
+    if (!label) {
+      label = new Text({
+        text: '',
+        style: {
+          fontFamily: 'Inter, system-ui, sans-serif',
+          fontSize: 24,
+          fill: 0x17314f,
+          align: 'center',
+          fontWeight: '700',
+        },
+      })
+      label.anchor.set(0.5)
+      label.eventMode = 'none'
+      this.proposalLayer.addChild(label)
+      this.proposalLabelPool.push(label)
+    }
+    const byHeight = h * 0.32
+    const byWidth = (w - 18) / Math.max(6, text.length * 0.56)
+    label.text = text
+    label.style.fontSize = Math.max(14, Math.min(28, byHeight, byWidth))
+    label.style.fill = accepted ? 0x345f8d : 0x17314f
+    label.alpha = accepted ? 0.72 : 0.92
+    label.x = cx
+    label.y = cy
+    label.visible = true
+    return index + 1
+  }
+
+  private hideUnusedProposalLabels(start: number): void {
+    for (let i = start; i < this.proposalLabelPool.length; i++) {
+      this.proposalLabelPool[i].visible = false
+    }
   }
 
   private drawProposalNodeConstruction(
@@ -1963,6 +2111,7 @@ export class SceneRenderer {
     const endpoints = this.edgeEndpointPixels(source, target)
     if (!endpoints) return
     drawDottedLine(g, endpoints.sx, endpoints.sy, endpoints.tx, endpoints.ty, 18, 0x2563eb, accepted ? 4.4 : 3.4, accepted ? 0.9 : 0.58)
+    drawProposalArrowHead(g, endpoints.sx, endpoints.sy, endpoints.tx, endpoints.ty, 0x2563eb, accepted ? 0.9 : 0.62)
     this.drawProposalBadge(g, (endpoints.sx + endpoints.tx) / 2, (endpoints.sy + endpoints.ty) / 2, action)
   }
 
@@ -2042,6 +2191,7 @@ export class SceneRenderer {
   }
 
   private drawSelectionAndOverlays(): void {
+    this.drawSocialImportance()
     this.drawGraphProposals()
     // Selection halo, legacy-parity (Unigram CSS): a warm wave outside the
     // membrane plus one crisp blue frame. The warm aura is drawn below the
@@ -3073,10 +3223,17 @@ function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' |
       return 'x'
     case 'rename-node':
     case 'rename-edge':
+    case 'add-reference':
+    case 'modify-references':
       return 'rename'
     case 'rewire-edge':
+    case 'commit-transform':
       return 'rewire'
   }
+}
+
+function socialPower(score: number): number {
+  return Math.max(0, Math.min(1, Math.log1p(score) / Math.log(12)))
 }
 
 function drawSceneNodeShapePath(
@@ -3175,6 +3332,36 @@ function drawDottedLine(
     g.circle(x1 + ux * dist, y1 + uy * dist, radius)
     g.fill({ color, alpha })
   }
+}
+
+function drawProposalArrowHead(
+  g: Graphics,
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  color: number,
+  alpha: number,
+): void {
+  const dx = tx - sx
+  const dy = ty - sy
+  const len = Math.hypot(dx, dy)
+  if (len <= 1e-3) return
+  const ux = dx / len
+  const uy = dy / len
+  const px = -uy
+  const py = ux
+  const arrowLen = 18
+  const half = 8
+  const baseX = tx - ux * arrowLen
+  const baseY = ty - uy * arrowLen
+  g.poly([
+    tx, ty,
+    baseX + px * half, baseY + py * half,
+    baseX - px * half, baseY - py * half,
+  ])
+  g.fill({ color, alpha })
+  g.stroke({ color: 0xffffff, width: 1.6, alpha: Math.min(0.86, alpha + 0.16), alignment: 0.5 })
 }
 
 function drawConstructionTicks(g: Graphics, x: number, y: number, w: number, h: number): void {

@@ -1,4 +1,5 @@
-import type { Connection, Model, ModelNode } from '../model/types'
+import type { Connection, ConnectionReference, Model, ModelNode } from '../model/types'
+import type { BackgroundConfig, ThemeMode } from '../theme/types'
 
 export type ForumRef =
   | 'diagram'
@@ -7,6 +8,7 @@ export type ForumRef =
   | `proposal:${string}`
 
 export type VoteStance = 'agree' | 'disagree' | 'neutral'
+export type TopicVoteValue = 'like' | 'dislike'
 
 export type GraphProposalStatus = 'pending' | 'accepted' | 'stale' | 'applied' | 'blocked'
 
@@ -19,6 +21,22 @@ export type GraphProposalAction =
   | 'rename-node'
   | 'rename-edge'
   | 'rewire-edge'
+  | 'commit-transform'
+  | 'add-reference'
+  | 'modify-references'
+
+export interface NodeGeometry {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface TransformProposalEntry {
+  nodeId: string
+  from: NodeGeometry
+  to: NodeGeometry
+}
 
 export type GraphProposalPayload =
   | { action: 'add-node'; newNodeLabel: string }
@@ -29,6 +47,9 @@ export type GraphProposalPayload =
   | { action: 'rename-node'; nodeId: string; nextLabel: string }
   | { action: 'rename-edge'; edgeId: string; nextLabel: string }
   | { action: 'rewire-edge'; edgeId: string; nextTargetNodeId: string }
+  | { action: 'commit-transform'; transforms: TransformProposalEntry[] }
+  | { action: 'add-reference'; edgeId: string; reference: ConnectionReference }
+  | { action: 'modify-references'; edgeId: string; references: ConnectionReference[] }
 
 export interface GraphProposal {
   id: string
@@ -55,6 +76,8 @@ export interface ForumTopic {
   views: number
   commentCount: number
   agreementRatio: number
+  score: number
+  viewerVote?: TopicVoteValue | null
   proposalId?: string
   proposal?: GraphProposal
 }
@@ -73,6 +96,16 @@ export interface ForumComment {
 export interface ForumThread {
   topic: ForumTopic
   comments: ForumComment[]
+}
+
+export interface SocialUserPreferences {
+  themeMode?: ThemeMode
+  background?: BackgroundConfig
+}
+
+export interface EntitySocialScores {
+  nodeScores: Record<string, number>
+  edgeScores: Record<string, number>
 }
 
 export interface ForumTopicInput {
@@ -170,12 +203,16 @@ export function proposalActionLabel(proposal: Pick<GraphProposal, 'action'> | Gr
     case 'rename-node': return 'Rename node'
     case 'rename-edge': return 'Rename connection'
     case 'rewire-edge': return 'Rewire connection'
+    case 'commit-transform': return 'Commit transform'
+    case 'add-reference': return 'Add reference'
+    case 'modify-references': return 'Modify references'
   }
 }
 
 export function proposalNodeTarget(proposal: GraphProposal, model: Model): ModelNode | null {
   switch (proposal.payload.action) {
     case 'add-node':
+    case 'commit-transform':
       return null
     case 'add-node-edge':
       return model.nodes.get(proposal.payload.sourceNodeId) ?? null
@@ -186,6 +223,8 @@ export function proposalNodeTarget(proposal: GraphProposal, model: Model): Model
       return model.nodes.get(proposal.payload.sourceNodeId) ?? model.nodes.get(proposal.payload.targetNodeId) ?? null
     case 'remove-edge':
     case 'rename-edge':
+    case 'add-reference':
+    case 'modify-references':
     case 'rewire-edge': {
       const edge = model.edges.get(proposal.payload.edgeId)
       return edge ? model.nodes.get(edge.from) ?? model.nodes.get(edge.to) ?? null : null
@@ -197,6 +236,8 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
   switch (proposal.payload.action) {
     case 'remove-edge':
     case 'rename-edge':
+    case 'add-reference':
+    case 'modify-references':
     case 'rewire-edge':
       return model.edges.get(proposal.payload.edgeId) ?? null
     case 'add-edge':
@@ -205,6 +246,7 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
     case 'add-node':
     case 'remove-node':
     case 'rename-node':
+    case 'commit-transform':
       return null
   }
 }

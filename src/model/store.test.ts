@@ -35,6 +35,15 @@ describe('store', () => {
     expect(useOmniStore.getState().model.nodes.size).toBe(0)
   })
 
+  it('keeps node labels unique', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'Alpha' })
+    const b = useOmniStore.getState().addNode({ id: 'b', x: 10, y: 0, label: 'Alpha' })
+    expect(useOmniStore.getState().model.nodes.get(a)?.label).toBe('Alpha')
+    expect(useOmniStore.getState().model.nodes.get(b)?.label).toBe('Alpha 2')
+    useOmniStore.getState().updateNode(b, { label: 'Alpha' })
+    expect(useOmniStore.getState().model.nodes.get(b)?.label).toBe('Alpha 2')
+  })
+
   it('cascades edge removal when an endpoint node is deleted', () => {
     const a = useOmniStore.getState().addNode({ x: 0, y: 0 })
     const b = useOmniStore.getState().addNode({ x: 50, y: 50 })

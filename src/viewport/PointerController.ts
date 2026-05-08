@@ -7,7 +7,6 @@
  *     commits to store on pointerup).
  *   - click empty: clear selection.
  *   - click node: single-select.
- *   - double-click empty: add node at scene coords.
  *   - right-drag node: draft connection (renderer-only ghost line); commits
  *     on pointerup if dropped on another node.
  *
@@ -19,7 +18,8 @@ import { Graphics } from 'pixi.js'
 import { clientToScene } from '../scene/sceneConstants'
 import type { ResizeHandleDir, SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
-import { DEFAULT_NODE } from '../model/types'
+import { getSocialEdgeDraftCount, registerSocialEdgeDraft } from '../social/graphDraft'
+import { getTransformDraftCount } from '../social/transformDraft'
 
 interface ActiveDrag {
   kind: 'pan' | 'node' | 'connect' | 'box' | 'tip' | 'resize'
@@ -61,8 +61,6 @@ export class PointerController {
   private readonly dragMovesScratch: Array<{ id: string; x: number; y: number }> = []
   private pendingNodeDrag: { baselines: Array<{ id: string; x: number; y: number }>; dx: number; dy: number } | null = null
   private nodeDragRaf = 0
-  private lastClickAt = 0
-  private lastClickPos = { x: 0, y: 0 }
   private lastNodeClickId: string | null = null
   private lastNodeClickAt = 0
   private readonly host: HTMLElement
@@ -128,6 +126,7 @@ export class PointerController {
     if (resizeHit) {
       const node = useOmniStore.getState().model.nodes.get(resizeHit.id)
       if (!node || node.locked) return
+      if (getSocialEdgeDraftCount() > 0) return
       this.active = {
         kind: 'resize',
         pointerId: e.pointerId,
@@ -221,6 +220,7 @@ export class PointerController {
       } else if (!store.selectedIds.has(hitId)) {
         store.select(hitId, false)
       }
+      if (getSocialEdgeDraftCount() > 0) return
       // Build baselines for whatever is selected now (post-select). Locked
       // nodes are skipped (legacy parity: locked nodes refuse drag and
       // untangle).
@@ -443,7 +443,12 @@ export class PointerController {
       const nextNodes = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
       const nextEdges = a.additive && a.baseEdgeSelection ? new Set(a.baseEdgeSelection) : new Set<string>()
       for (let i = 0; i < nodeHits.length; i++) nextNodes.add(nodeHits[i])
-      for (let i = 0; i < edgeHits.length; i++) nextEdges.add(edgeHits[i])
+      const model = useOmniStore.getState().model
+      for (let i = 0; i < edgeHits.length; i++) {
+        const edge = model.edges.get(edgeHits[i])
+        if (edge && nextNodes.has(edge.from) && nextNodes.has(edge.to)) continue
+        nextEdges.add(edgeHits[i])
+      }
       useOmniStore.getState().selectMany(nextNodes, nextEdges)
       return
     }
@@ -458,8 +463,11 @@ export class PointerController {
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
       if (targetId && targetId !== a.nodeId) {
+        if (getSocialEdgeDraftCount() > 0 || getTransformDraftCount(useOmniStore.getState().model.id) > 0) return
         const kind = useOmniStore.getState().defaultConnectionKind
-        useOmniStore.getState().addEdge(a.nodeId, targetId, { kind })
+        const edgeId = useOmniStore.getState().addEdge(a.nodeId, targetId, { kind, extra: { socialDraft: true } })
+        const edge = edgeId ? useOmniStore.getState().model.edges.get(edgeId) : null
+        if (edge) registerSocialEdgeDraft(edge)
       }
       a.ghost?.destroy()
       return
@@ -480,31 +488,7 @@ export class PointerController {
   }
 
   private handleEmptyClick(e: PointerEvent, scene: { x: number; y: number }): void {
-    const now = e.timeStamp
-    const dt = now - this.lastClickAt
-    const dx = e.clientX - this.lastClickPos.x
-    const dy = e.clientY - this.lastClickPos.y
-    const isDouble = dt < DOUBLE_CLICK_MS && Math.hypot(dx, dy) < CLICK_THRESHOLD_PX * 2
-    this.lastClickAt = now
-    this.lastClickPos = { x: e.clientX, y: e.clientY }
-
-    if (isDouble) {
-      // Snap the *new node's* top-left corner to the grid so the created
-      // node aligns corner-to-corner with the visible grid lines.
-      const w = DEFAULT_NODE.w
-      const h = DEFAULT_NODE.h
-      const snapped = snapNodeCornerToGrid(scene.x, scene.y, w, h, this.snapStep)
-      const id = useOmniStore.getState().addNode({
-        x: snapped.x,
-        y: snapped.y,
-        label: '',
-        extra: { temporaryName: true },
-      })
-      useOmniStore.getState().select(id)
-      useOmniStore.getState().setEditingNode(id)
-      return
-    }
-    // Single click on empty space — try an edge hit before clearing selection.
+    // Empty-space click — try an edge hit before clearing selection.
     const edgeId = this.renderer.pickEdge(scene.x, scene.y)
     if (edgeId) {
       useOmniStore.getState().selectEdge(edgeId, e.shiftKey)

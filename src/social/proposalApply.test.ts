@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useOmniStore } from '../model/store'
 import type { GraphProposal, GraphProposalPayload } from './forumTypes'
 import { applyAcceptedProposal, proposalCreatedEdgeId, proposalCreatedNodeId } from './proposalApply'
+import { captureTransformBaseline, getTransformDraftEntries, recomputeTransformDraft } from './transformDraft'
 
 beforeEach(() => {
   const model = { id: 'root', name: 'test', nodes: new Map(), edges: new Map() }
@@ -71,6 +72,28 @@ describe('applyAcceptedProposal', () => {
     expect(useOmniStore.getState().model.nodes.get(a)?.label).toBe('Alpha')
     expect(applyAcceptedProposal(makeProposal('p4', { action: 'rewire-edge', edgeId: edge, nextTargetNodeId: c }))).toEqual({ status: 'applied' })
     expect(useOmniStore.getState().model.edges.get(edge)?.to).toBe(c)
+  })
+
+  it('applies accepted transform proposals and clears matching local drafts', () => {
+    const id = useOmniStore.getState().addNode({ id: 'a', x: 10, y: 20, w: 5, h: 5, label: 'A' })
+    const state = useOmniStore.getState()
+    captureTransformBaseline({ rootModelId: state.model.id, models: new Map([[state.model.id, state.model]]) })
+    useOmniStore.getState().updateNode(id, { x: 18, y: 24, w: 7, h: 6 })
+    const snapshot = useOmniStore.getState()
+    recomputeTransformDraft({ rootModelId: snapshot.model.id, models: new Map([[snapshot.model.id, snapshot.model]]) })
+    expect(getTransformDraftEntries('root')).toHaveLength(1)
+
+    const proposal = makeProposal('move', {
+      action: 'commit-transform',
+      transforms: [{
+        nodeId: id,
+        from: { x: 10, y: 20, w: 5, h: 5 },
+        to: { x: 18, y: 24, w: 7, h: 6 },
+      }],
+    })
+    expect(applyAcceptedProposal(proposal)).toEqual({ status: 'applied' })
+    expect(useOmniStore.getState().model.nodes.get(id)).toMatchObject({ x: 18, y: 24, w: 7, h: 6 })
+    expect(getTransformDraftEntries('root')).toHaveLength(0)
   })
 })
 

@@ -34,12 +34,6 @@ test('social diagram view hides sidebars and debug spawn controls', async ({ pag
 
 test('forum curtain creates a pending graph proposal without React graph overlays', async ({ page }) => {
   await openNewDiagram(page, `Forum proposal ${Date.now()}`)
-  const canvas = page.locator('canvas')
-  await canvas.dblclick({ position: { x: 360, y: 260 } })
-  await expect(page.locator('textarea')).toBeVisible()
-  await page.locator('textarea').fill('Alpha')
-  await page.keyboard.press('Enter')
-
   await page.getByRole('button', { name: 'Open forum' }).click()
   await expect(page.getByLabel('Forum reference selector')).toBeVisible()
   await page.getByRole('button', { name: 'Post' }).click()
@@ -52,8 +46,8 @@ test('forum curtain creates a pending graph proposal without React graph overlay
   await form.getByLabel('Title').fill('Suggest a branch')
   await form.getByLabel('Description').fill('Add a new connected idea.')
   await form.getByLabel('Suggest diagram change').check()
-  await form.getByLabel('Proposal source node').fill('Alpha')
-  await form.getByLabel('Proposal target node').fill('Beta')
+  await expect(form.getByLabel('Suggested action')).toHaveValue('add-node')
+  await form.getByLabel('New name').fill('Alpha')
   await form.getByRole('button', { name: 'Post', exact: true }).click()
 
   await expect(page.getByRole('heading', { name: 'Suggest a branch' })).toBeVisible()

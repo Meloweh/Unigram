@@ -6,6 +6,7 @@ import { useOmniStore } from './model/store'
 import type { Model } from './model/types'
 import { SCENE_H, SCENE_W } from './scene/sceneConstants'
 import { base64ToBlob, getCloudDiagram, type DiagramSummary } from './social/cloudClient'
+import { captureTransformBaseline } from './social/transformDraft'
 import './App.css'
 
 type Route =
@@ -24,6 +25,7 @@ function App() {
       snapshot = blankProject(detail.title)
     }
     useOmniStore.getState().loadProject(snapshot)
+    captureTransformBaseline(snapshot)
     centerCameraOnOldestNode(snapshot)
     setRoute({
       kind: 'diagram',

@@ -7,6 +7,9 @@ import type {
   ForumTopicInput,
   GraphProposal,
   GraphProposalStatus,
+  EntitySocialScores,
+  SocialUserPreferences,
+  TopicVoteValue,
 } from './forumTypes'
 
 const SESSION_KEY = 'omnigram-social-session'
@@ -29,6 +32,8 @@ export interface DiagramDetail extends DiagramSummary {
 export interface AuthUser {
   id: string
   username: string
+  reputation: number
+  preferences: SocialUserPreferences
 }
 
 export interface AuthResult {
@@ -47,6 +52,7 @@ export function storedAuthToken(): string {
 export function storeAuthToken(token: string): void {
   try {
     window.localStorage.setItem(SESSION_KEY, token)
+    window.dispatchEvent(new CustomEvent('omnigram-auth-changed'))
   } catch {
     /* localStorage can be unavailable */
   }
@@ -55,6 +61,7 @@ export function storeAuthToken(token: string): void {
 export function clearAuthToken(): void {
   try {
     window.localStorage.removeItem(SESSION_KEY)
+    window.dispatchEvent(new CustomEvent('omnigram-auth-changed'))
   } catch {
     /* localStorage can be unavailable */
   }
@@ -86,6 +93,31 @@ export async function logoutAccount(): Promise<void> {
     await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }).catch(() => undefined)
   }
   clearAuthToken()
+}
+
+export async function getUserPreferences(): Promise<SocialUserPreferences | null> {
+  const token = storedAuthToken()
+  if (!token) return null
+  const res = await fetch('/api/auth/preferences', { headers: authHeaders() })
+  if (!res.ok) {
+    if (res.status === 400 || res.status === 401 || res.status === 404) return null
+    throw new Error(`Preferences load failed (${res.status})`)
+  }
+  const body = await res.json() as { preferences?: SocialUserPreferences }
+  return body.preferences ?? null
+}
+
+export async function saveUserPreferences(preferences: SocialUserPreferences): Promise<SocialUserPreferences> {
+  const token = storedAuthToken()
+  if (!token) throw new Error('Login required')
+  const res = await fetch('/api/auth/preferences', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ preferences }),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Preferences save failed (${res.status})`)
+  const body = await res.json() as { preferences?: SocialUserPreferences }
+  return body.preferences ?? {}
 }
 
 async function authPost(url: string, body: { username: string; password: string }): Promise<AuthResult> {
@@ -160,6 +192,7 @@ export async function saveCloudDiagram(
 export async function listForumTopics(diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
   const res = await fetch(
     `/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics?forumRef=${encodeURIComponent(forumRef)}`,
+    { headers: authHeaders() },
   )
   if (!res.ok) throw new Error(`Forum topics failed (${res.status})`)
   const body = await res.json() as { topics?: ForumTopic[] }
@@ -182,9 +215,27 @@ export async function createForumTopic(
 export async function getForumThread(diagramId: string, topicId: string): Promise<ForumThread> {
   const res = await fetch(
     `/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics/${encodeURIComponent(topicId)}`,
+    { headers: authHeaders() },
   )
   if (!res.ok) throw new Error(`Forum thread failed (${res.status})`)
   return await res.json() as ForumThread
+}
+
+export async function voteForumTopic(
+  diagramId: string,
+  topicId: string,
+  vote: TopicVoteValue | null,
+): Promise<ForumTopic> {
+  const res = await fetch(
+    `/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics/${encodeURIComponent(topicId)}/vote`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ vote }),
+    },
+  )
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Topic vote failed (${res.status})`)
+  return await res.json() as ForumTopic
 }
 
 export async function addForumComment(
@@ -209,6 +260,16 @@ export async function listActiveProposals(diagramId: string): Promise<GraphPropo
   if (!res.ok) throw new Error(`Proposal list failed (${res.status})`)
   const body = await res.json() as { proposals?: GraphProposal[] }
   return Array.isArray(body.proposals) ? body.proposals : []
+}
+
+export async function listSocialScores(diagramId: string): Promise<EntitySocialScores> {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(diagramId)}/forums/social-scores`)
+  if (!res.ok) throw new Error(`Social scores failed (${res.status})`)
+  const body = await res.json() as Partial<EntitySocialScores>
+  return {
+    nodeScores: body.nodeScores ?? {},
+    edgeScores: body.edgeScores ?? {},
+  }
 }
 
 export async function markProposalStatus(

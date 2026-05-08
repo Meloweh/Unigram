@@ -206,19 +206,6 @@ function ReferenceCard({
     setAdding(false)
     setDraft({ ...EMPTY_REF })
   }
-  const remove = (idx: number) => {
-    onChange(refs.filter((_, i) => i !== idx))
-    if (editingIdx === idx) {
-      setEditingIdx(null)
-      setDraft({ ...EMPTY_REF })
-    }
-  }
-  const edit = (idx: number) => {
-    setEditingIdx(idx)
-    setDraft({ ...refs[idx] })
-    setAdding(true)
-  }
-
   return (
     <div
       ref={cardRef}
@@ -278,8 +265,6 @@ function ReferenceCard({
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
                 <span style={{ flex: 1, fontWeight: 500 }}>{r.title}</span>
-                <button type="button" onClick={() => edit(i)} title="Edit" style={miniBtn}>✎</button>
-                <button type="button" onClick={() => remove(i)} title="Remove" style={miniBtn}>×</button>
               </div>
               {level >= 2 && r.citation && (
                 <div style={{ fontSize: 11, color: 'var(--ug-text-secondary)', marginTop: 2 }}>{r.citation}</div>
@@ -336,31 +321,11 @@ function ReferenceCard({
             </button>
           </div>
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => {
-            setAdding(true)
-            setEditingIdx(null)
-            setDraft({ ...EMPTY_REF })
-          }}
-          style={primaryBtn}
-        >
-          + Add reference
-        </button>
-      )}
+      ) : null}
     </div>
   )
 }
 
-const miniBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  cursor: 'pointer',
-  color: 'var(--ug-text-muted)',
-  padding: '0 4px',
-  fontSize: 13,
-}
 const inputStyle: React.CSSProperties = {
   padding: '4px 6px',
   border: '1px solid var(--ug-border)',

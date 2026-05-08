@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -11,7 +10,7 @@ import {
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
 import { useOmniStore } from '../model/store'
-import type { Model, ModelNode } from '../model/types'
+import type { ConnectionReference, Model, ModelNode } from '../model/types'
 import {
   addForumComment,
   createForumTopic,
@@ -19,10 +18,12 @@ import {
   getForumThread,
   listActiveProposals,
   listForumTopics,
+  listSocialScores,
   loginAccount,
   logoutAccount,
   markProposalStatus,
   registerAccount,
+  voteForumTopic,
   type AuthUser,
 } from '../social/cloudClient'
 import {
@@ -36,20 +37,36 @@ import {
   type ForumRef,
   type ForumThread,
   type ForumTopic,
+  type EntitySocialScores,
   type GraphProposal,
   type GraphProposalAction,
   type GraphProposalPayload,
+  type TransformProposalEntry,
+  type TopicVoteValue,
   type VoteStance,
 } from '../social/forumTypes'
 import {
   applyAcceptedProposal,
 } from '../social/proposalApply'
+import {
+  getTransformDraftEntries,
+  getTransformDraftCount,
+  recomputeTransformDraft,
+  subscribeTransformDraft,
+} from '../social/transformDraft'
+import {
+  getSocialEdgeDraftCount,
+  getSocialEdgeDrafts,
+  subscribeSocialEdgeDrafts,
+  type SocialEdgeDraft,
+} from '../social/graphDraft'
 
 interface SocialForumLayerProps {
   diagramId?: string
   projectTopic?: string
   projectDescription?: string
   renderer: SceneRenderer | null
+  onOpenChange?: (open: boolean) => void
 }
 
 export function SocialForumLayer({
@@ -57,6 +74,7 @@ export function SocialForumLayer({
   projectTopic,
   projectDescription,
   renderer,
+  onOpenChange,
 }: SocialForumLayerProps) {
   const [open, setOpen] = useState(false)
   const [forumRef, setForumRef] = useState<ForumRef>(diagramForumRef())
@@ -64,9 +82,17 @@ export function SocialForumLayer({
   const [threadId, setThreadId] = useState<string | null>(null)
   const [thread, setThread] = useState<ForumThread | null>(null)
   const [postOpen, setPostOpen] = useState(false)
+  const [postInitialAction, setPostInitialAction] = useState<GraphProposalAction | null>(null)
+  const [postEdgeDraft, setPostEdgeDraft] = useState<SocialEdgeDraft | null>(null)
+  const [transformPreview, setTransformPreview] = useState<TransformProposalEntry[] | null>(null)
+  const [referencePreview, setReferencePreview] = useState<GraphProposal | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
   const [proposals, setProposals] = useState<GraphProposal[]>([])
+  const [serverSocialScores, setServerSocialScores] = useState<EntitySocialScores>({ nodeScores: {}, edgeScores: {} })
+  const [debugSocialScores, setDebugSocialScores] = useState<EntitySocialScores>({ nodeScores: {}, edgeScores: {} })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const applyingRef = useRef(new Set<string>())
@@ -83,10 +109,39 @@ export function SocialForumLayer({
     () => 0,
   )
   const model = useOmniStore.getState().model
+  const transformDraftCount = useSyncExternalStore(
+    subscribeTransformDraft,
+    () => getTransformDraftCount(useOmniStore.getState().model.id),
+    () => 0,
+  )
+  const edgeDraftCount = useSyncExternalStore(
+    subscribeSocialEdgeDrafts,
+    getSocialEdgeDraftCount,
+    () => 0,
+  )
+  const transformDraft = getTransformDraftEntries(model.id)
+  const edgeDrafts = getSocialEdgeDrafts()
+  void transformDraftCount
+  void edgeDraftCount
 
   useEffect(() => {
     void getCurrentAccount().then(setCurrentUser).catch(() => setCurrentUser(null))
   }, [])
+
+  useEffect(() => {
+    const state = useOmniStore.getState()
+    const models = new Map(state.models)
+    models.set(state.model.id, state.model)
+    recomputeTransformDraft({ rootModelId: state.model.id, models })
+  }, [revision])
+
+  useEffect(() => {
+    if (!currentUser) setAccountMenuOpen(false)
+  }, [currentUser])
+
+  useEffect(() => {
+    onOpenChange?.(open)
+  }, [onOpenChange, open])
 
   useEffect(() => () => {
     if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current)
@@ -127,6 +182,15 @@ export function SocialForumLayer({
     }
   }, [diagramId])
 
+  const refreshSocialScores = useCallback(async () => {
+    if (!diagramId) return
+    try {
+      setServerSocialScores(await listSocialScores(diagramId))
+    } catch (err) {
+      console.warn('Social score refresh failed:', err)
+    }
+  }, [diagramId])
+
   useEffect(() => {
     if (!open) return
     void refreshTopics()
@@ -151,6 +215,15 @@ export function SocialForumLayer({
   }, [renderer, proposals])
 
   useEffect(() => {
+    void refreshSocialScores()
+  }, [refreshSocialScores, proposals])
+
+  useEffect(() => {
+    if (!renderer) return
+    renderer.setSocialScores(mergeSocialScores(serverSocialScores, debugSocialScores))
+  }, [debugSocialScores, renderer, serverSocialScores])
+
+  useEffect(() => {
     if (!diagramId) return
     for (const proposal of proposals) {
       if (proposal.status !== 'accepted' || applyingRef.current.has(proposal.id)) continue
@@ -166,6 +239,7 @@ export function SocialForumLayer({
           )
           await refreshProposals()
           if (open) await refreshTopics()
+          await refreshSocialScores()
         } catch (err) {
           console.warn('Proposal apply status update failed:', err)
         } finally {
@@ -173,13 +247,17 @@ export function SocialForumLayer({
         }
       })()
     }
-  }, [diagramId, proposals, refreshProposals, refreshTopics, open, revision])
+  }, [diagramId, proposals, refreshProposals, refreshTopics, refreshSocialScores, open, revision])
 
   const selectForum = useCallback((next: ForumRef) => {
     setForumRef(next)
     setThreadId(null)
     setThread(null)
-  }, [])
+    const nodes = selectedNodesForForum(model, next)
+    const edges = selectedEdgesForForum(model, next)
+    if (next === 'diagram') useOmniStore.getState().clearSelection()
+    else useOmniStore.getState().selectMany(nodes, edges)
+  }, [model])
 
   if (!diagramId) return null
 
@@ -188,7 +266,7 @@ export function SocialForumLayer({
     cameraBeforeForumRef.current = { ...useOmniStore.getState().camera }
     setClosing(false)
     const selectedRef = forumRefFromGraphSelection(model)
-    if (selectedRef) setForumRef(selectedRef)
+    setForumRef(selectedRef ?? diagramForumRef())
     setOpen(true)
   }
 
@@ -204,6 +282,8 @@ export function SocialForumLayer({
   }
 
   const openPost = () => {
+    setPostInitialAction(null)
+    setPostEdgeDraft(null)
     if (!currentUser) {
       postAfterAuthRef.current = true
       setAuthOpen(true)
@@ -212,17 +292,60 @@ export function SocialForumLayer({
     setPostOpen(true)
   }
 
+  const openTransformPost = () => {
+    const edgeDraft = edgeDrafts[0] ?? null
+    setPostEdgeDraft(edgeDraft)
+    setPostInitialAction(edgeDraft ? 'add-edge' : 'commit-transform')
+    if (!currentUser) {
+      postAfterAuthRef.current = true
+      setAuthOpen(true)
+      return
+    }
+    setPostOpen(true)
+  }
+
+  const applyDebugScore = (delta: number) => {
+    const store = useOmniStore.getState()
+    setDebugSocialScores((current) => {
+      const nodeScores = { ...current.nodeScores }
+      const edgeScores = { ...current.edgeScores }
+      for (const id of store.selectedIds) nodeScores[id] = (nodeScores[id] ?? 0) + delta
+      for (const id of store.selectedEdgeIds) edgeScores[id] = (edgeScores[id] ?? 0) + delta
+      return { nodeScores, edgeScores }
+    })
+  }
+
+  const activeForumTitle = forumTitlePart(forumRef, model, projectTopic)
+  const topicCountLabel = `${topics.length} ${topics.length === 1 ? 'post' : 'posts'}`
+
   return (
     <>
       {!open && (
-        <button
-          type="button"
-          className="social-forum-rail"
-          onClick={openForum}
-          aria-label="Open forum"
-        >
-          Forum
-        </button>
+        <>
+          <button
+            type="button"
+            className="social-forum-rail"
+            onClick={openForum}
+            aria-label="Open forum"
+          >
+            Forum
+          </button>
+          {(transformDraft.length > 0 || edgeDrafts.length > 0) && (
+            <button
+              type="button"
+              className="social-transform-submit-button"
+              onClick={openTransformPost}
+              aria-label="Submit layout changes"
+              title="Submit layout changes"
+            >
+              <span aria-hidden>⇧</span>
+            </button>
+          )}
+          <div className="social-score-debug" aria-label="Debug social score controls">
+            <button type="button" onClick={() => applyDebugScore(4)} title="Sample positive vote">+</button>
+            <button type="button" onClick={() => applyDebugScore(-4)} title="Sample negative vote">−</button>
+          </div>
+        </>
       )}
       {open && (
         <section className={`social-forum-curtain ${closing ? 'closing' : 'open'}`} aria-label="Diagram forum">
@@ -250,7 +373,18 @@ export function SocialForumLayer({
                   onChanged={async () => {
                     await refreshThread()
                     await refreshTopics()
+                    await refreshSocialScores()
                   }}
+                  onVote={async (topic, vote) => {
+                    const next = await voteForumTopic(diagramId, topic.id, vote)
+                    setThread((current) => current ? { ...current, topic: next } : current)
+                    await refreshTopics()
+                    await refreshSocialScores()
+                  }}
+                  onPreview={(transforms) => {
+                    setTransformPreview(transforms)
+                  }}
+                  onReferencePreview={(proposal) => setReferencePreview(proposal)}
                 />
               </>
             ) : (
@@ -258,24 +392,58 @@ export function SocialForumLayer({
                 <header className="social-forum-header">
                   <div>
                     <h2>{model.name || 'Untitled graph'}</h2>
-                    <p>Forum · {forumTitlePart(forumRef, model, projectTopic)}</p>
+                    <p>Forum · {activeForumTitle}</p>
                   </div>
                   <div className="social-forum-actions">
-                    <button type="button" className="social-account-button" onClick={() => setAuthOpen(true)}>
-                      {currentUser ? currentUser.username : 'Log in'}
-                    </button>
-                    {currentUser && (
+                    {currentUser ? (
+                      <div className="social-account-menu">
+                        <button
+                          type="button"
+                          className="social-account-button"
+                          aria-haspopup="menu"
+                          aria-expanded={accountMenuOpen}
+                          onClick={() => setAccountMenuOpen((value) => !value)}
+                        >
+                          {currentUser.username}
+                        </button>
+                        {accountMenuOpen && (
+                          <div className="social-account-popover" role="menu">
+                            <p>{currentUser.username}</p>
+                            <small>{currentUser.reputation} reputation</small>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setProfileSettingsOpen(true)
+                                setAccountMenuOpen(false)
+                              }}
+                            >
+                              Profile settings
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                void logoutAccount().then(() => {
+                                  setCurrentUser(null)
+                                  setAccountMenuOpen(false)
+                                })
+                              }}
+                            >
+                              Log out
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
                       <button
                         type="button"
                         className="social-account-button"
-                        onClick={() => void logoutAccount().then(() => setCurrentUser(null))}
+                        onClick={() => setAuthOpen(true)}
                       >
-                        Log out
+                        Log in
                       </button>
                     )}
-                    <button type="button" className="social-forum-post" onClick={openPost}>
-                      Post
-                    </button>
                   </div>
                 </header>
                 <div className="social-forum-top">
@@ -290,10 +458,25 @@ export function SocialForumLayer({
                   <MiniDiagramPreview model={model} forumRef={forumRef} proposals={proposals} />
                 </div>
                 <main className="social-forum-body">
+                  <div className="social-body-head">
+                    <div>
+                      <span>{topicCountLabel}</span>
+                    </div>
+                    <button type="button" className="social-forum-post" onClick={openPost}>
+                      Post
+                    </button>
+                  </div>
                   {error && <div className="social-forum-error">{error}</div>}
                   <TopicList
                     topics={topics}
                     loading={loading}
+                    currentUser={currentUser}
+                    onLoginRequired={() => setAuthOpen(true)}
+                    onVote={async (topic, vote) => {
+                      await voteForumTopic(diagramId, topic.id, vote)
+                      await refreshTopics()
+                      await refreshSocialScores()
+                    }}
                     onOpen={(topic) => setThreadId(topic.id)}
                   />
                 </main>
@@ -307,14 +490,20 @@ export function SocialForumLayer({
           forumRef={forumRef}
           model={model}
           currentUser={currentUser}
+          initialAction={postInitialAction}
+          transformDraft={transformDraft}
+          edgeDraft={postEdgeDraft}
           onClose={() => setPostOpen(false)}
           onCreated={(topic) => {
             setPostOpen(false)
+            setPostInitialAction(null)
+            setPostEdgeDraft(null)
             selectForum(topic.forumRef)
             setThreadId(topic.id)
             setThread({ topic, comments: [] })
-            setTopics([topic])
+            setTopics((current) => [topic, ...current.filter((item) => item.id !== topic.id)])
             void refreshProposals()
+            void refreshSocialScores()
           }}
         />
       )}
@@ -334,6 +523,26 @@ export function SocialForumLayer({
           }}
         />
       )}
+      {profileSettingsOpen && currentUser && (
+        <ProfileSettingsModal
+          user={currentUser}
+          onClose={() => setProfileSettingsOpen(false)}
+        />
+      )}
+      {transformPreview && (
+        <TransformPreviewOverlay
+          model={model}
+          transforms={transformPreview}
+          onClose={() => setTransformPreview(null)}
+        />
+      )}
+      {referencePreview && (
+        <ReferencePreviewOverlay
+          model={model}
+          proposal={referencePreview}
+          onClose={() => setReferencePreview(null)}
+        />
+      )}
     </>
   )
 }
@@ -351,7 +560,6 @@ function ForumSelector({
   projectDescription?: string
   onSelect: (ref: ForumRef) => void
 }) {
-  const nodeListId = useId()
   const initialDraft = selectorDraftFromRef(model, forumRef)
   const [sourceValue, setSourceValue] = useState(initialDraft.sourceValue)
   const [targetValue, setTargetValue] = useState(initialDraft.targetValue)
@@ -363,11 +571,21 @@ function ForumSelector({
   const edges = source && target
     ? [...model.edges.values()].filter((edge) => edge.from === source.id && edge.to === target.id)
     : []
-  const selectedEdge = edges.find((edge) => edge.id === edgeId) ?? edges[0]
+  const selectedEdge = mode === 'arrow' ? edges.find((edge) => edge.id === edgeId) ?? edges[0] : null
+  const sourceText = sourceValue.trim()
+  const targetText = targetValue.trim()
 
   useEffect(() => {
+    if (!sourceText && !targetText && mode === 'none') {
+      const nextRef = diagramForumRef()
+      if (forumRef !== nextRef) {
+        useOmniStore.getState().clearSelection()
+        onSelect(nextRef)
+      }
+      return
+    }
     if (!source) return
-    if (mode === 'none') {
+    if (!targetText) {
       const nextRef = nodeForumRef(source.id)
       useOmniStore.getState().select(source.id)
       if (nextRef !== forumRef) onSelect(nextRef)
@@ -377,44 +595,54 @@ function ForumSelector({
       const nextRef = edgeForumRef(selectedEdge.id)
       useOmniStore.getState().selectMany([source.id, target.id], [selectedEdge.id])
       if (nextRef !== forumRef) onSelect(nextRef)
+      return
     }
-  }, [source, target, mode, selectedEdge, forumRef, onSelect])
+    if (target) {
+      useOmniStore.getState().selectMany([source.id, target.id], [])
+      const nextRef = diagramForumRef()
+      if (nextRef !== forumRef) onSelect(nextRef)
+    }
+  }, [sourceText, targetText, source, target, mode, selectedEdge, forumRef, onSelect])
 
   return (
     <div className="social-ref-panel">
       <div className="social-ref-selector" aria-label="Forum reference selector">
-        <input
+        <NodeSuggestInput
           aria-label="Source"
-          list={nodeListId}
+          nodes={nodes}
           value={sourceValue}
-          onChange={(e) => setSourceValue(e.target.value)}
+          onChange={(value) => {
+            setSourceValue(value)
+            if (targetValue.trim()) setMode('arrow')
+          }}
           placeholder="source"
         />
-        <select
+        <span
           aria-label="Connection selector"
-          value={mode}
-          onChange={(e) => {
-            setMode(e.target.value === 'arrow' ? 'arrow' : 'none')
-            setEdgeId('')
-            if (e.target.value !== 'arrow') setTargetValue('')
-          }}
+          className="social-ref-action-select"
+          title="Connection selector"
+          role="img"
         >
-          <option value="none">no connection</option>
-          <option value="arrow">→</option>
-        </select>
-        <input
+          →
+        </span>
+        <NodeSuggestInput
           aria-label="Target"
-          list={nodeListId}
+          nodes={nodes}
           value={targetValue}
-          onChange={(e) => {
-            setTargetValue(e.target.value)
+          onChange={(value) => {
+            setTargetValue(value)
+            setMode(value.trim() ? 'arrow' : 'none')
             setEdgeId('')
           }}
           placeholder="target"
-          disabled={mode === 'none'}
         />
-        {edges.length > 1 && (
-          <select aria-label="Connection disambiguation" value={selectedEdge?.id ?? ''} onChange={(e) => setEdgeId(e.target.value)}>
+        {mode === 'arrow' && edges.length > 1 && (
+          <select
+            className="social-edge-disambiguation"
+            aria-label="Connection disambiguation"
+            value={selectedEdge?.id ?? ''}
+            onChange={(e) => setEdgeId(e.target.value)}
+          >
             {edges.map((edge, index) => (
               <option key={edge.id} value={edge.id}>
                 {edge.label || `Connection ${index + 1}`}
@@ -422,14 +650,6 @@ function ForumSelector({
             ))}
           </select>
         )}
-        <button type="button" onClick={() => onSelect(diagramForumRef())}>
-          Diagram
-        </button>
-        <datalist id={nodeListId}>
-          {nodes.map((node) => (
-            <option key={node.id} value={nodeLabel(node)} />
-          ))}
-        </datalist>
       </div>
       <p className="social-forum-description">
         {projectDescription?.trim() || `${projectTopic?.trim() || 'Diagram'} discussion for ${model.name || 'this graph'}.`}
@@ -499,13 +719,81 @@ function MiniDiagramPreview({
   )
 }
 
+function NodeSuggestInput({
+  nodes,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  'aria-label': ariaLabel,
+}: {
+  nodes: ModelNode[]
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  disabled?: boolean
+  'aria-label': string
+}) {
+  const [open, setOpen] = useState(false)
+  const query = value.trim().toLowerCase()
+  const suggestions = useMemo(() => {
+    const ranked = query
+      ? nodes.filter((node) => nodeLabel(node).toLowerCase().includes(query) || node.id.toLowerCase().includes(query))
+      : nodes
+    return ranked.slice(0, 8)
+  }, [nodes, query])
+
+  return (
+    <span className="social-node-suggest">
+      <input
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 80)}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoComplete="off"
+      />
+      {open && !disabled && suggestions.length > 0 && (
+        <span className="social-node-suggest-menu" role="listbox">
+          {suggestions.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              role="option"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(nodeLabel(node))
+                setOpen(false)
+              }}
+            >
+              <strong>{nodeLabel(node)}</strong>
+              <small>{node.id}</small>
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  )
+}
+
 function TopicList({
   topics,
   loading,
+  currentUser,
+  onLoginRequired,
+  onVote,
   onOpen,
 }: {
   topics: ForumTopic[]
   loading: boolean
+  currentUser: AuthUser | null
+  onLoginRequired: () => void
+  onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
   onOpen: (topic: ForumTopic) => void
 }) {
   if (loading) return <div className="social-forum-empty">Loading forum...</div>
@@ -513,19 +801,84 @@ function TopicList({
   return (
     <div className="social-topic-list">
       {topics.map((topic) => (
-        <button key={topic.id} type="button" className="social-topic" onClick={() => onOpen(topic)}>
-          <span>
-            <strong>{topic.title}</strong>
-            <small>{topic.description}</small>
-            <em>{topic.views} views · {topic.commentCount} comments</em>
-          </span>
-          <span className="social-topic-side">
-            {topic.proposal && <b>{proposalActionLabel(topic.proposal)}</b>}
-            {topic.proposal && <i>{Math.round(topic.agreementRatio * 100)}%</i>}
-          </span>
-        </button>
+        <article key={topic.id} className="social-topic">
+          <button type="button" className="social-topic-main" onClick={() => onOpen(topic)}>
+            <span className="social-topic-head">
+              <span>{topic.proposal ? proposalActionLabel(topic.proposal) : 'Discussion'}</span>
+              {topic.proposal && isConcludedProposal(topic.proposal) && (
+                <i className="social-concluded-badge">Concluded</i>
+              )}
+              <b>{topic.proposal ? `${Math.round(topic.agreementRatio * 100)}% agreement` : `${topic.commentCount} comments`}</b>
+            </span>
+            <span className="social-topic-content">
+              <strong>{topic.title}</strong>
+              <small>{topic.description}</small>
+              <em>{topic.views} views · {topic.commentCount} comments · {topic.score} score</em>
+            </span>
+          </button>
+          <TopicVoteControls
+            topic={topic}
+            currentUser={currentUser}
+            onLoginRequired={onLoginRequired}
+            onVote={onVote}
+            variant="thread"
+          />
+        </article>
       ))}
     </div>
+  )
+}
+
+function TopicVoteControls({
+  topic,
+  currentUser,
+  onLoginRequired,
+  onVote,
+  variant = 'list',
+}: {
+  topic: ForumTopic
+  currentUser: AuthUser | null
+  onLoginRequired: () => void
+  onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
+  variant?: 'list' | 'thread'
+}) {
+  const [busy, setBusy] = useState(false)
+  const ownPost = currentUser?.username.toLowerCase() === topic.author.toLowerCase()
+  const cast = async (vote: TopicVoteValue) => {
+    if (!currentUser) {
+      onLoginRequired()
+      return
+    }
+    if (ownPost) return
+    setBusy(true)
+    try {
+      await onVote(topic, topic.viewerVote === vote ? null : vote)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className={`social-topic-votes ${variant === 'thread' ? 'social-thread-votes' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className={topic.viewerVote === 'like' ? 'active' : ''}
+        disabled={busy || ownPost}
+        aria-label="Like post"
+        onClick={() => void cast('like')}
+      >
+        ▲
+      </button>
+      <span>{topic.score}</span>
+      <button
+        type="button"
+        className={topic.viewerVote === 'dislike' ? 'active' : ''}
+        disabled={busy || ownPost}
+        aria-label="Dislike post"
+        onClick={() => void cast('dislike')}
+      >
+        ▼
+      </button>
+    </span>
   )
 }
 
@@ -536,6 +889,9 @@ function ThreadView({
   onLoginRequired,
   onBack,
   onChanged,
+  onVote,
+  onPreview,
+  onReferencePreview,
 }: {
   diagramId: string
   thread: ForumThread
@@ -543,6 +899,9 @@ function ThreadView({
   onLoginRequired: () => void
   onBack: () => void
   onChanged: () => Promise<void>
+  onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
+  onPreview: (transforms: TransformProposalEntry[]) => void
+  onReferencePreview: (proposal: GraphProposal) => void
 }) {
   const [replyTo, setReplyTo] = useState<ForumComment | null>(null)
   const commentsByParent = useMemo(() => {
@@ -593,6 +952,15 @@ function ThreadView({
       </div>
     )
   }
+  const transformProposalPayload = thread.topic.proposal?.payload.action === 'commit-transform'
+    ? thread.topic.proposal.payload
+    : null
+  const referenceProposal = thread.topic.proposal && (
+    thread.topic.proposal.payload.action === 'add-reference' ||
+    thread.topic.proposal.payload.action === 'modify-references'
+  )
+    ? thread.topic.proposal
+    : null
 
   return (
     <article className="social-thread">
@@ -600,8 +968,42 @@ function ThreadView({
         Back to forum
       </button>
       <header>
+        <div className="social-thread-head-row">
+          <TopicVoteControls
+            topic={thread.topic}
+            currentUser={currentUser}
+            onLoginRequired={onLoginRequired}
+            onVote={onVote}
+          />
+          {transformProposalPayload && (
+            <button
+              type="button"
+              className="social-preview-button"
+              onClick={() => onPreview(transformProposalPayload.transforms)}
+            >
+              Preview
+            </button>
+          )}
+          {referenceProposal && (
+            <button
+              type="button"
+              className="social-preview-button"
+              onClick={() => onReferencePreview(referenceProposal)}
+            >
+              Preview
+            </button>
+          )}
+        </div>
+        {thread.topic.proposal && (
+          <div className="social-thread-topic-head">
+            <span>{proposalActionLabel(thread.topic.proposal)}</span>
+            {isConcludedProposal(thread.topic.proposal) && (
+              <i className="social-concluded-badge">Concluded</i>
+            )}
+            <b>{Math.round(thread.topic.agreementRatio * 100)}% agreement</b>
+          </div>
+        )}
         <h3>{thread.topic.title}</h3>
-        {thread.topic.proposal && <span>{proposalActionLabel(thread.topic.proposal)} · {Math.round(thread.topic.agreementRatio * 100)}% agreement</span>}
         <p>{thread.topic.description}</p>
       </header>
       <CommentForm
@@ -696,6 +1098,9 @@ function PostModal({
   forumRef,
   model,
   currentUser,
+  initialAction,
+  transformDraft,
+  edgeDraft,
   onClose,
   onCreated,
 }: {
@@ -703,22 +1108,32 @@ function PostModal({
   forumRef: ForumRef
   model: Model
   currentUser: AuthUser | null
+  initialAction?: GraphProposalAction | null
+  transformDraft?: TransformProposalEntry[]
+  edgeDraft?: SocialEdgeDraft | null
   onClose: () => void
   onCreated: (topic: ForumTopic) => void
 }) {
-  const nodeListId = useId()
-  const initialProposal = proposalDraftFromForumRef(model, forumRefFromGraphSelection(model) ?? forumRef)
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [proposalEnabled, setProposalEnabled] = useState(false)
-  const [action, setAction] = useState<GraphProposalAction>(initialProposal.action)
-  const [sourceValue, setSourceValue] = useState(initialProposal.sourceValue)
-  const [targetValue, setTargetValue] = useState(initialProposal.targetValue)
-  const [newTargetValue, setNewTargetValue] = useState('')
-  const [newLabel, setNewLabel] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const nodes = useMemo(() => sortedNodes(model), [model])
   const isGraphEmpty = nodes.length === 0
+  const initialProposal = proposalDraftFromForumRef(model, forumRefFromGraphSelection(model) ?? forumRef)
+  const edgeDraftSource = edgeDraft ? model.nodes.get(edgeDraft.from) : null
+  const edgeDraftTarget = edgeDraft ? model.nodes.get(edgeDraft.to) : null
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [proposalEnabled, setProposalEnabled] = useState(initialAction === 'commit-transform' || Boolean(edgeDraft))
+  const [action, setAction] = useState<GraphProposalAction>(initialAction ?? (isGraphEmpty ? 'add-node' : initialProposal.action))
+  const [sourceValue, setSourceValue] = useState(edgeDraftSource ? nodeLabel(edgeDraftSource) : initialProposal.sourceValue)
+  const [targetValue, setTargetValue] = useState(edgeDraftTarget ? nodeLabel(edgeDraftTarget) : initialProposal.targetValue)
+  const [newTargetValue, setNewTargetValue] = useState('')
+  const [newLabel, setNewLabel] = useState('')
+  const [referenceTitle, setReferenceTitle] = useState('')
+  const [referenceCitation, setReferenceCitation] = useState('')
+  const [referenceUrl, setReferenceUrl] = useState('')
+  const [referencesText, setReferencesText] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const activeAction: GraphProposalAction = action
+  const draftTransforms = transformDraft ?? []
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -730,13 +1145,18 @@ function PostModal({
     try {
       const proposal = proposalEnabled
         ? buildProposalPayload({
-          action,
+          action: activeAction,
           model,
           nodes,
           sourceValue,
           targetValue,
           newTargetValue,
           newLabel,
+          transformDraft: draftTransforms,
+          referenceTitle,
+          referenceCitation,
+          referenceUrl,
+          referencesText,
         })
         : undefined
       const topic = await createForumTopic(diagramId, {
@@ -777,7 +1197,17 @@ function PostModal({
         </label>
         {proposalEnabled && (
           <div className="social-proposal-fields">
-            <select aria-label="Suggested action" value={action} onChange={(e) => setAction(e.target.value as GraphProposalAction)}>
+            <select
+              aria-label="Suggested action"
+              value={activeAction}
+              onChange={(e) => {
+                const next = e.target.value as GraphProposalAction
+                setAction(next)
+                if (next === 'modify-references') {
+                  setReferencesText(referenceLinesForSelection(model, nodes, sourceValue, targetValue))
+                }
+              }}
+            >
               {isGraphEmpty ? (
                 <option value="add-node">Add Node</option>
               ) : (
@@ -789,37 +1219,78 @@ function PostModal({
                   <option value="remove-node">Remove node</option>
                   <option value="rename-node">Rename node</option>
                   <option value="rename-edge">Rename connection</option>
+                  <option value="add-reference">Add reference</option>
+                  <option value="modify-references">Modify references</option>
                   <option value="rewire-edge">Rewire connection</option>
+                  {(draftTransforms.length > 0 || activeAction === 'commit-transform') && (
+                    <option value="commit-transform">Commit transform</option>
+                  )}
                 </>
               )}
             </select>
-            {action !== 'add-node' && (
+            {activeAction === 'commit-transform' && (
+              <p className="social-transform-summary">
+                {draftTransforms.length} layout {draftTransforms.length === 1 ? 'change is' : 'changes are'} ready for preview and voting.
+              </p>
+            )}
+            {activeAction !== 'add-node' && activeAction !== 'commit-transform' && (
               <div className="social-ref-selector compact">
-                <input list={nodeListId} value={sourceValue} onChange={(e) => setSourceValue(e.target.value)} placeholder="source" aria-label="Proposal source node" />
-                <span className="social-action-icon" aria-label={proposalActionLabel({ action })} title={proposalActionLabel({ action })}>
-                  {proposalActionIcon(action)}
-                </span>
-                <input
-                  {...(action === 'add-node-edge' ? {} : { list: nodeListId })}
-                  value={targetValue}
-                  onChange={(e) => setTargetValue(e.target.value)}
-                  placeholder={action === 'add-node-edge' ? 'new target' : 'target'}
-                  aria-label="Proposal target node"
-                  disabled={action === 'remove-node' || action === 'rename-node'}
+                <NodeSuggestInput
+                  nodes={nodes}
+                  value={sourceValue}
+                  onChange={setSourceValue}
+                  placeholder="source"
+                  aria-label="Proposal source node"
                 />
+                <span className="social-action-icon" aria-label={proposalActionLabel({ action: activeAction })} title={proposalActionLabel({ action: activeAction })}>
+                  {proposalActionIcon(activeAction)}
+                </span>
+                {activeAction === 'add-node-edge' ? (
+                  <input
+                    value={targetValue}
+                    onChange={(e) => setTargetValue(e.target.value)}
+                    placeholder="new target"
+                    aria-label="Proposal target node"
+                  />
+                ) : (
+                  <NodeSuggestInput
+                    nodes={nodes}
+                    value={targetValue}
+                    onChange={setTargetValue}
+                    placeholder="target"
+                    aria-label="Proposal target node"
+                    disabled={activeAction === 'remove-node' || activeAction === 'rename-node'}
+                  />
+                )}
               </div>
             )}
-            {(action === 'add-node' || action === 'rename-node' || action === 'rename-edge') && (
+            {(activeAction === 'add-node' || activeAction === 'rename-node' || activeAction === 'rename-edge') && (
               <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="new name" aria-label="New name" />
             )}
-            {action === 'rewire-edge' && (
-              <input list={nodeListId} value={newTargetValue} onChange={(e) => setNewTargetValue(e.target.value)} placeholder="new target" aria-label="New target node" />
+            {activeAction === 'add-reference' && (
+              <div className="social-reference-fields">
+                <input value={referenceTitle} onChange={(e) => setReferenceTitle(e.target.value)} placeholder="reference title" aria-label="Reference title" />
+                <input value={referenceCitation} onChange={(e) => setReferenceCitation(e.target.value)} placeholder="citation" aria-label="Reference citation" />
+                <input value={referenceUrl} onChange={(e) => setReferenceUrl(e.target.value)} placeholder="url" aria-label="Reference URL" />
+              </div>
             )}
-            <datalist id={nodeListId}>
-              {nodes.map((node) => (
-                <option key={node.id} value={nodeLabel(node)} />
-              ))}
-            </datalist>
+            {activeAction === 'modify-references' && (
+              <textarea
+                value={referencesText}
+                onChange={(e) => setReferencesText(e.target.value)}
+                placeholder="Title | Citation | URL"
+                aria-label="Reference list"
+              />
+            )}
+            {activeAction === 'rewire-edge' && (
+              <NodeSuggestInput
+                nodes={nodes}
+                value={newTargetValue}
+                onChange={setNewTargetValue}
+                placeholder="new target"
+                aria-label="New target node"
+              />
+            )}
           </div>
         )}
         {error && <div className="social-forum-error">{error}</div>}
@@ -848,11 +1319,17 @@ function AuthModal({
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setError(null)
+    const validation = validateAuthInput(mode, username, password)
+    if (validation) {
+      setError(validation)
+      return
+    }
     setBusy(true)
     try {
+      const cleanUsername = username.trim()
       const result = mode === 'login'
-        ? await loginAccount(username, password)
-        : await registerAccount(username, password)
+        ? await loginAccount(cleanUsername, password)
+        : await registerAccount(cleanUsername, password)
       onAuthed(result.user)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed')
@@ -922,6 +1399,159 @@ function AuthModal({
   )
 }
 
+function ProfileSettingsModal({
+  user,
+  onClose,
+}: {
+  user: AuthUser
+  onClose: () => void
+}) {
+  return (
+    <div className="social-modal-backdrop" role="presentation">
+      <section className="social-profile-modal" role="dialog" aria-label="Profile settings">
+        <header>
+          <h3>Profile settings</h3>
+          <button type="button" onClick={onClose} aria-label="Close profile settings">Close</button>
+        </header>
+        <div className="social-profile-summary">
+          <strong>{user.username}</strong>
+          <span>{user.reputation} reputation</span>
+        </div>
+        <p>Profile appearance and account controls will live here. Theme and background preferences are already saved to this account through Settings.</p>
+      </section>
+    </div>
+  )
+}
+
+function TransformPreviewOverlay({
+  model,
+  transforms,
+  onClose,
+}: {
+  model: Model
+  transforms: TransformProposalEntry[]
+  onClose: () => void
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    let disposed = false
+    const renderer = new SceneRenderer({ preview: true })
+    const previewModel = modelWithTransforms(model, transforms)
+    void renderer.init(host).then(() => {
+      if (disposed) {
+        renderer.destroy()
+        return
+      }
+      renderer.setModel({
+        nodes: previewModel.nodes,
+        edges: previewModel.edges,
+        grid: previewModel.grid,
+        crossLinks: previewModel.crossLinks,
+      })
+      renderer.setTransformPreview(transforms)
+      renderer.setCamera(miniCameraForBounds(sceneBounds([...previewModel.nodes.values()]), renderer.getViewport()))
+    }).catch((err: unknown) => {
+      console.warn('Transform preview failed:', err)
+    })
+    return () => {
+      disposed = true
+      renderer.destroy()
+    }
+  }, [model, transforms])
+
+  return (
+    <div className="social-transform-preview" role="dialog" aria-label="Transform proposal preview">
+      <header>
+        <button type="button" className="social-thread-back" onClick={onClose}>Back</button>
+        <div>
+          <h3>Layout preview</h3>
+          <p>{transforms.length} changed {transforms.length === 1 ? 'node' : 'nodes'}</p>
+        </div>
+      </header>
+      <div ref={hostRef} className="social-transform-preview-render" />
+    </div>
+  )
+}
+
+function modelWithTransforms(model: Model, transforms: TransformProposalEntry[]): Model {
+  const nodes = new Map(model.nodes)
+  for (const transform of transforms) {
+    const node = nodes.get(transform.nodeId)
+    if (node) nodes.set(node.id, { ...node, ...transform.to })
+  }
+  return { ...model, nodes }
+}
+
+function ReferencePreviewOverlay({
+  model,
+  proposal,
+  onClose,
+}: {
+  model: Model
+  proposal: GraphProposal
+  onClose: () => void
+}) {
+  const payload = proposal.payload
+  if (payload.action !== 'add-reference' && payload.action !== 'modify-references') return null
+  const edge = model.edges.get(payload.edgeId)
+  const current = edge?.references ?? []
+  const proposed = payload.action === 'add-reference'
+    ? [...current, payload.reference]
+    : payload.references
+  return (
+    <div className="social-modal-backdrop" role="presentation">
+      <section className="social-reference-preview-modal" role="dialog" aria-label="Reference proposal preview">
+        <header>
+          <h3>Reference preview</h3>
+          <button type="button" onClick={onClose} aria-label="Close reference preview">Close</button>
+        </header>
+        <div className="social-reference-preview-grid">
+          <ReferenceListPreview title="Current" references={current} />
+          <ReferenceListPreview title="Proposed" references={proposed} />
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ReferenceListPreview({
+  title,
+  references,
+}: {
+  title: string
+  references: ConnectionReference[]
+}) {
+  return (
+    <div className="social-reference-preview-list">
+      <h4>{title}</h4>
+      {references.length === 0 ? (
+        <p>No references</p>
+      ) : references.map((ref, index) => (
+        <article key={`${ref.title}-${index}`}>
+          <strong>{ref.title}</strong>
+          {ref.citation && <span>{ref.citation}</span>}
+          {ref.url && <small>{ref.url}</small>}
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function validateAuthInput(mode: 'login' | 'register', username: string, password: string): string | null {
+  const cleanUsername = username.trim()
+  if (!cleanUsername) return 'Enter a username.'
+  if (!password) return 'Enter a password.'
+  if (mode !== 'register') return null
+  if (!/^[A-Za-z0-9_-]{3,24}$/.test(cleanUsername)) {
+    return 'Use 3-24 letters, numbers, underscores, or dashes for the username.'
+  }
+  if (password.length < 6) return 'Use a password with at least 6 characters.'
+  return null
+}
+
 function buildProposalPayload(input: {
   action: GraphProposalAction
   model: Model
@@ -930,6 +1560,11 @@ function buildProposalPayload(input: {
   targetValue: string
   newTargetValue: string
   newLabel: string
+  transformDraft: TransformProposalEntry[]
+  referenceTitle: string
+  referenceCitation: string
+  referenceUrl: string
+  referencesText: string
 }): GraphProposalPayload {
   const source = resolveNodeInput(input.sourceValue, input.nodes)
   const target = resolveNodeInput(input.targetValue, input.nodes)
@@ -939,10 +1574,12 @@ function buildProposalPayload(input: {
   switch (input.action) {
     case 'add-node':
       if (!cleanLabel) throw new Error('Name the new node')
+      if (nodeLabelExists(input.model, cleanLabel)) throw new Error('A node with that name already exists')
       return { action: input.action, newNodeLabel: cleanLabel }
     case 'add-node-edge':
       if (!source) throw new Error('Choose an existing source node')
       if (!input.targetValue.trim()) throw new Error('Name the new target node')
+      if (nodeLabelExists(input.model, input.targetValue.trim())) throw new Error('A node with that name already exists')
       return { action: input.action, sourceNodeId: source.id, newNodeLabel: input.targetValue.trim() }
     case 'add-edge':
       if (!source || !target) throw new Error('Choose source and target nodes')
@@ -956,6 +1593,7 @@ function buildProposalPayload(input: {
     case 'rename-node':
       if (!source) throw new Error('Choose the node to rename')
       if (!cleanLabel) throw new Error('Enter the new node name')
+      if (nodeLabelExists(input.model, cleanLabel, source.id)) throw new Error('A node with that name already exists')
       return { action: input.action, nodeId: source.id, nextLabel: cleanLabel }
     case 'rename-edge':
       if (!edge) throw new Error('Choose an existing connection')
@@ -965,6 +1603,24 @@ function buildProposalPayload(input: {
       if (!edge) throw new Error('Choose an existing connection')
       if (!nextTarget) throw new Error('Choose the new target node')
       return { action: input.action, edgeId: edge.id, nextTargetNodeId: nextTarget.id }
+    case 'commit-transform':
+      if (input.transformDraft.length === 0) throw new Error('No layout changes are ready to submit')
+      return { action: input.action, transforms: input.transformDraft }
+    case 'add-reference':
+      if (!edge) throw new Error('Choose an existing connection')
+      if (!input.referenceTitle.trim()) throw new Error('Enter a reference title')
+      return {
+        action: input.action,
+        edgeId: edge.id,
+        reference: {
+          title: input.referenceTitle.trim(),
+          citation: input.referenceCitation.trim(),
+          url: input.referenceUrl.trim(),
+        },
+      }
+    case 'modify-references':
+      if (!edge) throw new Error('Choose an existing connection')
+      return { action: input.action, edgeId: edge.id, references: parseReferenceLines(input.referencesText) }
   }
 }
 
@@ -985,10 +1641,14 @@ function selectedEdgesForForum(model: Model, ref: ForumRef): Set<string> {
 
 function forumRefFromGraphSelection(model: Model): ForumRef | null {
   const store = useOmniStore.getState()
-  const edgeId = store.selectedEdgeIds.values().next().value as string | undefined
-  if (edgeId && model.edges.has(edgeId)) return edgeForumRef(edgeId)
-  const nodeId = store.selectedIds.values().next().value as string | undefined
-  if (nodeId && model.nodes.has(nodeId)) return nodeForumRef(nodeId)
+  if (store.selectedEdgeIds.size === 1) {
+    const edgeId = store.selectedEdgeIds.values().next().value as string | undefined
+    if (edgeId && model.edges.has(edgeId)) return edgeForumRef(edgeId)
+  }
+  if (store.selectedIds.size === 1) {
+    const nodeId = store.selectedIds.values().next().value as string | undefined
+    if (nodeId && model.nodes.has(nodeId)) return nodeForumRef(nodeId)
+  }
   return null
 }
 
@@ -1017,6 +1677,20 @@ function selectorDraftFromRef(model: Model, ref: ForumRef): {
       mode: 'arrow',
       edgeId: edge?.id ?? '',
     }
+  }
+  const selected = [...useOmniStore.getState().selectedIds]
+    .map((id) => model.nodes.get(id))
+    .filter((node): node is ModelNode => Boolean(node))
+  if (selected.length >= 2) {
+    return {
+      sourceValue: nodeLabel(selected[0]),
+      targetValue: nodeLabel(selected[1]),
+      mode: 'none',
+      edgeId: '',
+    }
+  }
+  if (selected.length === 1) {
+    return { sourceValue: nodeLabel(selected[0]), targetValue: '', mode: 'none', edgeId: '' }
   }
   return { sourceValue: '', targetValue: '', mode: 'none', edgeId: '' }
 }
@@ -1057,6 +1731,44 @@ function resolveNodeInput(value: string, nodes: ModelNode[]): ModelNode | null {
   const trimmed = value.trim().toLowerCase()
   if (!trimmed) return null
   return nodes.find((node) => nodeLabel(node).toLowerCase() === trimmed || node.id.toLowerCase() === trimmed) ?? null
+}
+
+function nodeLabelExists(model: Model, label: string, exceptId?: string): boolean {
+  const needle = label.trim().toLowerCase()
+  if (!needle) return false
+  for (const node of model.nodes.values()) {
+    if (node.id === exceptId) continue
+    if (node.label.trim().toLowerCase() === needle) return true
+  }
+  return false
+}
+
+function formatReferenceLine(ref: ConnectionReference): string {
+  return [ref.title, ref.citation, ref.url].map((part) => part.replace(/\|/g, '/')).join(' | ')
+}
+
+function parseReferenceLines(value: string): ConnectionReference[] {
+  return value
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [title = '', citation = '', url = ''] = line.split('|').map((part) => part.trim())
+      return { title, citation, url }
+    })
+    .filter((ref) => ref.title.length > 0)
+}
+
+function referenceLinesForSelection(
+  model: Model,
+  nodes: ModelNode[],
+  sourceValue: string,
+  targetValue: string,
+): string {
+  const source = resolveNodeInput(sourceValue, nodes)
+  const target = resolveNodeInput(targetValue, nodes)
+  const edge = source && target ? findEdgeBetween(model, source.id, target.id) : null
+  return (edge?.references ?? []).map(formatReferenceLine).join('\n')
 }
 
 interface SceneBounds {
@@ -1128,8 +1840,28 @@ function proposalActionIcon(action: GraphProposalAction): string {
     case 'remove-node': return '−'
     case 'rename-node': return 'Aa'
     case 'rename-edge': return 'Aa'
+    case 'add-reference': return 'R+'
+    case 'modify-references': return 'R'
     case 'rewire-edge': return '↪'
+    case 'commit-transform': return '⇧'
   }
+}
+
+function isConcludedProposal(proposal: GraphProposal): boolean {
+  return proposal.status === 'applied' || proposal.status === 'blocked' || proposal.status === 'stale'
+}
+
+function mergeSocialScores(base: EntitySocialScores, debug: EntitySocialScores): EntitySocialScores {
+  return {
+    nodeScores: mergeScoreMap(base.nodeScores, debug.nodeScores),
+    edgeScores: mergeScoreMap(base.edgeScores, debug.edgeScores),
+  }
+}
+
+function mergeScoreMap(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
+  const next = { ...a }
+  for (const [id, score] of Object.entries(b)) next[id] = (next[id] ?? 0) + score
+  return next
 }
 
 function clamp(value: number, min: number, max: number): number {

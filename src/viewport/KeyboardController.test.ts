@@ -33,14 +33,28 @@ describe('KeyboardController', () => {
     controller.destroy()
   })
 
-  it('deletes selected main-scene nodes when no modal is active', () => {
+  it('does not delete selected main-scene nodes from the keyboard', () => {
     const controller = new KeyboardController()
     const id = useOmniStore.getState().addNode({ x: 0, y: 0 })
     useOmniStore.getState().select(id)
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
 
-    expect(useOmniStore.getState().model.nodes.has(id)).toBe(false)
+    expect(useOmniStore.getState().model.nodes.has(id)).toBe(true)
+    controller.destroy()
+  })
+
+  it('still deletes selected connections from the keyboard', () => {
+    const controller = new KeyboardController()
+    const a = useOmniStore.getState().addNode({ x: 0, y: 0 })
+    const b = useOmniStore.getState().addNode({ x: 10, y: 0 })
+    const edge = useOmniStore.getState().addEdge(a, b)!
+    useOmniStore.getState().selectEdge(edge)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+
+    expect(useOmniStore.getState().model.edges.has(edge)).toBe(false)
+    expect(useOmniStore.getState().model.nodes.size).toBe(2)
     controller.destroy()
   })
 })

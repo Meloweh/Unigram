@@ -43,7 +43,7 @@ beforeEach(() => {
       return jsonResponse({
         id: 'topic-1',
         diagramId: 'd1',
-        forumRef: 'proposal:p1',
+        forumRef: 'diagram',
         title: 'Add beta path',
         description: 'Try a new branch',
         author: 'Ada',
@@ -89,7 +89,11 @@ describe('SocialForumLayer', () => {
       const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
       const post = calls.find(([url, init]) => url.toString().includes('/forums/topics') && init?.method === 'POST')
       expect(post).toBeTruthy()
-      const body = JSON.parse(String(post?.[1]?.body)) as { proposal?: { action?: string; newNodeLabel?: string } }
+      const body = JSON.parse(String(post?.[1]?.body)) as {
+        forumRef?: string
+        proposal?: { action?: string; newNodeLabel?: string }
+      }
+      expect(body.forumRef).toBe('diagram')
       expect(body.proposal?.action).toBe('add-node-edge')
       expect(body.proposal?.newNodeLabel).toBe('Gamma')
     })
@@ -117,6 +121,7 @@ describe('SocialForumLayer', () => {
     const form = screen.getByLabelText('Create forum post')
     fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
     const action = within(form).getByLabelText('Suggested action')
+    expect(action).toHaveValue('add-node')
     expect(within(action).getByRole('option', { name: 'Add Node' })).toBeInTheDocument()
     expect(within(action).queryByRole('option', { name: 'Add node and connection' })).not.toBeInTheDocument()
   })
@@ -127,7 +132,7 @@ describe('SocialForumLayer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
     expect(await screen.findByLabelText('Source')).toHaveValue('Alpha')
     expect(screen.getByLabelText('Target')).toHaveValue('Beta')
-    expect(screen.getByLabelText('Connection selector')).toHaveValue('arrow')
+    expect(screen.getByLabelText('Connection selector')).toHaveTextContent('→')
   })
 
   it('restores the graph camera when the forum curtain closes', async () => {

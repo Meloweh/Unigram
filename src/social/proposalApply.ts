@@ -2,6 +2,8 @@ import { DEFAULT_NODE, type Connection, type ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
 import type { GraphProposal } from './forumTypes'
 import { findEdgeBetween } from './forumTypes'
+import { acceptTransformProposalBaseline } from './transformDraft'
+import { clearSocialEdgeDraft } from './graphDraft'
 
 export type ProposalApplyResult =
   | { status: 'applied' }
@@ -56,7 +58,15 @@ export function applyAcceptedProposal(proposal: GraphProposal): ProposalApplyRes
       const source = model.nodes.get(payload.sourceNodeId)
       const target = model.nodes.get(payload.targetNodeId)
       if (!source || !target) return { status: 'blocked', reason: 'Connection endpoint is missing' }
-      if (findEdgeBetween(model, source.id, target.id)) {
+      const existing = findEdgeBetween(model, source.id, target.id)
+      if (existing && existing.extra?.socialDraft === true) {
+        const { socialDraft, ...extra } = existing.extra
+        void socialDraft
+        store.updateEdge(existing.id, { extra: Object.keys(extra).length > 0 ? extra : undefined })
+        clearSocialEdgeDraft(existing.id)
+        return { status: 'applied' }
+      }
+      if (existing) {
         return { status: 'blocked', reason: 'Connection already exists' }
       }
       store.addEdge(source.id, target.id, { id: proposalCreatedEdgeId(proposal.id), kind: 'flow' })
@@ -95,6 +105,31 @@ export function applyAcceptedProposal(proposal: GraphProposal): ProposalApplyRes
       const next: Connection = { ...edge, to: target.id }
       store.removeEdges([edge.id])
       store.addEdge(edge.from, target.id, next)
+      return { status: 'applied' }
+    }
+    case 'commit-transform': {
+      for (const transform of payload.transforms) {
+        if (!model.nodes.has(transform.nodeId)) {
+          return { status: 'blocked', reason: 'Moved node is missing' }
+        }
+      }
+      for (const transform of payload.transforms) {
+        store.updateNode(transform.nodeId, transform.to)
+      }
+      acceptTransformProposalBaseline(payload.transforms, model.id)
+      return { status: 'applied' }
+    }
+    case 'add-reference': {
+      const edge = model.edges.get(payload.edgeId)
+      if (!edge) return { status: 'blocked', reason: 'Connection is missing' }
+      const references = [...(edge.references ?? []), payload.reference]
+      store.updateEdge(edge.id, { references })
+      return { status: 'applied' }
+    }
+    case 'modify-references': {
+      const edge = model.edges.get(payload.edgeId)
+      if (!edge) return { status: 'blocked', reason: 'Connection is missing' }
+      store.updateEdge(edge.id, { references: payload.references.length > 0 ? payload.references : undefined })
       return { status: 'applied' }
     }
   }
