@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
-import type { DiagramSummary } from '../social/cloudClient'
-import { createCloudDiagram, searchCloudDiagrams } from '../social/cloudClient'
+import type { CreativeDiagramSummary, DiagramSummary, AuthUser } from '../social/cloudClient'
+import { createCloudDiagram, getCurrentAccount, listCreativeDiagrams, searchCloudDiagrams } from '../social/cloudClient'
 
 interface SocialHomeProps {
   onOpenDiagram: (diagram: DiagramSummary) => Promise<void>
+  onOpenCreativeDiagram: (diagram: CreativeDiagramSummary) => Promise<void>
 }
 
-export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
+export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<DiagramSummary[]>([])
+  const [creativeGraphs, setCreativeGraphs] = useState<CreativeDiagramSummary[]>([])
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [creativeLoading, setCreativeLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [creativeError, setCreativeError] = useState<string | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
   const [setupOpen, setSetupOpen] = useState(false)
   const [setupTitle, setSetupTitle] = useState('')
@@ -45,6 +50,36 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
     }
   }, [query])
 
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setCreativeLoading(true)
+      setCreativeError(null)
+      try {
+        const account = await getCurrentAccount()
+        if (cancelled) return
+        setCurrentUser(account)
+        if (!account) {
+          setCreativeGraphs([])
+          return
+        }
+        const graphs = await listCreativeDiagrams()
+        if (!cancelled) setCreativeGraphs(graphs)
+      } catch (err) {
+        if (!cancelled) setCreativeError(err instanceof Error ? err.message : 'Creative graphs failed')
+      } finally {
+        if (!cancelled) setCreativeLoading(false)
+      }
+    }
+    const reload = () => void load()
+    reload()
+    window.addEventListener('omnigram-auth-changed', reload)
+    return () => {
+      cancelled = true
+      window.removeEventListener('omnigram-auth-changed', reload)
+    }
+  }, [])
+
   const open = async (diagram: DiagramSummary) => {
     setOpeningId(diagram.id)
     setError(null)
@@ -52,6 +87,18 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
       await onOpenDiagram(diagram)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open diagram')
+    } finally {
+      setOpeningId(null)
+    }
+  }
+
+  const openCreative = async (diagram: CreativeDiagramSummary) => {
+    setOpeningId(diagram.id)
+    setError(null)
+    try {
+      await onOpenCreativeDiagram(diagram)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open creative graph')
     } finally {
       setOpeningId(null)
     }
@@ -158,6 +205,35 @@ export function SocialHome({ onOpenDiagram }: SocialHomeProps) {
         <PlaceholderCard title="Most popular" text="Prepared for ranked public diagrams." />
         <PlaceholderCard title="Personalized" text="Prepared for account-based recommendations." />
         <PlaceholderCard title="Last visited" text="Prepared for local and cloud visit history." />
+        <section style={creativePanelStyle} aria-label="Your creative graphs">
+          <div style={creativeHeaderStyle}>
+            <h2 style={sectionTitleStyle}>Your Creative Graphs</h2>
+            {creativeLoading && <span style={mutedStyle}>Loading...</span>}
+          </div>
+          {!currentUser && <div style={creativeEmptyStyle}>Log in from a graph to keep private creative copies here.</div>}
+          {currentUser && creativeError && <div style={errorStyle}>{creativeError}</div>}
+          {currentUser && !creativeError && creativeGraphs.length === 0 && (
+            <div style={creativeEmptyStyle}>Private Creative Mode copies will appear here.</div>
+          )}
+          {currentUser && creativeGraphs.length > 0 && (
+            <div style={creativeListStyle}>
+              {creativeGraphs.map((graph) => (
+                <button
+                  key={graph.id}
+                  type="button"
+                  onClick={() => void openCreative(graph)}
+                  disabled={openingId !== null}
+                  style={creativeGraphButtonStyle}
+                >
+                  <span style={resultTitleStyle}>{graph.title}</span>
+                  <span style={resultMetaStyle}>
+                    {graph.sourceTitle ? `from ${graph.sourceTitle} · ` : ''}updated {formatDate(graph.updatedAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
       </aside>
       {setupOpen && (
         <div style={setupBackdropStyle} role="presentation">
@@ -407,6 +483,42 @@ const placeholderCardStyle: CSSProperties = {
   color: '#5f7790',
   font: '13px system-ui, sans-serif',
   background: 'rgba(255,255,255,0.54)',
+}
+
+const creativePanelStyle: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  marginTop: 8,
+  paddingTop: 12,
+  borderTop: '1px solid #c8d8ea',
+}
+
+const creativeHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+}
+
+const creativeListStyle: CSSProperties = {
+  display: 'grid',
+  gap: 6,
+}
+
+const creativeGraphButtonStyle: CSSProperties = {
+  ...resultButtonStyle,
+  minHeight: 54,
+  background: 'linear-gradient(180deg, #f5f9ff, #e8f1fa)',
+  border: '1px solid #b9cde2',
+}
+
+const creativeEmptyStyle: CSSProperties = {
+  padding: 12,
+  border: '1px dashed #b6c9dc',
+  borderRadius: 6,
+  color: '#5f7790',
+  font: '13px system-ui, sans-serif',
+  background: 'rgba(255,255,255,0.42)',
 }
 
 const mutedStyle: CSSProperties = {

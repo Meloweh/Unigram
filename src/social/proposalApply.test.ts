@@ -83,6 +83,27 @@ describe('applyAcceptedProposal', () => {
     expect(edge?.references).toEqual([{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }])
   })
 
+  it('adds named RMM and MPD dimensions from accepted proposals', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
+    expect(applyAcceptedProposal(makeProposal('rmm', {
+      action: 'add-rmm',
+      nodeId: a,
+      name: 'A detail',
+    }))).toEqual({ status: 'applied' })
+    const rmmId = useOmniStore.getState().model.nodes.get(a)?.childModelId
+    expect(rmmId).toBeTruthy()
+    expect(useOmniStore.getState().models.get(rmmId ?? '')?.name).toBe('A detail')
+
+    expect(applyAcceptedProposal(makeProposal('mpd', {
+      action: 'add-mpd',
+      nodeId: a,
+      name: 'A alternate',
+    }))).toEqual({ status: 'applied' })
+    const dims = useOmniStore.getState().model.nodes.get(a)?.mpdDimensions ?? []
+    expect(dims.length).toBe(2)
+    expect(useOmniStore.getState().models.get(dims[1])?.name).toBe('A alternate')
+  })
+
   it('renames and rewires existing entities', () => {
     const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
     const b = useOmniStore.getState().addNode({ id: 'b', x: 10, y: 0, label: 'B' })

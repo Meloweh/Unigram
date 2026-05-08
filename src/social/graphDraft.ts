@@ -22,6 +22,12 @@ export function clearSocialEdgeDraft(edgeId: string): void {
   emit()
 }
 
+export function clearSocialEdgeDrafts(): void {
+  if (edgeDrafts.length === 0) return
+  edgeDrafts = []
+  emit()
+}
+
 export function getSocialEdgeDrafts(): SocialEdgeDraft[] {
   return edgeDrafts
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
 import { exportBundle, importBundle } from './projectBundle'
-import type { Model } from './types'
+import { DEFAULT_GRID, type Model } from './types'
 import { clearMediaStore, getMediaBlob, storeMediaBlob } from '../media/mediaStore'
 
 const mkModel = (id: string, name: string): Model => ({
@@ -106,6 +106,7 @@ describe('projectBundle round-trip', () => {
     const restored = await importBundle(blob)
     expect(restored.models.has('root')).toBe(true)
     expect(restored.models.get('root')?.name).toBe('Key Mismatch')
+    expect(restored.models.get('root')?.grid).toEqual(DEFAULT_GRID)
   })
 
   it('uses the root model key when the embedded model id drifted', async () => {

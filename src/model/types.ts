@@ -211,10 +211,10 @@ export interface GridSettings {
 }
 
 export const DEFAULT_GRID: GridSettings = {
-  enabled: false,
-  snap: false,
+  enabled: true,
+  snap: true,
   sizePercent: 4,
-  appearance: 'lines',
+  appearance: 'dots',
 }
 
 export interface Model {

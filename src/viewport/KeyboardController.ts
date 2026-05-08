@@ -8,7 +8,12 @@ import { useOmniStore } from '../model/store'
 import { clearSocialEdgeDraft } from '../social/graphDraft'
 
 export class KeyboardController {
-  constructor() {
+  private readonly allowNodeDelete: boolean
+  private readonly editorHotkeys: boolean
+
+  constructor(options: { allowNodeDelete?: boolean; editorHotkeys?: boolean } = {}) {
+    this.allowNodeDelete = options.allowNodeDelete ?? false
+    this.editorHotkeys = options.editorHotkeys ?? true
     window.addEventListener('keydown', this.onKeyDown)
   }
 
@@ -25,25 +30,25 @@ export class KeyboardController {
       return
     }
     const ctrl = e.ctrlKey || e.metaKey
-    if (ctrl && (e.key === 'z' || e.key === 'Z')) {
+    if (this.editorHotkeys && ctrl && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault()
       if (e.shiftKey) useOmniStore.getState().redo()
       else useOmniStore.getState().undo()
       return
     }
-    if (ctrl && (e.key === 'y' || e.key === 'Y')) {
+    if (this.editorHotkeys && ctrl && (e.key === 'y' || e.key === 'Y')) {
       e.preventDefault()
       useOmniStore.getState().redo()
       return
     }
-    if (ctrl && (e.key === 'c' || e.key === 'C')) {
+    if (this.editorHotkeys && ctrl && (e.key === 'c' || e.key === 'C')) {
       const s = useOmniStore.getState()
       if (s.selectedIds.size === 0) return
       e.preventDefault()
       s.copySelection()
       return
     }
-    if (ctrl && (e.key === 'v' || e.key === 'V')) {
+    if (this.editorHotkeys && ctrl && (e.key === 'v' || e.key === 'V')) {
       const s = useOmniStore.getState()
       if (!s.clipboard) return
       e.preventDefault()
@@ -53,10 +58,16 @@ export class KeyboardController {
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const s = useOmniStore.getState()
       const edgeSel = s.selectedEdgeIds
-      if (edgeSel.size === 0) return
+      const nodeSel = s.selectedIds
+      if (edgeSel.size === 0 && (!this.allowNodeDelete || nodeSel.size === 0)) return
       e.preventDefault()
-      s.removeEdges([...edgeSel])
-      for (const id of edgeSel) clearSocialEdgeDraft(id)
+      if (edgeSel.size > 0) {
+        s.removeEdges([...edgeSel])
+        for (const id of edgeSel) clearSocialEdgeDraft(id)
+      }
+      if (this.allowNodeDelete && nodeSel.size > 0) {
+        s.removeNodes([...nodeSel])
+      }
       return
     }
     if (e.key === 'Escape') {

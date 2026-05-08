@@ -81,6 +81,22 @@ export function applyAcceptedProposal(proposal: GraphProposal): ProposalApplyRes
       })
       return { status: 'applied' }
     }
+    case 'add-rmm': {
+      const node = model.nodes.get(payload.nodeId)
+      if (!node) return { status: 'blocked', reason: 'Node is missing' }
+      if (node.childModelId) return { status: 'applied' }
+      const id = store.addChildModel(node.id, payload.name.trim())
+      return id ? { status: 'applied' } : { status: 'blocked', reason: 'RMM dimension could not be created' }
+    }
+    case 'add-mpd': {
+      const node = model.nodes.get(payload.nodeId)
+      if (!node) return { status: 'blocked', reason: 'Node is missing' }
+      if ((node.mpdDimensions ?? []).some((id) => model.id !== id && store.models.get(id)?.name === payload.name.trim())) {
+        return { status: 'applied' }
+      }
+      const id = store.addMpdDimension(node.id, payload.name.trim())
+      return id ? { status: 'applied' } : { status: 'blocked', reason: 'MPD dimension could not be created' }
+    }
     case 'remove-edge': {
       if (!model.edges.has(payload.edgeId)) return { status: 'blocked', reason: 'Connection is missing' }
       store.removeEdges([payload.edgeId])

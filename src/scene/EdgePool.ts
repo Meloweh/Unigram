@@ -102,7 +102,7 @@ function strokeDashed(
 }
 
 /** Draw the chosen arrow head style at (`tx`, `ty`) pointing along (`ux`, `uy`). */
-function drawArrowHead(
+export function drawArrowHead(
   g: Graphics,
   style: ConnectionArrowStyle,
   tx: number, ty: number,

@@ -54,6 +54,7 @@ const DRAG_TICKER_TAG = 'omni-pointer'
 
 export interface PointerControllerOptions {
   snap?: number
+  socialDrafts?: boolean
 }
 
 export class PointerController {
@@ -65,6 +66,7 @@ export class PointerController {
   private lastNodeClickAt = 0
   private readonly host: HTMLElement
   private readonly renderer: SceneRenderer
+  private readonly socialDrafts: boolean
 
   /** Effective snap step (scene-percent). 0 = snapping off. */
   private get snapStep(): number {
@@ -80,7 +82,7 @@ export class PointerController {
   ) {
     this.host = host
     this.renderer = renderer
-    void options
+    this.socialDrafts = options.socialDrafts ?? true
     host.addEventListener('pointerdown', this.onPointerDown)
     host.addEventListener('pointermove', this.onPointerMove)
     host.addEventListener('pointerup', this.onPointerUp)
@@ -126,7 +128,7 @@ export class PointerController {
     if (resizeHit) {
       const node = useOmniStore.getState().model.nodes.get(resizeHit.id)
       if (!node || node.locked) return
-      if (getSocialEdgeDraftCount() > 0) return
+      if (this.socialDrafts && getSocialEdgeDraftCount() > 0) return
       this.active = {
         kind: 'resize',
         pointerId: e.pointerId,
@@ -220,7 +222,7 @@ export class PointerController {
       } else if (!store.selectedIds.has(hitId)) {
         store.select(hitId, false)
       }
-      if (getSocialEdgeDraftCount() > 0) return
+      if (this.socialDrafts && getSocialEdgeDraftCount() > 0) return
       // Build baselines for whatever is selected now (post-select). Locked
       // nodes are skipped (legacy parity: locked nodes refuse drag and
       // untangle).
@@ -394,7 +396,7 @@ export class PointerController {
         }
         this.renderer.reindexNodes(a.dragBaselines.map((b) => b.id))
         store.commitDrag(a.dragBaselines)
-        markTransformDraftTouched(store.model.id, a.dragBaselines.map((b) => b.id))
+        if (this.socialDrafts) markTransformDraftTouched(store.model.id, a.dragBaselines.map((b) => b.id))
       } else if (a.nodeId) {
         // Click on node — detect double-click → enter inline label edit.
         const now = e.timeStamp
@@ -424,7 +426,7 @@ export class PointerController {
           }
         }
         store.commitGeometry(a.resizeBaseline)
-        markTransformDraftTouched(store.model.id, [a.resizeBaseline.id])
+        if (this.socialDrafts) markTransformDraftTouched(store.model.id, [a.resizeBaseline.id])
       }
       return
     }
@@ -465,11 +467,18 @@ export class PointerController {
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
       if (targetId && targetId !== a.nodeId) {
-        if (getSocialEdgeDraftCount() > 0 || getTransformDraftCount(useOmniStore.getState().model.id) > 0) return
+        if (
+          this.socialDrafts &&
+          (getSocialEdgeDraftCount() > 0 || getTransformDraftCount(useOmniStore.getState().model.id) > 0)
+        ) return
         const kind = useOmniStore.getState().defaultConnectionKind
-        const edgeId = useOmniStore.getState().addEdge(a.nodeId, targetId, { kind, extra: { socialDraft: true } })
+        const edgeId = useOmniStore.getState().addEdge(
+          a.nodeId,
+          targetId,
+          this.socialDrafts ? { kind, extra: { socialDraft: true } } : { kind },
+        )
         const edge = edgeId ? useOmniStore.getState().model.edges.get(edgeId) : null
-        if (edge) registerSocialEdgeDraft(edge)
+        if (edge && this.socialDrafts) registerSocialEdgeDraft(edge)
       }
       a.ghost?.destroy()
       return

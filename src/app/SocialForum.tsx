@@ -77,7 +77,7 @@ export function SocialForumLayer({
   diagramId,
   projectTopic,
   projectDescription,
-  themeMode = 'light',
+  themeMode = 'light-dark',
   renderer,
   onHome,
   onOpenSettings,
@@ -334,9 +334,19 @@ export function SocialForumLayer({
     setDebugSocialScores((current) => {
       const nodeScores = { ...current.nodeScores }
       const edgeScores = { ...current.edgeScores }
+      const nodeVotes = { ...(current.nodeVotes ?? {}) }
+      const edgeVotes = { ...(current.edgeVotes ?? {}) }
+      const addVote = (target: NonNullable<EntitySocialScores['nodeVotes']>, id: string) => {
+        const currentVotes = target[id] ?? { positive: 0, negative: 0 }
+        target[id] = delta >= 0
+          ? { ...currentVotes, positive: currentVotes.positive + Math.max(1, Math.round(delta / 4)) }
+          : { ...currentVotes, negative: currentVotes.negative + Math.max(1, Math.round(Math.abs(delta) / 4)) }
+      }
       for (const id of store.selectedIds) nodeScores[id] = (nodeScores[id] ?? 0) + delta
       for (const id of store.selectedEdgeIds) edgeScores[id] = (edgeScores[id] ?? 0) + delta
-      return { nodeScores, edgeScores }
+      for (const id of store.selectedIds) addVote(nodeVotes, id)
+      for (const id of store.selectedEdgeIds) addVote(edgeVotes, id)
+      return { nodeScores, edgeScores, nodeVotes, edgeVotes }
     })
   }
 
@@ -714,7 +724,7 @@ function MiniDiagramPreview({
     const host = hostRef.current
     if (!host) return
     let disposed = false
-    const renderer = new SceneRenderer({ preview: true, forceFullLod: true })
+    const renderer = new SceneRenderer({ preview: true, forceFullLod: true, hideEditHandles: true, socialDecorations: false })
     rendererRef.current = renderer
     void renderer.init(host).then(() => {
       if (disposed) {
@@ -1174,6 +1184,7 @@ function PostModal({
   const [error, setError] = useState<string | null>(null)
   const activeAction: GraphProposalAction = action
   const draftTransforms = transformDraft ?? []
+  const sourceOnlyAction = activeAction === 'add-rmm' || activeAction === 'add-mpd'
 
   useEffect(() => {
     if (activeAction !== 'modify-references') return
@@ -1263,6 +1274,8 @@ function PostModal({
                   <option value="add-node">Add Node</option>
                   <option value="add-node-edge">Add node and connection</option>
                   <option value="add-edge">Add connection</option>
+                  <option value="add-rmm">Add RMM</option>
+                  <option value="add-mpd">Add MPD</option>
                   <option value="remove-edge">Remove connection</option>
                   <option value="remove-node">Remove node</option>
                   <option value="rename-node">Rename node</option>
@@ -1293,7 +1306,15 @@ function PostModal({
                 <span className="social-action-icon" aria-label={proposalActionLabel({ action: activeAction })} title={proposalActionLabel({ action: activeAction })}>
                   {proposalActionIcon(activeAction)}
                 </span>
-                {activeAction === 'add-node-edge' ? (
+                {sourceOnlyAction ? (
+                  <input
+                    value=""
+                    readOnly
+                    placeholder="dimension"
+                    aria-label="Dimension target"
+                    className="social-ref-disabled"
+                  />
+                ) : activeAction === 'add-node-edge' ? (
                   <input
                     value={targetValue}
                     onChange={(e) => setTargetValue(e.target.value)}
@@ -1312,8 +1333,13 @@ function PostModal({
                 )}
               </div>
             )}
-            {(activeAction === 'add-node' || activeAction === 'rename-node' || activeAction === 'rename-edge') && (
-              <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="new name" aria-label="New name" />
+            {(activeAction === 'add-node' || activeAction === 'rename-node' || activeAction === 'rename-edge' || sourceOnlyAction) && (
+              <input
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder={sourceOnlyAction ? 'dimension name' : 'new name'}
+                aria-label={sourceOnlyAction ? 'Dimension name' : 'New name'}
+              />
             )}
             {activeAction === 'add-edge' && (
               <div className="social-reference-fields">
@@ -1504,7 +1530,7 @@ function TransformPreviewOverlay({
     const host = hostRef.current
     if (!host) return
     let disposed = false
-    const renderer = new SceneRenderer({ preview: true, forceFullLod: true })
+    const renderer = new SceneRenderer({ preview: true, forceFullLod: true, socialDecorations: false })
     const previewModel = modelWithTransforms(model, transforms)
     void renderer.init(host).then(() => {
       if (disposed) {
@@ -1657,6 +1683,14 @@ function buildProposalPayload(input: {
         ...(cleanLabel ? { label: cleanLabel } : {}),
         ...(input.referencesText.trim() ? { references: parseReferenceLines(input.referencesText) } : {}),
       }
+    case 'add-rmm':
+      if (!source) throw new Error('Choose a node for the RMM dimension')
+      if (!cleanLabel) throw new Error('Name the RMM dimension')
+      return { action: input.action, nodeId: source.id, name: cleanLabel }
+    case 'add-mpd':
+      if (!source) throw new Error('Choose a node for the MPD dimension')
+      if (!cleanLabel) throw new Error('Name the MPD dimension')
+      return { action: input.action, nodeId: source.id, name: cleanLabel }
     case 'remove-edge':
       if (!edge) throw new Error('Choose an existing connection')
       return { action: input.action, edgeId: edge.id }
@@ -1909,6 +1943,8 @@ function proposalActionIcon(action: GraphProposalAction): string {
     case 'add-node': return '+'
     case 'add-node-edge': return '→'
     case 'add-edge': return '→'
+    case 'add-rmm': return 'RMM'
+    case 'add-mpd': return 'MPD'
     case 'remove-edge': return '✕'
     case 'remove-node': return '−'
     case 'rename-node': return 'Aa'
@@ -1932,6 +1968,8 @@ function mergeSocialScores(base: EntitySocialScores, debug: EntitySocialScores):
   return {
     nodeScores: mergeScoreMap(base.nodeScores, debug.nodeScores),
     edgeScores: mergeScoreMap(base.edgeScores, debug.edgeScores),
+    nodeVotes: mergeVoteMap(base.nodeVotes, debug.nodeVotes),
+    edgeVotes: mergeVoteMap(base.edgeVotes, debug.edgeVotes),
   }
 }
 
@@ -1945,6 +1983,21 @@ function rendererThemeFor(mode: ThemeMode): Parameters<SceneRenderer['setThemePa
 function mergeScoreMap(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
   const next = { ...a }
   for (const [id, score] of Object.entries(b)) next[id] = (next[id] ?? 0) + score
+  return next
+}
+
+function mergeVoteMap(
+  a: EntitySocialScores['nodeVotes'],
+  b: EntitySocialScores['nodeVotes'],
+): NonNullable<EntitySocialScores['nodeVotes']> {
+  const next: NonNullable<EntitySocialScores['nodeVotes']> = { ...(a ?? {}) }
+  for (const [id, votes] of Object.entries(b ?? {})) {
+    const current = next[id] ?? { positive: 0, negative: 0 }
+    next[id] = {
+      positive: current.positive + votes.positive,
+      negative: current.negative + votes.negative,
+    }
+  }
   return next
 }
 

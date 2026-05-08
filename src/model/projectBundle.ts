@@ -14,7 +14,7 @@
  */
 
 import JSZip from 'jszip'
-import type { Connection, CrossEffectLink, GridSettings, Model, ModelNode } from './types'
+import { DEFAULT_GRID, type Connection, type CrossEffectLink, type GridSettings, type Model, type ModelNode } from './types'
 import type { ModelCosmetics } from '../theme/types'
 import { getMediaBlob, storeMediaBlob } from '../media/mediaStore'
 import { DEFAULT_COSMETIC_TIP_ANGLE, DEFAULT_COSMETIC_TIP_LENGTH, isCosmeticShape } from '../scene/cosmeticGeometry'
@@ -87,7 +87,7 @@ export async function importBundle(blob: Blob): Promise<ProjectSnapshot> {
       name: mf.name,
       nodes: new Map(nodes.map((n) => [n.id, n])),
       edges: new Map(mf.edges.map((e) => [e.id, e])),
-      ...(mf.grid ? { grid: mf.grid } : {}),
+      grid: mf.grid ?? DEFAULT_GRID,
       ...(mf.cosmetics ? { cosmetics: mf.cosmetics } : {}),
       ...(mf.crossLinks ? { crossLinks: mf.crossLinks } : {}),
       ...(mf.extra ? { extra: mf.extra } : {}),

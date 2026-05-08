@@ -28,6 +28,9 @@ export interface StoredDiagram {
   title: string
   topic?: string
   description?: string
+  visibility?: 'public' | 'private'
+  ownerUserId?: string
+  sourceDiagramId?: string
   createdAt: string
   updatedAt: string
   visits: number
@@ -112,6 +115,22 @@ export function diagramCloudPlugin(): Plugin {
           sendJson(res, 500, { error: 'Internal auth error' })
         }
       })
+      server.middlewares.use('/api/creative-diagrams', async (req, res) => {
+        try {
+          await handleCreativeDiagramsRequest(req, res)
+        } catch (err) {
+          if (err instanceof NotFoundError) {
+            sendJson(res, 404, { error: err.message })
+            return
+          }
+          if (err instanceof BadRequestError) {
+            sendJson(res, 400, { error: err.message })
+            return
+          }
+          console.error('Creative diagram API failed:', err)
+          sendJson(res, 500, { error: 'Internal creative diagram error' })
+        }
+      })
       server.middlewares.use('/api/diagrams', async (req, res) => {
         try {
           await handleDiagramsRequest(req, res)
@@ -191,6 +210,10 @@ async function handleAuthRequest(req: IncomingMessage, res: ServerResponse): Pro
 async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://omnigram.local')
   const segments = url.pathname.split('/').filter(Boolean)
+  if (segments.length >= 2 && segments[1] === 'creative-copies') {
+    await handleCreativeCopiesRequest(req, res, segments[0])
+    return
+  }
   if (segments.length >= 2 && segments[1] === 'forums') {
     await handleForumRequest(req, res, segments, url)
     return
@@ -234,6 +257,43 @@ async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse):
     return
   }
 
+  sendJson(res, 405, { error: 'Method not allowed' })
+}
+
+async function handleCreativeDiagramsRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? '/', 'http://omnigram.local')
+  const segments = url.pathname.split('/').filter(Boolean)
+  if (segments.length === 0 && req.method === 'GET') {
+    sendJson(res, 200, { diagrams: await listCreativeDiagrams(req) })
+    return
+  }
+  if (segments.length === 1 && req.method === 'GET') {
+    sendJson(res, 200, await getCreativeDiagram(req, segments[0]))
+    return
+  }
+  if (segments.length === 1 && req.method === 'PUT') {
+    const body = await readJsonBody<{ title?: unknown; bundleBase64?: unknown }>(req)
+    sendJson(res, 200, await updateCreativeDiagram(req, segments[0], body))
+    return
+  }
+  sendJson(res, 405, { error: 'Method not allowed' })
+}
+
+async function handleCreativeCopiesRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sourceDiagramId: string,
+): Promise<void> {
+  if (!sourceDiagramId) throw new BadRequestError('Source diagram is required')
+  if (req.method === 'GET') {
+    sendJson(res, 200, { diagrams: await listCreativeCopies(req, sourceDiagramId) })
+    return
+  }
+  if (req.method === 'POST') {
+    const body = await readJsonBody<{ title?: unknown; bundleBase64?: unknown }>(req)
+    sendJson(res, 201, await createCreativeCopy(req, sourceDiagramId, body))
+    return
+  }
   sendJson(res, 405, { error: 'Method not allowed' })
 }
 
@@ -307,7 +367,7 @@ async function handleForumRequest(
 async function listDiagrams(query: string): Promise<StoredDiagram[]> {
   const db = await readDb()
   const q = query.trim().toLowerCase()
-  const all = db.diagrams
+  const all = db.diagrams.filter(isPublicDiagram)
   const filtered = q.length === 0
     ? all
     : all.filter((diagram) => diagram.title.toLowerCase().includes(q))
@@ -325,6 +385,7 @@ async function createDiagram(
   const diagram: StoredDiagram = {
     id: randomUUID(),
     title,
+    visibility: 'public',
     ...metadata,
     createdAt: now,
     updatedAt: now,
@@ -338,8 +399,7 @@ async function createDiagram(
 
 async function getDiagram(id: string): Promise<StoredDiagram> {
   const db = await readDb()
-  const diagram = db.diagrams.find((item) => item.id === id)
-  if (!diagram) throw new NotFoundError('Diagram not found')
+  const diagram = ensurePublicDiagram(db, id)
   diagram.visits += 1
   diagram.updatedAt = new Date().toISOString()
   await writeDb(db)
@@ -348,8 +408,7 @@ async function getDiagram(id: string): Promise<StoredDiagram> {
 
 async function updateDiagram(id: string, patch: { title?: string; bundleBase64?: string }): Promise<StoredDiagram> {
   const db = await readDb()
-  const diagram = db.diagrams.find((item) => item.id === id)
-  if (!diagram) throw new NotFoundError('Diagram not found')
+  const diagram = ensurePublicDiagram(db, id)
   if (patch.title && patch.title.length > 0) diagram.title = patch.title
   if (patch.bundleBase64 !== undefined) diagram.bundleBase64 = patch.bundleBase64
   diagram.updatedAt = new Date().toISOString()
@@ -360,7 +419,7 @@ async function updateDiagram(id: string, patch: { title?: string; bundleBase64?:
 
 async function listForumTopics(req: IncomingMessage, diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const viewer = authenticatedUser(db, req)
   const changed = refreshProposalStatuses(db, diagramId)
   const topics = db.topics
@@ -377,7 +436,7 @@ async function createForumTopic(
   body: Partial<ForumTopicInput>,
 ): Promise<ForumTopic> {
   const db = await readDb()
-  const diagram = ensureDiagram(db, diagramId)
+  const diagram = ensurePublicDiagram(db, diagramId)
   const user = requireAuthenticatedUser(db, req)
   const title = cleanRequired(body.title, 'Topic title')
   const description = cleanRequired(body.description, 'Topic description')
@@ -430,7 +489,7 @@ function hasActiveTransformProposal(db: DiagramDb, diagramId: string): boolean {
 
 async function getForumThread(req: IncomingMessage, diagramId: string, topicId: string): Promise<ForumThread> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const viewer = authenticatedUser(db, req)
   const changed = refreshProposalStatuses(db, diagramId)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
@@ -454,7 +513,7 @@ async function createForumComment(
   body: Partial<ForumCommentInput>,
 ): Promise<ForumComment> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const user = requireAuthenticatedUser(db, req)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
@@ -483,7 +542,7 @@ async function voteForumTopic(
   body: { vote?: unknown },
 ): Promise<ForumTopic> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const user = requireAuthenticatedUser(db, req)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
@@ -509,18 +568,30 @@ async function voteForumTopic(
   return summarizeTopic(db, topic, user)
 }
 
-async function listSocialScores(diagramId: string): Promise<{ nodeScores: Record<string, number>; edgeScores: Record<string, number> }> {
+async function listSocialScores(diagramId: string): Promise<{
+  nodeScores: Record<string, number>
+  edgeScores: Record<string, number>
+  nodeVotes: Record<string, { positive: number; negative: number }>
+  edgeVotes: Record<string, { positive: number; negative: number }>
+}> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   refreshProposalStatuses(db, diagramId)
   const nodeScores: Record<string, number> = {}
   const edgeScores: Record<string, number> = {}
+  const nodeVotes: Record<string, { positive: number; negative: number }> = {}
+  const edgeVotes: Record<string, { positive: number; negative: number }> = {}
   for (const topic of db.topics.filter((item) => item.diagramId === diagramId)) {
     const score = topicScore(db, topic.id)
+    const votes = topicVoteBreakdown(db, topic.id)
     if (topic.forumRef.startsWith('node:')) {
-      addScore(nodeScores, topic.forumRef.slice('node:'.length), score)
+      const id = topic.forumRef.slice('node:'.length)
+      addScore(nodeScores, id, score)
+      addVotes(nodeVotes, id, votes)
     } else if (topic.forumRef.startsWith('edge:')) {
-      addScore(edgeScores, topic.forumRef.slice('edge:'.length), score)
+      const id = topic.forumRef.slice('edge:'.length)
+      addScore(edgeScores, id, score)
+      addVotes(edgeVotes, id, votes)
     }
     const proposal = topic.proposalId ? db.proposals.find((item) => item.id === topic.proposalId) : undefined
     if (!proposal) continue
@@ -530,14 +601,20 @@ async function listSocialScores(diagramId: string): Promise<{ nodeScores: Record
     switch (payload.action) {
       case 'add-node-edge':
         addScore(nodeScores, payload.sourceNodeId, activity)
+        addVotes(nodeVotes, payload.sourceNodeId, votes)
         break
       case 'add-edge':
         addScore(nodeScores, payload.sourceNodeId, Math.ceil(activity / 2))
         addScore(nodeScores, payload.targetNodeId, Math.ceil(activity / 2))
+        addVotes(nodeVotes, payload.sourceNodeId, votes)
+        addVotes(nodeVotes, payload.targetNodeId, votes)
         break
+      case 'add-rmm':
+      case 'add-mpd':
       case 'remove-node':
       case 'rename-node':
         addScore(nodeScores, payload.nodeId, activity)
+        addVotes(nodeVotes, payload.nodeId, votes)
         break
       case 'remove-edge':
       case 'rename-edge':
@@ -545,20 +622,24 @@ async function listSocialScores(diagramId: string): Promise<{ nodeScores: Record
       case 'modify-references':
       case 'rewire-edge':
         addScore(edgeScores, payload.edgeId, activity)
+        addVotes(edgeVotes, payload.edgeId, votes)
         break
       case 'commit-transform':
-        for (const transform of payload.transforms) addScore(nodeScores, transform.nodeId, Math.max(1, activity))
+        for (const transform of payload.transforms) {
+          addScore(nodeScores, transform.nodeId, Math.max(1, activity))
+          addVotes(nodeVotes, transform.nodeId, votes)
+        }
         break
       case 'add-node':
         break
     }
   }
-  return { nodeScores, edgeScores }
+  return { nodeScores, edgeScores, nodeVotes, edgeVotes }
 }
 
 async function listActiveProposals(diagramId: string): Promise<GraphProposal[]> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const changed = refreshProposalStatuses(db, diagramId)
   const proposals = db.proposals
     .filter((proposal) =>
@@ -576,7 +657,7 @@ async function updateProposalStatus(
   body: { status?: unknown; blockedReason?: unknown },
 ): Promise<GraphProposal> {
   const db = await readDb()
-  ensureDiagram(db, diagramId)
+  ensurePublicDiagram(db, diagramId)
   const proposal = db.proposals.find((item) => item.diagramId === diagramId && item.id === proposalId)
   if (!proposal) throw new NotFoundError('Proposal not found')
   const status = normalizeProposalStatus(body.status)
@@ -600,6 +681,110 @@ function withoutBundle(diagram: StoredDiagram): Omit<StoredDiagram, 'bundleBase6
   const { bundleBase64, ...summary } = diagram
   void bundleBase64
   return summary
+}
+
+function isPublicDiagram(diagram: StoredDiagram): boolean {
+  return diagram.visibility !== 'private'
+}
+
+function creativeSummary(db: DiagramDb, diagram: StoredDiagram): Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string } {
+  const sourceTitle = diagram.sourceDiagramId
+    ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)?.title
+    : undefined
+  return {
+    ...withoutBundle(diagram),
+    ...(sourceTitle ? { sourceTitle } : {}),
+  }
+}
+
+async function listCreativeDiagrams(req: IncomingMessage): Promise<Array<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }>> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  return db.diagrams
+    .filter((diagram) => diagram.visibility === 'private' && diagram.ownerUserId === user.id)
+    .map((diagram) => creativeSummary(db, diagram))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+async function listCreativeCopies(
+  req: IncomingMessage,
+  sourceDiagramId: string,
+): Promise<Array<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }>> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  ensurePublicDiagram(db, sourceDiagramId)
+  return db.diagrams
+    .filter((diagram) =>
+      diagram.visibility === 'private' &&
+      diagram.ownerUserId === user.id &&
+      diagram.sourceDiagramId === sourceDiagramId
+    )
+    .map((diagram) => creativeSummary(db, diagram))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+async function createCreativeCopy(
+  req: IncomingMessage,
+  sourceDiagramId: string,
+  body: { title?: unknown; bundleBase64?: unknown },
+): Promise<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  const source = ensurePublicDiagram(db, sourceDiagramId)
+  const title = typeof body.title === 'string' && body.title.trim()
+    ? body.title.trim()
+    : `${source.title} creative copy`
+  const bundleBase64 = typeof body.bundleBase64 === 'string' ? body.bundleBase64 : source.bundleBase64
+  const now = new Date().toISOString()
+  const diagram: StoredDiagram = {
+    id: randomUUID(),
+    title,
+    visibility: 'private',
+    ownerUserId: user.id,
+    sourceDiagramId: source.id,
+    createdAt: now,
+    updatedAt: now,
+    visits: 0,
+    popularity: 0,
+    ...(bundleBase64 ? { bundleBase64 } : {}),
+  }
+  db.diagrams.push(diagram)
+  await writeDb(db)
+  return creativeSummary(db, diagram)
+}
+
+async function getCreativeDiagram(
+  req: IncomingMessage,
+  id: string,
+): Promise<StoredDiagram & { sourceTitle?: string }> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
+  diagram.visits += 1
+  diagram.updatedAt = new Date().toISOString()
+  await writeDb(db)
+  const sourceTitle = diagram.sourceDiagramId
+    ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)?.title
+    : undefined
+  return {
+    ...diagram,
+    ...(sourceTitle ? { sourceTitle } : {}),
+  }
+}
+
+async function updateCreativeDiagram(
+  req: IncomingMessage,
+  id: string,
+  patch: { title?: unknown; bundleBase64?: unknown },
+): Promise<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
+  if (typeof patch.title === 'string' && patch.title.trim()) diagram.title = patch.title.trim()
+  if (typeof patch.bundleBase64 === 'string') diagram.bundleBase64 = patch.bundleBase64
+  diagram.updatedAt = new Date().toISOString()
+  await writeDb(db)
+  return creativeSummary(db, diagram)
 }
 
 async function readDb(): Promise<DiagramDb> {
@@ -753,6 +938,22 @@ function ensureDiagram(db: DiagramDb, id: string): StoredDiagram {
   return diagram
 }
 
+function ensurePublicDiagram(db: DiagramDb, id: string): StoredDiagram {
+  const diagram = ensureDiagram(db, id)
+  if (!isPublicDiagram(diagram)) throw new NotFoundError('Diagram not found')
+  return diagram
+}
+
+function ensureOwnedCreativeDiagram(db: DiagramDb, id: string, userId: string): StoredDiagram {
+  const diagram = db.diagrams.find((item) =>
+    item.id === id &&
+    item.visibility === 'private' &&
+    item.ownerUserId === userId
+  )
+  if (!diagram) throw new NotFoundError('Creative graph not found')
+  return diagram
+}
+
 function summarizeTopic(db: DiagramDb, topic: StoredForumTopic, viewer?: StoredUser | null): ForumTopic {
   const comments = db.comments.filter((comment) => comment.topicId === topic.id)
   const proposal = topic.proposalId
@@ -845,6 +1046,30 @@ function addScore(target: Record<string, number>, id: string, score: number): vo
   target[id] = (target[id] ?? 0) + score
 }
 
+function addVotes(
+  target: Record<string, { positive: number; negative: number }>,
+  id: string,
+  votes: { positive: number; negative: number },
+): void {
+  if (!id || (votes.positive === 0 && votes.negative === 0)) return
+  const current = target[id] ?? { positive: 0, negative: 0 }
+  target[id] = {
+    positive: current.positive + votes.positive,
+    negative: current.negative + votes.negative,
+  }
+}
+
+function topicVoteBreakdown(db: DiagramDb, topicId: string): { positive: number; negative: number } {
+  let positive = 0
+  let negative = 0
+  for (const vote of db.topicVotes) {
+    if (vote.topicId !== topicId) continue
+    if (vote.vote === 'like') positive++
+    else negative++
+  }
+  return { positive, negative }
+}
+
 function cleanRequired(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new BadRequestError(`${label} is required`)
   const trimmed = value.trim()
@@ -909,6 +1134,18 @@ function sanitizeProposalPayload(value: unknown): GraphProposalPayload {
         ...(Array.isArray(value.references) && value.references.length > 0
           ? { references: value.references.slice(0, 50).map((item) => sanitizeReference(item)) }
           : {}),
+      }
+    case 'add-rmm':
+      return {
+        action: value.action,
+        nodeId: cleanRequired(value.nodeId, 'Node'),
+        name: cleanRequired(value.name, 'RMM name'),
+      }
+    case 'add-mpd':
+      return {
+        action: value.action,
+        nodeId: cleanRequired(value.nodeId, 'Node'),
+        name: cleanRequired(value.name, 'MPD name'),
       }
     case 'remove-edge':
       return {

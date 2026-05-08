@@ -47,6 +47,8 @@ describe('forumTypes', () => {
   it('labels proposal actions for badges', () => {
     expect(proposalActionLabel({ action: 'add-node' })).toBe('Add node')
     expect(proposalActionLabel({ action: 'add-node-edge' })).toBe('Add node')
+    expect(proposalActionLabel({ action: 'add-rmm' })).toBe('Add RMM')
+    expect(proposalActionLabel({ action: 'add-mpd' })).toBe('Add MPD')
     expect(proposalActionLabel({ action: 'rewire-edge' })).toBe('Rewire connection')
     expect(proposalActionLabel({ action: 'commit-transform' })).toBe('Commit transform')
     expect(proposalActionLabel({ action: 'add-reference' })).toBe('Add reference')

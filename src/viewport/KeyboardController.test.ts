@@ -44,6 +44,28 @@ describe('KeyboardController', () => {
     controller.destroy()
   })
 
+  it('can disable editor copy/paste hotkeys for public social view', () => {
+    const controller = new KeyboardController({ editorHotkeys: false })
+    const id = useOmniStore.getState().addNode({ x: 0, y: 0 })
+    useOmniStore.getState().select(id)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
+
+    expect(useOmniStore.getState().clipboard).toBeNull()
+    controller.destroy()
+  })
+
+  it('deletes selected nodes when the editor scope allows it', () => {
+    const controller = new KeyboardController({ allowNodeDelete: true })
+    const id = useOmniStore.getState().addNode({ x: 0, y: 0 })
+    useOmniStore.getState().select(id)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+
+    expect(useOmniStore.getState().model.nodes.has(id)).toBe(false)
+    controller.destroy()
+  })
+
   it('still deletes selected connections from the keyboard', () => {
     const controller = new KeyboardController()
     const a = useOmniStore.getState().addNode({ x: 0, y: 0 })

@@ -9,7 +9,7 @@
  * canvas itself is a single div whose children are managed by Pixi.
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { bindStoreToRenderer } from './sceneBridge'
 import { PointerController } from '../viewport/PointerController'
@@ -36,9 +36,16 @@ import { cosmeticNodeDefaults, isCosmeticShape } from '../scene/cosmeticGeometry
 import { defaultCosmeticEffect } from '../flow/cosmeticEffects'
 import {
   blobToBase64,
+  createCreativeCopy,
   getUserPreferences,
+  getCurrentAccount,
+  listCreativeCopies,
+  loginAccount,
+  registerAccount,
   saveCloudDiagram,
+  saveCreativeDiagram,
   saveUserPreferences,
+  type CreativeDiagramSummary,
 } from '../social/cloudClient'
 import { SocialForumLayer } from './SocialForum'
 import { projectWithServerGeometry, recomputeTransformDraft } from '../social/transformDraft'
@@ -49,7 +56,12 @@ interface OmnigramAppProps {
   cloudDiagramId?: string
   cloudDiagramTopic?: string
   cloudDiagramDescription?: string
+  creativeDiagramId?: string
+  sourceDiagramTitle?: string
+  mode?: 'public' | 'creative'
   onHome?: () => void
+  onViewGraph?: () => void
+  onOpenCreativeDiagram?: (diagram: CreativeDiagramSummary) => Promise<void>
   chrome?: {
     sidebars?: boolean
     devPanel?: boolean
@@ -62,26 +74,42 @@ export function OmnigramApp({
   cloudDiagramId,
   cloudDiagramTopic,
   cloudDiagramDescription,
+  creativeDiagramId,
+  sourceDiagramTitle,
+  mode = 'public',
   onHome,
+  onViewGraph,
+  onOpenCreativeDiagram,
   chrome,
 }: OmnigramAppProps = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [renderer, setRenderer] = useState<SceneRenderer | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [forumOpen, setForumOpen] = useState(false)
+  const [creativeLeaving, setCreativeLeaving] = useState(false)
+  const isCreative = mode === 'creative'
   const [preferences, setPreferences] = useState<SocialUserPreferences>(() => loadLocalPreferences())
-  const showSidebars = chrome?.sidebars ?? true
-  const showDevPanel = chrome?.devPanel ?? true
+  const showSidebars = isCreative ? true : (chrome?.sidebars ?? true)
+  const showDevPanel = isCreative ? (chrome?.devPanel ?? false) : (chrome?.devPanel ?? true)
   const showFps = chrome?.fps ?? true
-  const showToolbar = chrome?.toolbar ?? true
+  const showToolbar = isCreative ? true : (chrome?.toolbar ?? true)
   const pickMode = useSyncExternalStore(
     useOmniStore.subscribe,
     () => useOmniStore.getState().pickMode,
     () => null,
   )
-  const themeMode: ThemeMode = preferences.themeMode ?? 'light'
+  const themeMode: ThemeMode = preferences.themeMode ?? 'light-dark'
   const background = preferences.background
-  const graphMounted = !forumOpen
+  const graphMounted = isCreative || !forumOpen
+  const handleReturnToGraph = () => {
+    if (!onViewGraph || creativeLeaving) return
+    setCreativeLeaving(true)
+    window.setTimeout(() => onViewGraph(), 240)
+  }
+
+  useEffect(() => {
+    if (isCreative) setCreativeLeaving(false)
+  }, [creativeDiagramId, isCreative])
 
   useEffect(() => {
     let disposed = false
@@ -98,14 +126,24 @@ export function OmnigramApp({
     }
   }, [])
 
-  const updatePreferences = (patch: SocialUserPreferences) => {
+  const updatePreferences = useCallback((patch: SocialUserPreferences) => {
     setPreferences((current) => {
       const next = { ...current, ...patch }
       storeLocalPreferences(next)
       void saveUserPreferences(next).catch(() => undefined)
       return next
     })
-  }
+  }, [])
+
+  useEffect(() => {
+    const handleThemeRequest = (event: Event) => {
+      const themeMode = (event as CustomEvent<{ themeMode?: ThemeMode }>).detail?.themeMode
+      if (!themeMode) return
+      updatePreferences({ themeMode })
+    }
+    window.addEventListener('omnigram-theme-mode-request', handleThemeRequest)
+    return () => window.removeEventListener('omnigram-theme-mode-request', handleThemeRequest)
+  }, [updatePreferences])
 
   // Apply theme palette to documentElement CSS vars + topical body class.
   useEffect(() => {
@@ -124,14 +162,17 @@ export function OmnigramApp({
     const labelHex = p.nodeLabel.startsWith('#') ? p.nodeLabel : '#132949'
     const labelNum = parseInt(labelHex.replace('#', '').padEnd(6, '0').slice(0, 6), 16)
     renderer.setThemePalette({ cell: p.nodeCell, membrane: p.nodeMembrane, label: labelNum })
-  }, [renderer, themeMode])
+    if (isCreative && useOmniStore.getState().model.cosmetics?.themeMode !== themeMode) {
+      useOmniStore.getState().setCosmetics({ themeMode })
+    }
+  }, [isCreative, renderer, themeMode])
 
   useEffect(() => {
     if (!graphMounted) return
     const host = hostRef.current
     if (!host) return
     let disposed = false
-    const r = new SceneRenderer()
+    const r = new SceneRenderer({ socialDecorations: !isCreative })
     let unsubBridge: (() => void) | null = null
     let pointer: PointerController | null = null
     let wheel: WheelController | null = null
@@ -142,9 +183,9 @@ export function OmnigramApp({
         return
       }
       unsubBridge = bindStoreToRenderer(r)
-      pointer = new PointerController(host, r)
       wheel = new WheelController(host, r)
-      keyboard = new KeyboardController()
+      keyboard = new KeyboardController({ allowNodeDelete: isCreative, editorHotkeys: isCreative })
+      pointer = new PointerController(host, r, { socialDrafts: !isCreative })
       setRenderer(r)
     }).catch((err: unknown) => {
       // Test/headless environments without WebGL: skip silently.
@@ -159,12 +200,18 @@ export function OmnigramApp({
       r.destroy()
       setRenderer(null)
     }
-  }, [graphMounted])
+  }, [graphMounted, isCreative])
 
-  useCloudAutosave(cloudDiagramId)
+  useCloudAutosave(isCreative ? undefined : cloudDiagramId)
+  useCreativeAutosave(isCreative ? creativeDiagramId : undefined)
 
   return (
     <div
+      className={[
+        'omnigram-shell',
+        isCreative ? 'creative-enter' : '',
+        creativeLeaving ? 'creative-leave' : '',
+      ].filter(Boolean).join(' ')}
       style={{
         position: 'fixed',
         inset: 0,
@@ -290,7 +337,7 @@ export function OmnigramApp({
         }}
         />
       )}
-      {onHome && (
+      {onHome && !isCreative && (
         <>
           <button
             type="button"
@@ -313,24 +360,45 @@ export function OmnigramApp({
         </>
       )}
       {showFps && <FpsOverlay renderer={renderer} />}
-      {graphMounted && showToolbar && <EditorToolbar renderer={renderer} onHome={onHome} />}
+      {graphMounted && showToolbar && <EditorToolbar renderer={renderer} onHome={isCreative ? undefined : onHome} />}
       {graphMounted && showDevPanel && <DevPanel renderer={renderer} />}
-      {graphMounted && showSidebars && <LeftSidebar />}
+      {graphMounted && showSidebars && (
+        <LeftSidebar
+          header={isCreative
+            ? (
+              <CreativeModeControls
+                onHome={onHome}
+                onViewGraph={handleReturnToGraph}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
+            )
+            : undefined}
+        />
+      )}
       {graphMounted && showSidebars && <RightSidebar renderer={renderer} />}
       {graphMounted && <ConnectionReferencePopup renderer={renderer} />}
       {graphMounted && <RichNodeOverlay renderer={renderer} />}
       {graphMounted && <MpdDialOverlay renderer={renderer} />}
       {graphMounted && <NodeLabelEditor renderer={renderer} hostRef={hostRef} />}
-      <SocialForumLayer
-        diagramId={cloudDiagramId}
-        projectTopic={cloudDiagramTopic}
-        projectDescription={cloudDiagramDescription}
-        themeMode={themeMode}
-        renderer={graphMounted ? renderer : null}
-        onHome={onHome}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenChange={setForumOpen}
-      />
+      {!isCreative && (
+        <SocialForumLayer
+          diagramId={cloudDiagramId}
+          projectTopic={cloudDiagramTopic}
+          projectDescription={cloudDiagramDescription}
+          themeMode={themeMode}
+          renderer={graphMounted ? renderer : null}
+          onHome={onHome}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenChange={setForumOpen}
+        />
+      )}
+      {!isCreative && graphMounted && cloudDiagramId && onOpenCreativeDiagram && (
+        <CreativeModeRail
+          sourceDiagramId={cloudDiagramId}
+          sourceTitle={sourceDiagramTitle ?? useOmniStore.getState().model.name}
+          onOpenCreativeDiagram={onOpenCreativeDiagram}
+        />
+      )}
       {settingsOpen && (
         <GraphSettingsDialog
           preferences={preferences}
@@ -450,6 +518,291 @@ function useCloudAutosave(diagramId: string | undefined): void {
   }, [diagramId])
 }
 
+function useCreativeAutosave(diagramId: string | undefined): void {
+  useEffect(() => {
+    if (!diagramId) return
+    let timer = 0
+    let saving = false
+    let pending = false
+    let lastSavedRev = -1
+    let disposed = false
+
+    const flush = async () => {
+      if (disposed) return
+      if (saving) {
+        pending = true
+        return
+      }
+      const state = useOmniStore.getState()
+      const rev = state.rev
+      if (rev === lastSavedRev) return
+      saving = true
+      pending = false
+      try {
+        const blob = await exportBundle(currentProjectSnapshot())
+        await saveCreativeDiagram(diagramId, {
+          title: state.model.name || 'Untitled creative graph',
+          bundleBase64: await blobToBase64(blob),
+        })
+        lastSavedRev = rev
+      } catch (err) {
+        console.error('Creative autosave failed:', err)
+      } finally {
+        saving = false
+        if (!disposed && (pending || useOmniStore.getState().rev !== lastSavedRev)) schedule()
+      }
+    }
+
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void flush(), 800)
+    }
+
+    const unsubscribe = useOmniStore.subscribe((state) => {
+      if (state.rev !== lastSavedRev) schedule()
+    })
+    schedule()
+
+    return () => {
+      disposed = true
+      window.clearTimeout(timer)
+      unsubscribe()
+    }
+  }, [diagramId])
+}
+
+function currentProjectSnapshot() {
+  const state = useOmniStore.getState()
+  const models = new Map(state.models)
+  models.set(state.model.id, state.model)
+  return { rootModelId: state.model.id, models }
+}
+
+function CreativeModeRail({
+  sourceDiagramId,
+  sourceTitle,
+  onOpenCreativeDiagram,
+}: {
+  sourceDiagramId: string
+  sourceTitle: string
+  onOpenCreativeDiagram: (diagram: CreativeDiagramSummary) => Promise<void>
+}) {
+  const [chooserOpen, setChooserOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [copies, setCopies] = useState<CreativeDiagramSummary[]>([])
+  const [copyTitle, setCopyTitle] = useState(`${sourceTitle || 'Graph'} creative copy`)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const openChooser = async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      const account = await getCurrentAccount()
+      if (!account) {
+        setAuthOpen(true)
+        return
+      }
+      setCopies(await listCreativeCopies(sourceDiagramId))
+      setCopyTitle(`${sourceTitle || 'Graph'} creative copy`)
+      setChooserOpen(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Creative Mode failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const createCopy = async (event: FormEvent) => {
+    event.preventDefault()
+    const title = copyTitle.trim()
+    if (!title) {
+      setError('Creative copy name is required')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const snapshot = currentProjectSnapshot()
+      recomputeTransformDraft(snapshot)
+      const publicSnapshot = projectWithoutSocialEdgeDrafts(projectWithServerGeometry(snapshot))
+      const bundleBase64 = await blobToBase64(await exportBundle(publicSnapshot))
+      const copy = await createCreativeCopy(sourceDiagramId, { title, bundleBase64 })
+      await onOpenCreativeDiagram(copy)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create creative copy')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const openCopy = async (copy: CreativeDiagramSummary) => {
+    setLoading(true)
+    setError(null)
+    try {
+      await onOpenCreativeDiagram(copy)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open creative copy')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="editor-mode-rail"
+        onClick={() => void openChooser()}
+        disabled={loading}
+        aria-label="Open Creative Mode"
+      >
+        Creative Mode
+      </button>
+      {error && !chooserOpen && <div className="creative-mode-error">{error}</div>}
+      {authOpen && (
+        <CreativeAuthDialog
+          onClose={() => setAuthOpen(false)}
+          onAuthenticated={async () => {
+            setAuthOpen(false)
+            await openChooser()
+          }}
+        />
+      )}
+      {chooserOpen && (
+        <div className="social-modal-backdrop" role="presentation">
+          <section className="creative-copy-modal" role="dialog" aria-label="Choose creative copy">
+            <header>
+              <div>
+                <h3>Creative Mode</h3>
+                <p>{sourceTitle || 'Untitled graph'}</p>
+              </div>
+              <button type="button" onClick={() => setChooserOpen(false)} disabled={loading}>
+                Close
+              </button>
+            </header>
+            {error && <div className="social-forum-error">{error}</div>}
+            <div className="creative-copy-list">
+              {copies.length === 0 ? (
+                <p className="creative-copy-empty">No private copies yet.</p>
+              ) : copies.map((copy) => (
+                <button
+                  key={copy.id}
+                  type="button"
+                  onClick={() => void openCopy(copy)}
+                  disabled={loading}
+                  className="creative-copy-row"
+                >
+                  <strong>{copy.title}</strong>
+                  <span>updated {formatCreativeDate(copy.updatedAt)}</span>
+                </button>
+              ))}
+            </div>
+            <form className="creative-copy-create" onSubmit={(event) => void createCopy(event)}>
+              <label>
+                New creative copy
+                <input
+                  value={copyTitle}
+                  onChange={(e) => setCopyTitle(e.target.value)}
+                  disabled={loading}
+                />
+              </label>
+              <button type="submit" disabled={loading}>Create and open</button>
+            </form>
+          </section>
+        </div>
+      )}
+    </>
+  )
+}
+
+function CreativeAuthDialog({
+  onClose,
+  onAuthenticated,
+}: {
+  onClose: () => void
+  onAuthenticated: () => Promise<void>
+}) {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setLoading(true)
+    setError(null)
+    try {
+      if (mode === 'login') await loginAccount(username, password)
+      else await registerAccount(username, password)
+      await onAuthenticated()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="social-modal-backdrop" role="presentation">
+      <form className="creative-auth-modal" role="dialog" aria-label="Creative Mode login" onSubmit={(event) => void submit(event)}>
+        <header>
+          <h3>{mode === 'login' ? 'Log in' : 'Create account'}</h3>
+          <button type="button" onClick={onClose} disabled={loading}>Close</button>
+        </header>
+        <p>Creative Mode saves private graph copies under your profile.</p>
+        {error && <div className="social-forum-error">{error}</div>}
+        <label>
+          Username
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          />
+        </label>
+        <button type="submit" disabled={loading}>{mode === 'login' ? 'Log in' : 'Create account'}</button>
+        <button
+          type="button"
+          className="creative-auth-switch"
+          onClick={() => setMode((current) => current === 'login' ? 'register' : 'login')}
+          disabled={loading}
+        >
+          {mode === 'login' ? 'Create an account' : 'I already have an account'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function CreativeModeControls({
+  onHome,
+  onViewGraph,
+  onOpenSettings,
+}: {
+  onHome?: () => void
+  onViewGraph?: () => void
+  onOpenSettings: () => void
+}) {
+  return (
+    <div className="creative-mode-controls" aria-label="Creative Mode navigation">
+      {onViewGraph && <button type="button" onClick={onViewGraph}>Return</button>}
+      {onHome && <button type="button" onClick={onHome}>Home</button>}
+      <button type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  )
+}
+
+function formatCreativeDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'unknown'
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 function GraphSettingsDialog({
   preferences,
   onPreferencesChange,
@@ -465,7 +818,7 @@ function GraphSettingsDialog({
     () => 0,
   )
   const grid = useOmniStore.getState().model.grid ?? DEFAULT_GRID
-  const themeMode = preferences.themeMode ?? 'light'
+  const themeMode = preferences.themeMode ?? 'light-dark'
   const background = preferences.background ?? defaultBackgroundForType('gradient')
   const updateGrid = (patch: Partial<GridSettings>) => useOmniStore.getState().setGrid(patch)
   const updateBackground = (next: BackgroundConfig) => onPreferencesChange({ background: next })
@@ -595,7 +948,7 @@ function GraphSettingsDialog({
           <label>
             Grid appearance
             <select
-              value={grid.appearance ?? 'lines'}
+              value={grid.appearance ?? DEFAULT_GRID.appearance}
               onChange={(e) =>
                 updateGrid({ appearance: e.target.value as NonNullable<GridSettings['appearance']> })
               }

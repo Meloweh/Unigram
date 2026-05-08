@@ -297,9 +297,14 @@ const emptyModel = (): Model => ({
   name: 'untitled',
   nodes: new Map(),
   edges: new Map(),
+  grid: DEFAULT_GRID,
 })
 
 const initialModel = emptyModel()
+
+function withDefaultGrid(model: Model): Model {
+  return model.grid ? model : { ...model, grid: DEFAULT_GRID }
+}
 
 export const useOmniStore = create<Store>((set, get) => ({
   model: initialModel,
@@ -694,10 +699,11 @@ export const useOmniStore = create<Store>((set, get) => ({
   loadModel(model) {
     set((s) => {
       s.undoStack.clear()
+      const nextModel = withDefaultGrid(model)
       const models = new Map(s.models)
-      models.set(model.id, model)
+      models.set(nextModel.id, nextModel)
       return {
-        model,
+        model: nextModel,
         models,
         selectedIds: new Set(),
         selectedEdgeIds: new Set(),
@@ -714,12 +720,14 @@ export const useOmniStore = create<Store>((set, get) => ({
 
   loadProject(snapshot) {
     set((s) => {
-      const root = snapshot.models.get(snapshot.rootModelId)
+      const normalizedModels = new Map<string, Model>()
+      for (const [id, model] of snapshot.models) normalizedModels.set(id, withDefaultGrid(model))
+      const root = normalizedModels.get(snapshot.rootModelId)
       if (!root) return s
       s.undoStack.clear()
       return {
         model: root,
-        models: new Map(snapshot.models),
+        models: normalizedModels,
         selectedIds: new Set(),
         selectedEdgeIds: new Set(),
         rev: s.rev + 1,
@@ -766,8 +774,9 @@ export const useOmniStore = create<Store>((set, get) => ({
 
   registerModel(model) {
     set((s) => {
+      const nextModel = withDefaultGrid(model)
       const models = new Map(s.models)
-      models.set(model.id, model)
+      models.set(nextModel.id, nextModel)
       return { models }
     })
     return model.id
@@ -776,15 +785,17 @@ export const useOmniStore = create<Store>((set, get) => ({
   setActiveModel(id) {
     const next = get().models.get(id)
     if (!next) return
+    const nextModel = withDefaultGrid(next)
     set((s) => {
       // Preserve selection ids that exist in the target model (MPD twins).
       const keep = new Set<string>()
       for (const sid of s.selectedIds) {
-        if (next.nodes.has(sid)) keep.add(sid)
+        if (nextModel.nodes.has(sid)) keep.add(sid)
       }
       const selectionChanged = keep.size !== s.selectedIds.size
       return {
-        model: next,
+        model: nextModel,
+        models: next === nextModel ? s.models : new Map(s.models).set(nextModel.id, nextModel),
         selectedIds: keep,
         rev: s.rev + 1,
         selRev: selectionChanged ? s.selRev + 1 : s.selRev,

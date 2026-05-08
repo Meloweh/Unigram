@@ -57,7 +57,7 @@ const MEDIA: MediaEntry[] = [
   { id: 'math', label: 'Math', icon: '∑' },
 ]
 
-export function LeftSidebar() {
+export function LeftSidebar({ header }: { header?: React.ReactNode } = {}) {
   const [collapsed, setCollapsed] = useState(false)
   // Open sections are tracked as a Set so toggling one section never closes
   // another (parity with legacy: each header is independently expandable).
@@ -108,6 +108,7 @@ export function LeftSidebar() {
   return (
     <div style={shellStyle('left', collapsed)}>
       <div style={animatedContentStyle(collapsed)}>
+        {header}
         <div style={titleStyle}>Components</div>
         <Section
           title="Nodes"

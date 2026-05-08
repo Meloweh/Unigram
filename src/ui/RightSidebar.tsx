@@ -13,7 +13,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FlowEffectEditor, emptyEffect } from '../flow/FlowEffectEditor'
 import type { EffectNode, FlowEffect, SpawnItem } from '../flow/types'
 import { useOmniStore } from '../model/store'
-import type { Connection, ModelNode, NodeShape, ConnectionDashStyle, ConnectionArrowStyle, ConnectionKind } from '../model/types'
+import { DEFAULT_GRID, type Connection, type ModelNode, type NodeShape, type ConnectionDashStyle, type ConnectionArrowStyle, type ConnectionKind } from '../model/types'
 import { animatedContentStyle, shellStyle, toggleColumnStyle } from './LeftSidebar'
 import { ALL_THEME_OPTIONS } from '../theme/themes'
 import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
@@ -229,7 +229,7 @@ function renderInner(
         )
       }
     }
-    const grid = state.model.grid ?? { enabled: false, snap: false, sizePercent: 4 }
+    const grid = state.model.grid ?? DEFAULT_GRID
     return (
       <>
         <Title>Diagram</Title>
@@ -269,7 +269,7 @@ function renderInner(
           </Field>
           <Field label="Grid appearance">
             <select
-              value={grid.appearance ?? 'lines'}
+              value={grid.appearance ?? DEFAULT_GRID.appearance}
               onChange={(e) =>
                 useOmniStore
                   .getState()
@@ -567,10 +567,13 @@ function CosmeticsControls() {
     useOmniStore.subscribe,
     () => useOmniStore.getState().model.cosmetics,
   )
-  const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light'
+  const themeMode: ThemeMode = cosmetics?.themeMode ?? 'light-dark'
   const bg = cosmetics?.background
   const particle = cosmetics?.particleEffect ?? ''
-  const setMode = (m: ThemeMode) => useOmniStore.getState().setCosmetics({ themeMode: m })
+  const setMode = (m: ThemeMode) => {
+    useOmniStore.getState().setCosmetics({ themeMode: m })
+    window.dispatchEvent(new CustomEvent('omnigram-theme-mode-request', { detail: { themeMode: m } }))
+  }
   const setBg = (b: { type: BackgroundType; value: string } | undefined) =>
     useOmniStore.getState().setCosmetics({ background: b })
   const setParticle = (id: string) =>
@@ -1045,7 +1048,7 @@ function RmmSection({ node }: { node: ModelNode }) {
       ) : (
         <>
           <span style={{ fontSize: 14, color: '#576278' }}>None</span>
-          <button onClick={handleAdd} style={buttonStyle}>+ Add child model</button>
+          <button onClick={handleAdd} style={buttonStyle}>+ Add RMM dimension</button>
         </>
       )}
     </div>

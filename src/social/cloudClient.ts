@@ -19,6 +19,10 @@ export interface DiagramSummary {
   title: string
   topic?: string
   description?: string
+  visibility?: 'public' | 'private'
+  ownerUserId?: string
+  sourceDiagramId?: string
+  sourceTitle?: string
   createdAt: string
   updatedAt: string
   visits: number
@@ -26,6 +30,16 @@ export interface DiagramSummary {
 }
 
 export interface DiagramDetail extends DiagramSummary {
+  bundleBase64?: string
+}
+
+export interface CreativeDiagramSummary extends DiagramSummary {
+  visibility: 'private'
+  ownerUserId: string
+  sourceDiagramId: string
+}
+
+export interface CreativeDiagramDetail extends CreativeDiagramSummary {
   bundleBase64?: string
 }
 
@@ -189,6 +203,55 @@ export async function saveCloudDiagram(
   return await res.json() as DiagramSummary
 }
 
+export async function listCreativeDiagrams(): Promise<CreativeDiagramSummary[]> {
+  const res = await fetch('/api/creative-diagrams', { headers: authHeaders() })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative graph list failed (${res.status})`)
+  const body = await res.json() as { diagrams?: CreativeDiagramSummary[] }
+  return Array.isArray(body.diagrams) ? body.diagrams : []
+}
+
+export async function listCreativeCopies(sourceDiagramId: string): Promise<CreativeDiagramSummary[]> {
+  const res = await fetch(
+    `/api/diagrams/${encodeURIComponent(sourceDiagramId)}/creative-copies`,
+    { headers: authHeaders() },
+  )
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative copy list failed (${res.status})`)
+  const body = await res.json() as { diagrams?: CreativeDiagramSummary[] }
+  return Array.isArray(body.diagrams) ? body.diagrams : []
+}
+
+export async function createCreativeCopy(
+  sourceDiagramId: string,
+  input: { title: string; bundleBase64?: string },
+): Promise<CreativeDiagramSummary> {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(sourceDiagramId)}/creative-copies`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative copy creation failed (${res.status})`)
+  return await res.json() as CreativeDiagramSummary
+}
+
+export async function getCreativeDiagram(id: string): Promise<CreativeDiagramDetail> {
+  const res = await fetch(`/api/creative-diagrams/${encodeURIComponent(id)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative graph load failed (${res.status})`)
+  return await res.json() as CreativeDiagramDetail
+}
+
+export async function saveCreativeDiagram(
+  id: string,
+  payload: { title: string; bundleBase64: string },
+): Promise<CreativeDiagramSummary> {
+  const res = await fetch(`/api/creative-diagrams/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative graph save failed (${res.status})`)
+  return await res.json() as CreativeDiagramSummary
+}
+
 export async function listForumTopics(diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
   const res = await fetch(
     `/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics?forumRef=${encodeURIComponent(forumRef)}`,
@@ -269,6 +332,8 @@ export async function listSocialScores(diagramId: string): Promise<EntitySocialS
   return {
     nodeScores: body.nodeScores ?? {},
     edgeScores: body.edgeScores ?? {},
+    nodeVotes: body.nodeVotes ?? {},
+    edgeVotes: body.edgeVotes ?? {},
   }
 }
 

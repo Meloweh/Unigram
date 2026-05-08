@@ -20,9 +20,9 @@ import {
   visibleSceneAabb,
 } from './sceneConstants'
 import { Quadtree, type Aabb } from '../spatial/quadtree'
-import { DEFAULT_NODE, type Connection, type Model, type ModelNode } from '../model/types'
+import { DEFAULT_GRID, DEFAULT_NODE, type Connection, type Model, type ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
-import { EdgePool, type EdgeRevealGap } from './EdgePool'
+import { drawArrowHead, EdgePool, type EdgeRevealGap } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
 import { drawNodeShape, drawNodeShapePath, pointInShape } from './shapes'
 import { shapeEdgeIntersect } from './shapeIntersect'
@@ -37,6 +37,7 @@ import type { FlowEffect, SpawnItem } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
 import type { EntitySocialScores, GraphProposal, GraphProposalAction, TransformProposalEntry } from '../social/forumTypes'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
+import { NODE_FONT_FAMILY, NODE_FONT_SIZE, NODE_LABEL_FILL } from './nodeStyle'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -68,11 +69,16 @@ interface SceneRendererOptions {
   preview?: boolean
   /** Force full-detail nodes in small previews so labels remain legible. */
   forceFullLod?: boolean
+  /** Hide direct-manipulation edit handles while preserving selection context. */
+  hideEditHandles?: boolean
+  /** Draw public/social vote tint, medals, and transient vote sidebars. */
+  socialDecorations?: boolean
 }
 
 const CULL_PADDING = 5 // scene percent
 const DETAILED_SELECTION_LIMIT = 80
 const FLOW_CINEMATIC_EFFECTIVE_SCALE = 1.18
+const EDGE_ARROW_LEN = 16
 
 export class SceneRenderer {
   private app: Application | null = null
@@ -89,6 +95,9 @@ export class SceneRenderer {
   private proposalGfx!: Graphics
   private importanceLayer!: Container
   private importanceGfx!: Graphics
+  private voteBadgeLabels: Text[] = []
+  private voteBadgeUntilMs = 0
+  private voteBadgeStartedMs = 0
   private proposalLabelPool: Text[] = []
   private graphProposals: readonly GraphProposal[] = []
   private socialScores: EntitySocialScores = { nodeScores: {}, edgeScores: {} }
@@ -261,7 +270,7 @@ export class SceneRenderer {
   private readonly options: SceneRendererOptions
 
   constructor(options: SceneRendererOptions = {}) {
-    this.options = options
+    this.options = { socialDecorations: true, ...options }
   }
 
   async init(host: HTMLElement): Promise<void> {
@@ -744,13 +753,17 @@ export class SceneRenderer {
 
   /** Replace the visualised selection set. Cheap — only re-draws on dirty. */
   setSelection(ids: ReadonlySet<string>): void {
+    const changed = !sameIdSet(this.selectedIds, ids)
     this.selectedIds = ids
+    if (changed && ids.size > 0) this.startSelectionVoteBadge()
     this.dirty = true
   }
 
   /** Replace the visualised edge selection set. */
   setEdgeSelection(ids: ReadonlySet<string>): void {
+    const changed = !sameIdSet(this.selectedEdgeIds, ids)
     this.selectedEdgeIds = ids
+    if (changed && ids.size > 0) this.startSelectionVoteBadge()
     if (this.connectionPopupMetrics && !ids.has(this.connectionPopupMetrics.edgeId)) {
       this.connectionPopupMetrics = null
     }
@@ -777,6 +790,13 @@ export class SceneRenderer {
   setSocialScores(scores: EntitySocialScores): void {
     this.socialScores = scores
     this.dirty = true
+  }
+
+  private startSelectionVoteBadge(): void {
+    if (this.options.preview || this.options.socialDecorations === false) return
+    const now = performance.now()
+    this.voteBadgeStartedMs = now
+    this.voteBadgeUntilMs = now + 5000
   }
 
   setTransformPreview(transforms: readonly TransformProposalEntry[]): void {
@@ -1086,6 +1106,8 @@ export class SceneRenderer {
     this.activePreviewGroups.clear()
     this.flowOverlayGfx?.clear()
     this.flowWireGlowGfx?.clear()
+    for (const ring of this.flowRingPool) ring.visible = false
+    for (const aura of this.flowAuraPool) aura.visible = false
     this.setFlowGlowFilter(false)
     this.dirty = true
   }
@@ -1400,6 +1422,17 @@ export class SceneRenderer {
     return node.membraneColor
   }
 
+  private effectiveNodeCellColor(node: ModelNode): string {
+    if (this.themePalette && node.cellColor === DEFAULT_NODE.cellColor) {
+      return this.themePalette.cell
+    }
+    return node.cellColor
+  }
+
+  private effectiveNodeMembraneColor(node: ModelNode): string {
+    return this.effectiveMembraneColor(node)
+  }
+
   // ---- internals ----------------------------------------------------------
 
   private onTick = (ticker: { deltaMS: number }): void => {
@@ -1438,6 +1471,8 @@ export class SceneRenderer {
       // Ensure the overlay is cleared once the cascade ends.
       this.flowOverlayGfx.clear()
       this.flowWireGlowGfx?.clear()
+      for (const ring of this.flowRingPool) ring.visible = false
+      for (const aura of this.flowAuraPool) aura.visible = false
       this.setFlowGlowFilter(false)
     }
     // Camera-tracking lerp: keep ticking while either an active cameraTracked
@@ -1471,7 +1506,7 @@ export class SceneRenderer {
       // remains accurate at any refresh rate.
       this.particleLayer.tick(ticker.deltaMS / 16.667)
     }
-    if (this.hasMedalSocialScore()) this.drawSocialImportance()
+    if (this.hasActiveVoteBadge() || this.hasMedalSocialScore()) this.drawSocialImportance()
     // Selection breathing animation: the amber aura waves softly below the
     // node while the blue membrane frame stays sharp above it.
     if (this.selectedIds.size > 0) {
@@ -1931,6 +1966,12 @@ export class SceneRenderer {
           if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, proposal.payload.action)
           break
         }
+        case 'add-rmm':
+        case 'add-mpd': {
+          const node = this.model.nodes.get(proposal.payload.nodeId)
+          if (node) this.drawProposalNodeConstruction(g, node, accepted, proposal.payload.action)
+          break
+        }
         case 'remove-node':
         case 'rename-node': {
           const node = this.model.nodes.get(proposal.payload.nodeId)
@@ -1964,6 +2005,10 @@ export class SceneRenderer {
     const g = this.importanceGfx
     if (!g) return
     g.clear()
+    if (this.options.socialDecorations === false) {
+      this.hideUnusedVoteBadgeLabels(0)
+      return
+    }
     const now = performance.now()
     const nodeScores = this.socialScores.nodeScores
     const edgeScores = this.socialScores.edgeScores
@@ -1978,10 +2023,11 @@ export class SceneRenderer {
       const endpoints = this.edgeEndpointPixels(source, target)
       if (!endpoints) continue
       const power = socialPower(Math.abs(score))
-      const color = score > 0 ? 0x5aa7d8 : 0xd87575
+      const color = socialMembraneColor(score, colorStringToNumber(edge.color, 0xf59e0b))
+      if (color == null) continue
       const base = Math.max(1, (edge.width / 100) * SCENE_W)
       g.moveTo(endpoints.sx, endpoints.sy).lineTo(endpoints.tx, endpoints.ty)
-      g.stroke({ color, width: base + 3 + power * 5, alpha: 0.05 + power * 0.08, alignment: 0.5 })
+      g.stroke({ color, width: base + 2.5 + power * 4, alpha: 0.18 + power * 0.16, alignment: 0.5 })
     }
     for (const id of this.prevVisibleNodes) {
       const score = nodeScores[id] ?? 0
@@ -2003,6 +2049,7 @@ export class SceneRenderer {
       })
       if (score >= 80) this.drawMedalSparkles(g, id, cx, cy, w, h, now)
     }
+    this.drawSelectionVoteBadges(g, now)
   }
 
   private drawMedalSparkles(g: Graphics, id: string, cx: number, cy: number, w: number, h: number, now: number): void {
@@ -2022,11 +2069,172 @@ export class SceneRenderer {
     }
   }
 
+  private drawSelectionVoteBadges(g: Graphics, now: number): void {
+    let labelIndex = 0
+    if (!this.hasActiveVoteBadge(now)) {
+      this.hideUnusedVoteBadgeLabels(labelIndex)
+      return
+    }
+    const open = Math.min(1, Math.max(0, (now - this.voteBadgeStartedMs) / 180))
+    const close = this.voteBadgeUntilMs - now < 360
+      ? Math.max(0, (this.voteBadgeUntilMs - now) / 360)
+      : 1
+    const progress = easeOutCubic(open) * easeInOut(close)
+    const alpha = 0.94 * Math.min(1, open * 1.4) * close
+    if (alpha <= 0.01 || progress <= 0.01) {
+      this.hideUnusedVoteBadgeLabels(labelIndex)
+      return
+    }
+
+    const inv = 1 / Math.max(0.35, this.effectiveScale)
+    for (const id of this.selectedIds) {
+      const node = this.model.nodes.get(id)
+      if (!node) continue
+      const votes = this.voteBreakdownFor('node', id)
+      const visual = this.visualNode(node)
+      const cx = (visual.x / 100) * SCENE_W
+      const cy = (visual.y / 100) * SCENE_H
+      const w = (visual.w / 100) * SCENE_W
+      labelIndex = this.drawVoteBadge(
+        g,
+        cx + w / 2 + 7 * inv,
+        cy,
+        votes,
+        labelIndex,
+        progress,
+        alpha,
+        inv,
+        { x: cx + w / 2, y: cy },
+      )
+    }
+    for (const id of this.selectedEdgeIds) {
+      const edge = this.model.edges.get(id)
+      if (!edge) continue
+      const source = this.model.nodes.get(edge.from)
+      const target = this.model.nodes.get(edge.to)
+      if (!source || !target) continue
+      const endpoints = this.edgeEndpointPixels(source, target)
+      if (!endpoints) continue
+      const dx = endpoints.tx - endpoints.sx
+      const dy = endpoints.ty - endpoints.sy
+      const len = Math.hypot(dx, dy)
+      if (len < 1) continue
+      const nx = -dy / len
+      const ny = dx / len
+      const midX = (endpoints.sx + endpoints.tx) / 2
+      const midY = (endpoints.sy + endpoints.ty) / 2
+      labelIndex = this.drawVoteBadge(
+        g,
+        midX + nx * 16 * inv,
+        midY + ny * 16 * inv,
+        this.voteBreakdownFor('edge', id),
+        labelIndex,
+        progress,
+        alpha,
+        inv,
+        { x: midX, y: midY },
+      )
+    }
+    this.hideUnusedVoteBadgeLabels(labelIndex)
+  }
+
+  private drawVoteBadge(
+    g: Graphics,
+    x: number,
+    y: number,
+    votes: { positive: number; negative: number },
+    labelIndex: number,
+    progress: number,
+    alpha: number,
+    inv: number,
+    connector?: { x: number; y: number },
+  ): number {
+    const fullW = 50 * inv
+    const w = fullW * progress
+    const rowH = 22 * inv
+    const h = rowH * 2 + 2 * inv
+    const r = 6 * inv
+    const left = x
+    const top = y - h / 2
+    if (connector) {
+      g.moveTo(connector.x, connector.y).lineTo(left, y)
+      g.stroke({ color: 0x7fa7c8, width: 1.4 * inv, alpha: 0.34 * alpha, alignment: 0.5 })
+    }
+    g.roundRect(left, top, w, h, r)
+    g.fill({ color: 0xf7fbff, alpha: 0.86 * alpha })
+    g.stroke({ color: 0xb8cbe0, width: 1.2 * inv, alpha: 0.52 * alpha, alignment: 0.5 })
+    g.roundRect(left + 2 * inv, top + 2 * inv, Math.max(0, w - 4 * inv), rowH - 2 * inv, r * 0.72)
+    g.fill({ color: 0xe1f4e7, alpha: 0.88 * alpha })
+    g.roundRect(left + 2 * inv, top + rowH + 2 * inv, Math.max(0, w - 4 * inv), rowH - 2 * inv, r * 0.72)
+    g.fill({ color: 0xf7dfdc, alpha: 0.88 * alpha })
+    if (progress < 0.72) return labelIndex
+    labelIndex = this.drawVoteBadgeLabel(`+ ${votes.positive}`, left + fullW / 2, top + rowH / 2 + 0.5 * inv, 0x247a3a, 12.5 * inv, alpha, labelIndex)
+    labelIndex = this.drawVoteBadgeLabel(`- ${votes.negative}`, left + fullW / 2, top + rowH + rowH / 2 + 0.5 * inv, 0x9b2f2a, 12.5 * inv, alpha, labelIndex)
+    return labelIndex
+  }
+
+  private drawVoteBadgeLabel(
+    text: string,
+    x: number,
+    y: number,
+    color: number,
+    fontSize: number,
+    alpha: number,
+    index: number,
+  ): number {
+    let label = this.voteBadgeLabels[index]
+    if (!label) {
+      label = new Text({
+        text: '',
+        style: {
+          fontFamily: NODE_FONT_FAMILY,
+          fontSize: 12,
+          fill: color,
+          align: 'center',
+          fontWeight: '800',
+        },
+      })
+      label.anchor.set(0.5)
+      label.eventMode = 'none'
+      this.importanceLayer.addChild(label)
+      this.voteBadgeLabels.push(label)
+    }
+    label.visible = true
+    label.text = text
+    label.style.fontSize = fontSize
+    label.style.fill = color
+    label.alpha = alpha
+    label.x = x
+    label.y = y
+    return index + 1
+  }
+
+  private hideUnusedVoteBadgeLabels(start: number): void {
+    for (let i = start; i < this.voteBadgeLabels.length; i++) {
+      this.voteBadgeLabels[i].visible = false
+    }
+  }
+
+  private voteBreakdownFor(kind: 'node' | 'edge', id: string): { positive: number; negative: number } {
+    const votes = kind === 'node' ? this.socialScores.nodeVotes?.[id] : this.socialScores.edgeVotes?.[id]
+    if (votes) return votes
+    const score = kind === 'node' ? this.socialScores.nodeScores[id] ?? 0 : this.socialScores.edgeScores[id] ?? 0
+    return {
+      positive: Math.max(0, score),
+      negative: Math.max(0, -score),
+    }
+  }
+
   private hasMedalSocialScore(): boolean {
+    if (this.options.socialDecorations === false) return false
     for (const score of Object.values(this.socialScores.nodeScores)) {
       if (score >= 80) return true
     }
     return false
+  }
+
+  private hasActiveVoteBadge(now = performance.now()): boolean {
+    return this.options.socialDecorations !== false && this.voteBadgeUntilMs > now
   }
 
   private drawTransformPreview(g: Graphics, transforms: readonly TransformProposalEntry[] = this.transformPreview): void {
@@ -2443,6 +2651,10 @@ export class SceneRenderer {
 
   private drawCosmeticTipHandle(): void {
     const g = this.cosmeticTipHandleGfx
+    if (this.options.hideEditHandles) {
+      if (g) g.visible = false
+      return
+    }
     if (!g || this.selectedIds.size !== 1) {
       if (g) g.visible = false
       return
@@ -2478,6 +2690,10 @@ export class SceneRenderer {
 
   private drawResizeHandles(): void {
     const g = this.resizeHandleGfx
+    if (this.options.hideEditHandles) {
+      if (g) g.visible = false
+      return
+    }
     if (!g || this.selectedIds.size !== 1) {
       if (g) g.visible = false
       return
@@ -2523,7 +2739,7 @@ export class SceneRenderer {
     const g = this.gridLayer
     g.visible = true
     g.clear()
-    const appearance = grid.appearance ?? 'lines'
+    const appearance = grid.appearance ?? DEFAULT_GRID.appearance
     const invScale = 1 / Math.max(this.effectiveScale, 0.01)
     if (appearance === 'tile') {
       // Checkerboard cells. Cell parity is computed from integer indices
@@ -2632,18 +2848,32 @@ export class SceneRenderer {
       const k = Math.min(1, Math.max(0, t))
       const hx = fx + (tx - fx) * k
       const hy = fy + (ty - fy) * k
+      const segDx = tx - fx
+      const segDy = ty - fy
+      const segLen = Math.max(1, Math.hypot(segDx, segDy))
+      const uxFull = segDx / segLen
+      const uyFull = segDy / segLen
+      const arrowStyle = e.arrowStyle ?? 'standard'
+      const arrowInset = arrowStyle === 'none' ? 0 : EDGE_ARROW_LEN * 0.6
+      const arrowReveal = Math.min(1, Math.max(0, (k - 0.92) / 0.08))
+      const lineHx = arrowReveal > 0 ? hx - uxFull * arrowInset * arrowReveal : hx
+      const lineHy = arrowReveal > 0 ? hy - uyFull * arrowInset * arrowReveal : hy
       const baseStrokePx = Math.max(2, (e.width / 100) * SCENE_W * 1.4)
       // Shimmer phase 0..1 advancing over ~600 ms — drives a subtle alpha
       // wobble on the bright core for the "liquid" feel.
       const shimmer = 0.85 + 0.15 * Math.sin((now / 180) + len * 0.001)
       // Layered wire passes: warm halo (blurred), mid orange, bright core.
-      glow.moveTo(fx, fy).lineTo(hx, hy)
+      glow.moveTo(fx, fy).lineTo(lineHx, lineHy)
       glow.stroke({ color: 0xffd58a, width: baseStrokePx * 4, alpha: 0.28 })
       glowUsed = true
-      g.moveTo(fx, fy).lineTo(hx, hy)
+      g.moveTo(fx, fy).lineTo(lineHx, lineHy)
       g.stroke({ color: 0xffaa1f, width: baseStrokePx * 2, alpha: 0.65 })
-      g.moveTo(fx, fy).lineTo(hx, hy)
+      g.moveTo(fx, fy).lineTo(lineHx, lineHy)
       g.stroke({ color: 0xfff2c0, width: baseStrokePx * 1.0, alpha: 0.95 * shimmer })
+      if (arrowReveal > 0 && arrowStyle !== 'none') {
+        drawArrowHead(g, arrowStyle, hx, hy, uxFull, uyFull, 0xffaa1f, baseStrokePx * 1.15)
+        drawArrowHead(g, arrowStyle, hx, hy, uxFull, uyFull, 0xfff2c0, baseStrokePx * 0.8)
+      }
       // Travelling head bead + short trail — only while reveal is in flight.
       if (k < 1) {
         const beadR = baseStrokePx * 1.4
@@ -2811,8 +3041,8 @@ export class SceneRenderer {
     g.clear()
     const r = Math.min(vp.width, vp.height) * 0.04
     g.roundRect(-vp.width / 2, -vp.height / 2, vp.width, vp.height, r)
-    g.fill({ color: 0xffffff, alpha: 0.98 })
-    g.stroke({ color: 0x4aa3ff, width: 3 / Math.max(scale, 0.01), alignment: 0.5 })
+    g.fill({ color: colorStringToNumber(this.themePalette?.cell, 0xffffff), alpha: 0.98 })
+    g.stroke({ color: colorStringToNumber(this.themePalette?.membrane, 0x4aa3ff), width: 3 / Math.max(scale, 0.01), alignment: 0.5 })
     // Child preview: drawn at post-handoff scene-pixel positions so that at
     // t=1 it visually equals what the actual nodes will look like.
     const childId = focused.childModelId
@@ -2837,8 +3067,6 @@ export class SceneRenderer {
     // (boundary-clipped endpoints + filled triangle arrowhead, stroke
     // width derived from `e.width` percent). This way the transition
     // from preview → live render is seamless.
-    const ARROW_LEN = 16
-    const ARROW_HALF_W = 7
     for (const e of child.edges.values()) {
       const a = child.nodes.get(e.from)
       const b = child.nodes.get(e.to)
@@ -2866,24 +3094,15 @@ export class SceneRenderer {
       if (segLen < 1e-3) continue
       const ux = ndx / segLen
       const uy = ndy / segLen
-      const lineEndX = tx - ux * (ARROW_LEN * 0.6)
-      const lineEndY = ty - uy * (ARROW_LEN * 0.6)
+      const arrowStyle = e.arrowStyle ?? 'standard'
+      const inset = arrowStyle === 'none' ? 0 : EDGE_ARROW_LEN * 0.6
+      const lineEndX = tx - ux * inset
+      const lineEndY = ty - uy * inset
       const strokePx = Math.max(1, (e.width / 100) * SCENE_W)
+      const color = e.kind === 'flow' ? '#f59e0b' : e.color
       g.moveTo(fx, fy).lineTo(lineEndX, lineEndY)
-      g.stroke({ color: e.color, width: strokePx, alignment: 0.5 })
-      const baseX = tx - ux * ARROW_LEN
-      const baseY = ty - uy * ARROW_LEN
-      const px = -uy
-      const py = ux
-      g.poly([
-        tx,
-        ty,
-        baseX + px * ARROW_HALF_W,
-        baseY + py * ARROW_HALF_W,
-        baseX - px * ARROW_HALF_W,
-        baseY - py * ARROW_HALF_W,
-      ])
-      g.fill({ color: e.color })
+      g.stroke({ color, width: strokePx, alignment: 0.5 })
+      drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)
     }
     // Nodes (shape only here; labels are pooled Text below).
     for (const n of child.nodes.values()) {
@@ -2896,8 +3115,8 @@ export class SceneRenderer {
       drawNodeShape(g, n.shape, {
         w: nw,
         h: nh,
-        fill: n.cellColor,
-        stroke: n.membraneColor,
+        fill: this.effectiveNodeCellColor(n),
+        stroke: this.effectiveNodeMembraneColor(n),
         strokeWidth: 2,
         tip: n.tip,
         tipAngle: cosmeticTip(n).angle,
@@ -2912,7 +3131,7 @@ export class SceneRenderer {
       if (!label) {
         label = new Text({
           text: '',
-          style: { fontFamily: 'sans-serif', fontSize: 36, fill: 0x223046, align: 'center' },
+          style: { fontFamily: NODE_FONT_FAMILY, fontSize: 36, fill: NODE_LABEL_FILL, align: 'center' },
         })
         label.anchor.set(0.5)
         c.addChild(label)
@@ -2920,6 +3139,9 @@ export class SceneRenderer {
       }
       label.visible = true
       if (label.text !== n.label) label.text = n.label
+      label.style.fontFamily = NODE_FONT_FAMILY
+      label.style.fontSize = Math.max(16, Math.min(36, NODE_FONT_SIZE * 1.28, ((n.h / 100) * SCENE_H) * 0.42))
+      label.style.fill = this.themePalette?.label ?? NODE_LABEL_FILL
       label.x = (n.x / 100) * SCENE_W
       label.y = (n.y / 100) * SCENE_H
       li++
@@ -3255,6 +3477,8 @@ function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' |
     case 'add-node':
     case 'add-node-edge':
     case 'add-edge':
+    case 'add-rmm':
+    case 'add-mpd':
       return 'plus'
     case 'remove-node':
       return 'minus'
@@ -3275,7 +3499,7 @@ function socialPower(score: number): number {
   return Math.max(0, Math.min(1, Math.log1p(score) / Math.log(12)))
 }
 
-function socialMembraneColor(score: number, defaultColor: string): number | null {
+function socialMembraneColor(score: number, defaultColor: string | number): number | null {
   void defaultColor
   if (score <= -15) return 0xc93f3f
   if (score < 0) return 0xe7bf45
@@ -3283,6 +3507,33 @@ function socialMembraneColor(score: number, defaultColor: string): number | null
   if (score >= 30) return 0xb8c0ca
   if (score >= 15) return 0xb7792f
   return null
+}
+
+function easeOutCubic(t: number): number {
+  const x = Math.max(0, Math.min(1, t))
+  return 1 - Math.pow(1 - x, 3)
+}
+
+function easeInOut(t: number): number {
+  const x = Math.max(0, Math.min(1, t))
+  return x * x * (3 - 2 * x)
+}
+
+function sameIdSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const id of a) {
+    if (!b.has(id)) return false
+  }
+  return true
+}
+
+function colorStringToNumber(value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  if (value.startsWith('#')) {
+    const parsed = Number.parseInt(value.slice(1).padEnd(6, '0').slice(0, 6), 16)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+  return fallback
 }
 
 function hashString(value: string): number {

@@ -16,6 +16,8 @@ export type GraphProposalAction =
   | 'add-node'
   | 'add-node-edge'
   | 'add-edge'
+  | 'add-rmm'
+  | 'add-mpd'
   | 'remove-edge'
   | 'remove-node'
   | 'rename-node'
@@ -42,6 +44,8 @@ export type GraphProposalPayload =
   | { action: 'add-node'; newNodeLabel: string }
   | { action: 'add-node-edge'; sourceNodeId: string; newNodeLabel: string }
   | { action: 'add-edge'; sourceNodeId: string; targetNodeId: string; label?: string; references?: ConnectionReference[] }
+  | { action: 'add-rmm'; nodeId: string; name: string }
+  | { action: 'add-mpd'; nodeId: string; name: string }
   | { action: 'remove-edge'; edgeId: string }
   | { action: 'remove-node'; nodeId: string }
   | { action: 'rename-node'; nodeId: string; nextLabel: string }
@@ -106,6 +110,13 @@ export interface SocialUserPreferences {
 export interface EntitySocialScores {
   nodeScores: Record<string, number>
   edgeScores: Record<string, number>
+  nodeVotes?: Record<string, VoteBreakdown>
+  edgeVotes?: Record<string, VoteBreakdown>
+}
+
+export interface VoteBreakdown {
+  positive: number
+  negative: number
 }
 
 export interface ForumTopicInput {
@@ -198,6 +209,8 @@ export function proposalActionLabel(proposal: Pick<GraphProposal, 'action'> | Gr
     case 'add-node': return 'Add node'
     case 'add-node-edge': return 'Add node'
     case 'add-edge': return 'Add connection'
+    case 'add-rmm': return 'Add RMM'
+    case 'add-mpd': return 'Add MPD'
     case 'remove-edge': return 'Remove connection'
     case 'remove-node': return 'Remove node'
     case 'rename-node': return 'Rename node'
@@ -216,6 +229,9 @@ export function proposalNodeTarget(proposal: GraphProposal, model: Model): Model
       return null
     case 'add-node-edge':
       return model.nodes.get(proposal.payload.sourceNodeId) ?? null
+    case 'add-rmm':
+    case 'add-mpd':
+      return model.nodes.get(proposal.payload.nodeId) ?? null
     case 'remove-node':
     case 'rename-node':
       return model.nodes.get(proposal.payload.nodeId) ?? null
@@ -244,6 +260,8 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
       return findEdgeBetween(model, proposal.payload.sourceNodeId, proposal.payload.targetNodeId)
     case 'add-node-edge':
     case 'add-node':
+    case 'add-rmm':
+    case 'add-mpd':
     case 'remove-node':
     case 'rename-node':
     case 'commit-transform':

@@ -2522,6 +2522,41 @@
 
 /* ---- Social forum curtain ------------------------------------------------ */
 
+.omnigram-shell {
+  will-change: transform, opacity;
+}
+
+.omnigram-shell.creative-enter {
+  animation: creative-curtain-in 280ms cubic-bezier(.2,.85,.22,1) both;
+}
+
+.omnigram-shell.creative-leave {
+  animation: creative-curtain-out 240ms cubic-bezier(.4,0,.2,1) both;
+  pointer-events: none;
+}
+
+@keyframes creative-curtain-in {
+  from {
+    opacity: 0.45;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes creative-curtain-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0.45;
+    transform: translateX(100%);
+  }
+}
+
 .social-home-button,
 .social-settings-button {
   position: absolute;
@@ -2631,6 +2666,201 @@
 .social-forum-rail:hover {
   transform: translateX(4px);
   background: var(--ug-surface);
+}
+
+.editor-mode-rail {
+  position: absolute;
+  top: 124px;
+  right: -4px;
+  z-index: 30;
+  width: 54px;
+  min-height: 170px;
+  border: 1px solid var(--ug-border);
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+  background: var(--ug-glass-strong);
+  color: var(--ug-primary-dark);
+  box-shadow: 0 12px 28px var(--ug-shadow);
+  cursor: pointer;
+  font: 700 13px system-ui, sans-serif;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+.editor-mode-rail:hover:not(:disabled) {
+  transform: translateX(-4px);
+  background: var(--ug-surface);
+}
+
+.editor-mode-rail:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.creative-mode-error {
+  position: absolute;
+  top: 304px;
+  right: 12px;
+  z-index: 32;
+  max-width: 280px;
+  padding: 9px 12px;
+  border: 1px solid var(--ug-danger-border);
+  border-radius: 8px;
+  background: var(--ug-glass-strong);
+  color: var(--ug-danger);
+  box-shadow: 0 12px 28px var(--ug-shadow);
+  font: 700 13px system-ui, sans-serif;
+}
+
+.creative-copy-modal,
+.creative-auth-modal {
+  width: min(640px, calc(100vw - 32px));
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--ug-border);
+  border-radius: 8px;
+  background: var(--ug-surface);
+  color: var(--ug-text);
+  box-shadow: 0 24px 70px var(--ug-shadow-heavy);
+}
+
+.creative-copy-modal header,
+.creative-auth-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.creative-copy-modal h3,
+.creative-auth-modal h3 {
+  margin: 0;
+  color: var(--ug-text-heading);
+  font: 800 22px system-ui, sans-serif;
+}
+
+.creative-copy-modal p,
+.creative-auth-modal p {
+  margin: 4px 0 0;
+  color: var(--ug-text-secondary);
+}
+
+.creative-copy-modal button,
+.creative-auth-modal button {
+  border: 1px solid var(--ug-border);
+  border-radius: 7px;
+  background: var(--ug-surface-raised);
+  color: var(--ug-primary-dark);
+  cursor: pointer;
+  font: 800 14px system-ui, sans-serif;
+  padding: 9px 12px;
+}
+
+.creative-copy-modal button:hover:not(:disabled),
+.creative-auth-modal button:hover:not(:disabled) {
+  background: var(--ug-surface-hover);
+}
+
+.creative-copy-modal button:disabled,
+.creative-auth-modal button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.creative-copy-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(36vh, 320px);
+  overflow: auto;
+}
+
+.creative-copy-row {
+  min-height: 58px;
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  text-align: left;
+}
+
+.creative-copy-row span,
+.creative-copy-empty {
+  color: var(--ug-text-secondary);
+  font: 13px system-ui, sans-serif;
+}
+
+.creative-copy-create,
+.creative-auth-modal label {
+  display: grid;
+  gap: 8px;
+}
+
+.creative-copy-create {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  padding-top: 12px;
+  border-top: 1px solid var(--ug-border-light);
+}
+
+.creative-copy-create label,
+.creative-auth-modal label {
+  color: var(--ug-primary-dark);
+  font: 800 13px system-ui, sans-serif;
+}
+
+.creative-copy-create input,
+.creative-auth-modal input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--ug-border);
+  border-radius: 7px;
+  background: var(--ug-surface);
+  color: var(--ug-text);
+  font: 15px system-ui, sans-serif;
+  padding: 8px 11px;
+}
+
+.creative-copy-create button[type='submit'],
+.creative-auth-modal button[type='submit'] {
+  min-height: 42px;
+  border-color: var(--ug-primary-dark);
+  background: var(--ug-primary);
+  color: var(--ug-text-on-primary);
+}
+
+.creative-auth-switch {
+  justify-self: start;
+  background: transparent !important;
+}
+
+.creative-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) calc(34px * var(--ug-ui-scale) / 1.5);
+  gap: 6px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--ug-border-light);
+}
+
+.creative-mode-controls button {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid var(--ug-border);
+  border-radius: 7px;
+  background: var(--ug-surface-raised);
+  color: var(--ug-primary-dark);
+  box-shadow: 0 6px 14px var(--ug-shadow);
+  cursor: pointer;
+  font: 800 12px system-ui, sans-serif;
+  padding: 7px 8px;
+  white-space: nowrap;
+}
+
+.creative-mode-controls button:hover {
+  background: var(--ug-surface);
+  transform: translateY(-1px);
 }
 
 .social-transform-submit-button {
