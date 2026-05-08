@@ -4,10 +4,17 @@ import { getParticlePreset, PARTICLE_PRESETS } from './particles'
 import { GRADIENT_PRESETS, PATTERN_PRESETS, resolveBackground } from './backgrounds'
 
 describe('theme system', () => {
-  it('exposes 10 theme options (3 base + 7 topical)', () => {
-    expect(ALL_THEME_OPTIONS).toHaveLength(10)
-    expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'base')).toHaveLength(3)
+  it('exposes 11 theme options (4 base + 7 topical)', () => {
+    expect(ALL_THEME_OPTIONS).toHaveLength(11)
+    expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'base')).toHaveLength(4)
     expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'topical')).toHaveLength(7)
+  })
+
+  it('includes a light-dark palette between the light and dark extremes', () => {
+    const lightDark = resolvePalette('light-dark')
+    expect(lightDark.bg).not.toBe(resolvePalette('light').bg)
+    expect(lightDark.bg).not.toBe(resolvePalette('dark').bg)
+    expect(ALL_THEME_OPTIONS.find((t) => t.id === 'light-dark')?.name).toBe('Light-Dark')
   })
 
   it('applyThemeToDOM writes --ug-* CSS variables to documentElement', () => {

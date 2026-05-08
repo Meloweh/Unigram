@@ -198,6 +198,67 @@ export const DARK_PALETTE: ThemePalette = {
   shadowHeavy: 'rgba(0, 0, 0, 0.5)',
 }
 
+export const LIGHT_DARK_PALETTE: ThemePalette = {
+  bg: '#dce6f1',
+  viewportBg: 'radial-gradient(circle at 30% 20%, #e8f0f8, #b9cada)',
+  childBg: 'radial-gradient(circle at 40% 30%, #e8f0f8, #c1d0df)',
+  surface: '#eef4fa',
+  surfaceRaised: '#dbe6f1',
+  surfaceHover: '#d1deeb',
+  surfaceActive: '#b8cadd',
+  surfaceActiveHover: '#a9bdd2',
+  glass: 'rgba(235, 242, 249, 0.9)',
+  glassStrong: 'rgba(226, 236, 246, 0.94)',
+
+  text: '#18304a',
+  textHeading: '#10243a',
+  textSecondary: '#42627f',
+  textMuted: '#6f8498',
+  textOnPrimary: '#f8fbff',
+
+  primary: '#416a94',
+  primaryLight: '#6f9bc6',
+  primaryDark: '#2f5378',
+  accent: '#3f7ec9',
+  accentBg: 'rgba(63, 126, 201, 0.10)',
+  accentBorder: 'rgba(63, 126, 201, 0.24)',
+  accentStrong: 'rgba(63, 126, 201, 0.72)',
+
+  border: '#aebfd1',
+  borderLight: '#cbd8e5',
+
+  hoverTint: 'rgba(65, 106, 148, 0.09)',
+  activeTint: 'rgba(65, 106, 148, 0.16)',
+
+  gridDot: 'rgba(65, 106, 148, 0.16)',
+
+  nodeCell: '#e6eef6',
+  nodeGradientEnd: '#ccd9e7',
+  nodeMembrane: '#416a94',
+  nodeLabel: '#18304a',
+  nodeFocusRing: 'rgba(65, 106, 148, 0.23)',
+  nodeShadow: 'rgba(16, 36, 58, 0.24)',
+
+  connection: 'rgba(65, 106, 148, 0.48)',
+  connectionEvidence: 'rgba(65, 106, 148, 0.68)',
+  connectionHover: 'rgba(47, 83, 120, 0.92)',
+  connectionDraft: 'rgba(63, 126, 201, 0.54)',
+
+  flow: '#e09112',
+  flowAnim: '#f2b329',
+  flowHover: '#bd7410',
+  flowGlow: 'rgba(224, 145, 18, 0.46)',
+
+  success: '#15803d',
+  danger: '#c2413c',
+  dangerLight: '#dc5b55',
+  dangerBg: 'rgba(194, 65, 60, 0.10)',
+  dangerBorder: 'rgba(194, 65, 60, 0.24)',
+
+  shadow: 'rgba(16, 36, 58, 0.14)',
+  shadowHeavy: 'rgba(16, 36, 58, 0.30)',
+}
+
 export const GREY_PALETTE: ThemePalette = {
   bg: '#e8eaed',
   viewportBg: 'radial-gradient(circle at 30% 20%, #edeef1, #d5d8de)',
@@ -261,6 +322,7 @@ export const GREY_PALETTE: ThemePalette = {
 
 export const MODE_PALETTES: Record<string, ThemePalette> = {
   light: LIGHT_PALETTE,
+  'light-dark': LIGHT_DARK_PALETTE,
   dark: DARK_PALETTE,
   grey: GREY_PALETTE,
 }
@@ -792,6 +854,7 @@ export function getTopicalPreset(mode: ThemeMode): TopicalThemePreset | undefine
 /** All theme options for the selector UI */
 export const ALL_THEME_OPTIONS: { id: ThemeMode; name: string; group: 'base' | 'topical' }[] = [
   { id: 'light', name: 'Light', group: 'base' },
+  { id: 'light-dark', name: 'Light-Dark', group: 'base' },
   { id: 'dark', name: 'Dark', group: 'base' },
   { id: 'grey', name: 'Grey', group: 'base' },
   ...TOPICAL_THEMES.map((t) => ({ id: t.id, name: t.name, group: 'topical' as const })),

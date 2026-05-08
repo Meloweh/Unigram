@@ -7,6 +7,7 @@
 
 export type ThemeMode =
   | 'light'
+  | 'light-dark'
   | 'dark'
   | 'grey'
   | 'woody'
