@@ -62,14 +62,23 @@ export function applyAcceptedProposal(proposal: GraphProposal): ProposalApplyRes
       if (existing && existing.extra?.socialDraft === true) {
         const { socialDraft, ...extra } = existing.extra
         void socialDraft
-        store.updateEdge(existing.id, { extra: Object.keys(extra).length > 0 ? extra : undefined })
+        store.updateEdge(existing.id, {
+          extra: Object.keys(extra).length > 0 ? extra : undefined,
+          ...(payload.label ? { label: payload.label.trim() } : {}),
+          ...(payload.references && payload.references.length > 0 ? { references: payload.references } : {}),
+        })
         clearSocialEdgeDraft(existing.id)
         return { status: 'applied' }
       }
       if (existing) {
         return { status: 'blocked', reason: 'Connection already exists' }
       }
-      store.addEdge(source.id, target.id, { id: proposalCreatedEdgeId(proposal.id), kind: 'flow' })
+      store.addEdge(source.id, target.id, {
+        id: proposalCreatedEdgeId(proposal.id),
+        kind: 'flow',
+        ...(payload.label ? { label: payload.label.trim() } : {}),
+        ...(payload.references && payload.references.length > 0 ? { references: payload.references } : {}),
+      })
       return { status: 'applied' }
     }
     case 'remove-edge': {

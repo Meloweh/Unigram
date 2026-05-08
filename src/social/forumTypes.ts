@@ -41,7 +41,7 @@ export interface TransformProposalEntry {
 export type GraphProposalPayload =
   | { action: 'add-node'; newNodeLabel: string }
   | { action: 'add-node-edge'; sourceNodeId: string; newNodeLabel: string }
-  | { action: 'add-edge'; sourceNodeId: string; targetNodeId: string }
+  | { action: 'add-edge'; sourceNodeId: string; targetNodeId: string; label?: string; references?: ConnectionReference[] }
   | { action: 'remove-edge'; edgeId: string }
   | { action: 'remove-node'; nodeId: string }
   | { action: 'rename-node'; nodeId: string; nextLabel: string }

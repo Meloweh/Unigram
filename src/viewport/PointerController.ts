@@ -19,7 +19,7 @@ import { clientToScene } from '../scene/sceneConstants'
 import type { ResizeHandleDir, SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 import { getSocialEdgeDraftCount, registerSocialEdgeDraft } from '../social/graphDraft'
-import { getTransformDraftCount } from '../social/transformDraft'
+import { getTransformDraftCount, markTransformDraftTouched } from '../social/transformDraft'
 
 interface ActiveDrag {
   kind: 'pan' | 'node' | 'connect' | 'box' | 'tip' | 'resize'
@@ -394,6 +394,7 @@ export class PointerController {
         }
         this.renderer.reindexNodes(a.dragBaselines.map((b) => b.id))
         store.commitDrag(a.dragBaselines)
+        markTransformDraftTouched(store.model.id, a.dragBaselines.map((b) => b.id))
       } else if (a.nodeId) {
         // Click on node — detect double-click → enter inline label edit.
         const now = e.timeStamp
@@ -423,6 +424,7 @@ export class PointerController {
           }
         }
         store.commitGeometry(a.resizeBaseline)
+        markTransformDraftTouched(store.model.id, [a.resizeBaseline.id])
       }
       return
     }

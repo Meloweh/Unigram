@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useOmniStore } from '../model/store'
 import type { GraphProposal, GraphProposalPayload } from './forumTypes'
 import { applyAcceptedProposal, proposalCreatedEdgeId, proposalCreatedNodeId } from './proposalApply'
-import { captureTransformBaseline, getTransformDraftEntries, recomputeTransformDraft } from './transformDraft'
+import {
+  captureTransformBaseline,
+  getTransformDraftEntries,
+  markTransformDraftTouched,
+  recomputeTransformDraft,
+} from './transformDraft'
 
 beforeEach(() => {
   const model = { id: 'root', name: 'test', nodes: new Map(), edges: new Map() }
@@ -63,6 +68,21 @@ describe('applyAcceptedProposal', () => {
     expect(result.status).toBe('blocked')
   })
 
+  it('applies optional label and references on accepted add-edge proposals', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0 })
+    const b = useOmniStore.getState().addNode({ id: 'b', x: 10, y: 0 })
+    expect(applyAcceptedProposal(makeProposal('edge-meta', {
+      action: 'add-edge',
+      sourceNodeId: a,
+      targetNodeId: b,
+      label: 'Supports',
+      references: [{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }],
+    }))).toEqual({ status: 'applied' })
+    const edge = useOmniStore.getState().model.edges.get(proposalCreatedEdgeId('edge-meta'))
+    expect(edge?.label).toBe('Supports')
+    expect(edge?.references).toEqual([{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }])
+  })
+
   it('renames and rewires existing entities', () => {
     const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
     const b = useOmniStore.getState().addNode({ id: 'b', x: 10, y: 0, label: 'B' })
@@ -79,6 +99,7 @@ describe('applyAcceptedProposal', () => {
     const state = useOmniStore.getState()
     captureTransformBaseline({ rootModelId: state.model.id, models: new Map([[state.model.id, state.model]]) })
     useOmniStore.getState().updateNode(id, { x: 18, y: 24, w: 7, h: 6 })
+    markTransformDraftTouched('root', [id])
     const snapshot = useOmniStore.getState()
     recomputeTransformDraft({ rootModelId: snapshot.model.id, models: new Map([[snapshot.model.id, snapshot.model]]) })
     expect(getTransformDraftEntries('root')).toHaveLength(1)
@@ -94,6 +115,20 @@ describe('applyAcceptedProposal', () => {
     expect(applyAcceptedProposal(proposal)).toEqual({ status: 'applied' })
     expect(useOmniStore.getState().model.nodes.get(id)).toMatchObject({ x: 18, y: 24, w: 7, h: 6 })
     expect(getTransformDraftEntries('root')).toHaveLength(0)
+  })
+
+  it('ignores geometry drift until a user layout gesture marks it touched', () => {
+    const id = useOmniStore.getState().addNode({ id: 'a', x: 10, y: 20, w: 5, h: 5, label: 'A' })
+    const state = useOmniStore.getState()
+    captureTransformBaseline({ rootModelId: state.model.id, models: new Map([[state.model.id, state.model]]) })
+    useOmniStore.getState().updateNode(id, { x: 18, y: 24 })
+    const snapshot = useOmniStore.getState()
+    recomputeTransformDraft({ rootModelId: snapshot.model.id, models: new Map([[snapshot.model.id, snapshot.model]]) })
+    expect(getTransformDraftEntries('root')).toHaveLength(0)
+
+    markTransformDraftTouched('root', [id])
+    recomputeTransformDraft({ rootModelId: snapshot.model.id, models: new Map([[snapshot.model.id, snapshot.model]]) })
+    expect(getTransformDraftEntries('root')).toHaveLength(1)
   })
 })
 

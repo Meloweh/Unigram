@@ -325,7 +325,10 @@ export function OmnigramApp({
         diagramId={cloudDiagramId}
         projectTopic={cloudDiagramTopic}
         projectDescription={cloudDiagramDescription}
+        themeMode={themeMode}
         renderer={graphMounted ? renderer : null}
+        onHome={onHome}
+        onOpenSettings={() => setSettingsOpen(true)}
         onOpenChange={setForumOpen}
       />
       {settingsOpen && (

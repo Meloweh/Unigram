@@ -135,6 +135,62 @@ describe('SocialForumLayer', () => {
     expect(screen.getByLabelText('Connection selector')).toHaveTextContent('→')
   })
 
+  it('offers account settings from the account popover', async () => {
+    const onOpenSettings = vi.fn()
+    render(<SocialForumLayer diagramId="d1" renderer={null} onOpenSettings={onOpenSettings} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ada' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Settings' }))
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes the account popover when clicking outside it', async () => {
+    render(<SocialForumLayer diagramId="d1" renderer={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ada' }))
+    expect(await screen.findByRole('menuitem', { name: 'Log out' })).toBeVisible()
+    fireEvent.pointerDown(screen.getByLabelText('Forum reference selector'))
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Log out' })).not.toBeInTheDocument())
+  })
+
+  it('returns home after logout', async () => {
+    const onHome = vi.fn()
+    render(<SocialForumLayer diagramId="d1" renderer={null} onHome={onHome} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ada' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Log out' }))
+    await waitFor(() => expect(onHome).toHaveBeenCalledTimes(1))
+  })
+
+  it('sends optional label and references with add connection proposals', async () => {
+    render(<SocialForumLayer diagramId="d1" renderer={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    await screen.findByRole('button', { name: 'Ada' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Post' }))
+    const form = screen.getByLabelText('Create forum post')
+    fireEvent.change(within(form).getByLabelText('Title'), { target: { value: 'Label a path' } })
+    fireEvent.change(within(form).getByLabelText('Description'), { target: { value: 'Add a referenced connection' } })
+    fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
+    fireEvent.change(within(form).getByLabelText('Suggested action'), { target: { value: 'add-edge' } })
+    fireEvent.change(within(form).getByLabelText('Proposal source node'), { target: { value: 'Alpha' } })
+    fireEvent.change(within(form).getByLabelText('Proposal target node'), { target: { value: 'Beta' } })
+    fireEvent.change(within(form).getByLabelText('Connection label'), { target: { value: 'Evidence' } })
+    fireEvent.change(within(form).getByLabelText('Connection references'), { target: { value: 'Paper | A. Example | https://example.test' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Post' }))
+
+    await waitFor(() => {
+      const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      const post = calls.find(([url, init]) => url.toString().includes('/forums/topics') && init?.method === 'POST')
+      expect(post).toBeTruthy()
+      const body = JSON.parse(String(post?.[1]?.body)) as {
+        proposal?: { action?: string; label?: string; references?: Array<{ title: string; citation: string; url: string }> }
+      }
+      expect(body.proposal?.action).toBe('add-edge')
+      expect(body.proposal?.label).toBe('Evidence')
+      expect(body.proposal?.references).toEqual([{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }])
+    })
+  })
+
   it('restores the graph camera when the forum curtain closes', async () => {
     useOmniStore.getState().setCamera({ panX: 120, panY: -70, freeScale: 1.6 })
     render(<SocialForumLayer diagramId="d1" renderer={null} />)

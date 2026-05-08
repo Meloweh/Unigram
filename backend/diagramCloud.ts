@@ -383,6 +383,11 @@ async function createForumTopic(
   const description = cleanRequired(body.description, 'Topic description')
   const now = new Date().toISOString()
   const proposalPayload = body.proposal ? sanitizeProposalPayload(body.proposal) : null
+  const statusChanged = refreshProposalStatuses(db, diagramId)
+  if (proposalPayload?.action === 'commit-transform' && hasActiveTransformProposal(db, diagramId)) {
+    if (statusChanged) await writeDb(db)
+    throw new BadRequestError('Only one active layout change proposal is allowed per diagram')
+  }
   const proposalId = proposalPayload ? randomUUID() : undefined
   const forumRef = sanitizeForumRef(body.forumRef ?? 'diagram')
   const topic: StoredForumTopic = {
@@ -413,6 +418,14 @@ async function createForumTopic(
   diagram.updatedAt = now
   await writeDb(db)
   return summarizeTopic(db, topic, user)
+}
+
+function hasActiveTransformProposal(db: DiagramDb, diagramId: string): boolean {
+  return db.proposals.some((proposal) =>
+    proposal.diagramId === diagramId &&
+    proposal.payload.action === 'commit-transform' &&
+    (proposal.status === 'pending' || proposal.status === 'accepted')
+  )
 }
 
 async function getForumThread(req: IncomingMessage, diagramId: string, topicId: string): Promise<ForumThread> {
@@ -765,13 +778,31 @@ function refreshProposalStatuses(db: DiagramDb, diagramId: string, nowMs = Date.
     const topic = db.topics.find((item) => item.id === proposal.topicId)
     if (!topic) continue
     const comments = db.comments.filter((comment) => comment.topicId === proposal.topicId)
-    const next = resolveExpiredProposalStatus(proposal, computeAgreementRatio(commentsForAgreement(topic, comments)), nowMs)
+    const agreementRatio = computeAgreementRatio(commentsForAgreement(topic, comments))
+    const independentScore = proposalAgreementScore(topic, comments)
+    const next = independentScore >= 1
+      ? resolveExpiredProposalStatus(proposal, agreementRatio, nowMs)
+      : resolveExpiredProposalStatus(proposal, 0, nowMs)
     if (next !== proposal.status) {
       proposal.status = next
       changed = true
     }
   }
   return changed
+}
+
+function proposalAgreementScore(topic: StoredForumTopic, comments: Pick<ForumComment, 'author' | 'stance'>[]): number {
+  const latest = new Map<string, VoteStance>()
+  const author = topic.author.trim().toLowerCase()
+  for (const comment of comments) {
+    const key = comment.author.trim().toLowerCase()
+    if (!key || key === author) continue
+    if (comment.stance === 'neutral') latest.delete(key)
+    else latest.set(key, comment.stance)
+  }
+  let score = 0
+  for (const stance of latest.values()) score += stance === 'agree' ? 1 : -1
+  return score
 }
 
 function commentsForAgreement(
@@ -872,6 +903,12 @@ function sanitizeProposalPayload(value: unknown): GraphProposalPayload {
         action: value.action,
         sourceNodeId: cleanRequired(value.sourceNodeId, 'Source node'),
         targetNodeId: cleanRequired(value.targetNodeId, 'Target node'),
+        ...(typeof value.label === 'string' && value.label.trim()
+          ? { label: value.label.trim().slice(0, 160) }
+          : {}),
+        ...(Array.isArray(value.references) && value.references.length > 0
+          ? { references: value.references.slice(0, 50).map((item) => sanitizeReference(item)) }
+          : {}),
       }
     case 'remove-edge':
       return {

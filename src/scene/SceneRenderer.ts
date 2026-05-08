@@ -66,6 +66,8 @@ export type ResizeHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 interface SceneRendererOptions {
   /** Read-only miniature renderer: draw graph state without starting runtime effects. */
   preview?: boolean
+  /** Force full-detail nodes in small previews so labels remain legible. */
+  forceFullLod?: boolean
 }
 
 const CULL_PADDING = 5 // scene percent
@@ -364,11 +366,11 @@ export class SceneRenderer {
     this.overlayLayer.addChild(this.flowOverlayGfx)
     this.world.addChild(this.gridLayer)
     this.world.addChild(this.edgesLayer)
-    this.world.addChild(this.importanceLayer)
     // Glow layers go BELOW nodes so they bleed outward only.
     this.world.addChild(this.selectionAuraLayer)
     this.world.addChild(this.flowAuraLayer)
     this.world.addChild(this.nodesLayer)
+    this.world.addChild(this.importanceLayer)
     this.world.addChild(this.proposalLayer)
     this.world.addChild(this.selectionLayer)
     this.world.addChild(this.overlayLayer)
@@ -1469,6 +1471,7 @@ export class SceneRenderer {
       // remains accurate at any refresh rate.
       this.particleLayer.tick(ticker.deltaMS / 16.667)
     }
+    if (this.hasMedalSocialScore()) this.drawSocialImportance()
     // Selection breathing animation: the amber aura waves softly below the
     // node while the blue membrane frame stays sharp above it.
     if (this.selectedIds.size > 0) {
@@ -1746,10 +1749,16 @@ export class SceneRenderer {
 
     // Choose LOD from the *effective* on-screen scale.
     const effective = this.effectiveScale
-    const lod: Lod = effective >= LOD_FULL ? 'full' : effective >= LOD_SIMPLE ? 'simple' : 'dot'
+    const lod: Lod = this.options.forceFullLod
+      ? 'full'
+      : effective >= LOD_FULL
+        ? 'full'
+        : effective >= LOD_SIMPLE
+          ? 'simple'
+          : 'dot'
     const totalNodes = this.model.nodes.size
     const allNodesVisible = totalNodes > 0 && this.visibleIds.length >= totalNodes
-    const showNodeLabels = lod === 'full' || !allNodesVisible
+    const showNodeLabels = this.options.forceFullLod || lod === 'full' || !allNodesVisible
 
     // Acquire newly visible / update existing nodes.
     const flowActive = this.flow.hasActiveRuns
@@ -1955,6 +1964,7 @@ export class SceneRenderer {
     const g = this.importanceGfx
     if (!g) return
     g.clear()
+    const now = performance.now()
     const nodeScores = this.socialScores.nodeScores
     const edgeScores = this.socialScores.edgeScores
     for (const id of this.prevVisibleEdges) {
@@ -1975,19 +1985,48 @@ export class SceneRenderer {
     }
     for (const id of this.prevVisibleNodes) {
       const score = nodeScores[id] ?? 0
-      if (score === 0) continue
       const node = this.model.nodes.get(id)
       if (!node) continue
+      const color = socialMembraneColor(score, this.effectiveMembraneColor(node))
+      if (color == null) continue
       const visual = this.visualNode(node)
-      const power = socialPower(Math.abs(score))
-      const color = score > 0 ? 0x6fb7df : 0xdc8b8b
       const cx = (visual.x / 100) * SCENE_W
       const cy = (visual.y / 100) * SCENE_H
-      const w = (visual.w / 100) * SCENE_W + 16 + power * 24
-      const h = (visual.h / 100) * SCENE_H + 16 + power * 24
+      const w = (visual.w / 100) * SCENE_W
+      const h = (visual.h / 100) * SCENE_H
       drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
-      g.fill({ color, alpha: 0.025 + power * 0.045 })
+      g.stroke({
+        color,
+        width: score >= 45 ? 4.2 : score >= 30 ? 3.6 : 3,
+        alpha: score >= 80 ? 0.9 : 0.72,
+        alignment: 0.5,
+      })
+      if (score >= 80) this.drawMedalSparkles(g, id, cx, cy, w, h, now)
     }
+  }
+
+  private drawMedalSparkles(g: Graphics, id: string, cx: number, cy: number, w: number, h: number, now: number): void {
+    const seed = hashString(id)
+    const pulse = Math.sin(now / 950 + seed * 0.017)
+    if (pulse < 0.72) return
+    const alpha = (pulse - 0.72) / 0.28
+    const radius = Math.max(w, h) / 2 + 12
+    for (let i = 0; i < 3; i++) {
+      const angle = seed * 0.013 + i * 2.1 + now / 1800
+      const x = cx + Math.cos(angle) * radius * (0.82 + i * 0.08)
+      const y = cy + Math.sin(angle) * radius * (0.7 + i * 0.05)
+      const s = 3.4 + i * 0.8
+      g.moveTo(x - s, y).lineTo(x + s, y)
+      g.moveTo(x, y - s).lineTo(x, y + s)
+      g.stroke({ color: 0xffd76a, width: 1.5, alpha: 0.16 + alpha * 0.44, alignment: 0.5 })
+    }
+  }
+
+  private hasMedalSocialScore(): boolean {
+    for (const score of Object.values(this.socialScores.nodeScores)) {
+      if (score >= 80) return true
+    }
+    return false
   }
 
   private drawTransformPreview(g: Graphics, transforms: readonly TransformProposalEntry[] = this.transformPreview): void {
@@ -3234,6 +3273,25 @@ function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' |
 
 function socialPower(score: number): number {
   return Math.max(0, Math.min(1, Math.log1p(score) / Math.log(12)))
+}
+
+function socialMembraneColor(score: number, defaultColor: string): number | null {
+  void defaultColor
+  if (score <= -15) return 0xc93f3f
+  if (score < 0) return 0xe7bf45
+  if (score >= 45) return 0xf4c542
+  if (score >= 30) return 0xb8c0ca
+  if (score >= 15) return 0xb7792f
+  return null
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
 }
 
 function drawSceneNodeShapePath(

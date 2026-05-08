@@ -6,6 +6,7 @@ type TransformDraftEntry = TransformProposalEntry & { modelId: string }
 const EPSILON = 0.0001
 
 let baseline = new Map<string, NodeGeometry>()
+let touched = new Set<string>()
 let entries: TransformDraftEntry[] = []
 const listeners = new Set<() => void>()
 
@@ -17,8 +18,20 @@ export function captureTransformBaseline(snapshot: Project): void {
     }
   }
   baseline = next
+  touched = new Set()
   entries = []
   emit()
+}
+
+export function markTransformDraftTouched(modelId: string, nodeIds: Iterable<string>): void {
+  let changed = false
+  for (const nodeId of nodeIds) {
+    const key = keyFor(modelId, nodeId)
+    if (touched.has(key)) continue
+    touched.add(key)
+    changed = true
+  }
+  if (changed) emit()
 }
 
 export function recomputeTransformDraft(snapshot: Project): TransformDraftEntry[] {
@@ -32,7 +45,7 @@ export function recomputeTransformDraft(snapshot: Project): TransformDraftEntry[
         baseline.set(key, current)
         continue
       }
-      if (geometryChanged(original, current)) {
+      if (touched.has(key) && geometryChanged(original, current)) {
         next.push({ modelId: model.id, nodeId: node.id, from: original, to: current })
       }
     }
@@ -83,7 +96,9 @@ export function acceptTransformProposalBaseline(
 ): void {
   let changed = false
   for (const transform of transforms) {
-    baseline.set(keyFor(modelId, transform.nodeId), transform.to)
+    const key = keyFor(modelId, transform.nodeId)
+    baseline.set(key, transform.to)
+    touched.delete(key)
     changed = true
   }
   if (changed) {
