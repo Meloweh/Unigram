@@ -51,6 +51,17 @@ export interface LegacyPreviewRef {
   [key: string]: unknown
 }
 
+export interface ExternalDiagramLink {
+  id: string
+  diagramId: string
+  diagramTitle: string
+  nodeLabel: string
+  targetNodeId?: string
+}
+
+export type ExternalMpdLink = ExternalDiagramLink
+export type ExternalRmmLink = ExternalDiagramLink
+
 export interface ModelNode {
   id: string
   /** Position in scene percent (0–100 of `SCENE_W` / `SCENE_H`). */
@@ -72,11 +83,21 @@ export interface ModelNode {
   /** Optional child-model id for RMM zoom. */
   childModelId?: string
   /**
+   * RMM child model that resolves live from another public graph. Its `id`
+   * is also stored in `childModelId`.
+   */
+  externalRmmLink?: ExternalRmmLink
+  /**
    * MPD dimensions for this node — alternate child-model ids the user can
    * dial through. The first entry is treated as the "default" / canonical
    * child (`childModelId`). Optional; absent means the node has no MPD.
    */
   mpdDimensions?: string[]
+  /**
+   * MPD dimensions that point to another public graph project instead of a
+   * local child model. Keys are also present in `mpdDimensions`.
+   */
+  externalMpdLinks?: Record<string, ExternalMpdLink>
   /** Cosmetic-only tail/trail tip (legacy fallback, percentage of node size). */
   tip?: CosmeticTip
   /** Cosmetic-only tail/trail direction, in radians from node centre. */

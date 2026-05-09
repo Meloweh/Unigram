@@ -3136,6 +3136,8 @@
 
 .social-forum-curtain {
   --social-body-width: 1080px;
+  --social-forum-gutter-left: 68px;
+  --social-forum-gutter-right: 68px;
   position: absolute;
   inset: 0;
   z-index: 35;
@@ -3143,9 +3145,10 @@
   grid-template-rows: auto auto auto;
   gap: 16px;
   align-content: start;
-  padding: 24px 68px 28px 28px;
+  padding: 24px var(--social-forum-gutter-right) 28px var(--social-forum-gutter-left);
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
   background: var(--ug-viewport-bg);
   color: var(--social-text);
   box-shadow: inset -18px 0 28px var(--social-shadow);
@@ -3184,23 +3187,36 @@
 }
 
 .social-forum-collapse {
+  --social-collapse-border: var(--social-border, var(--ug-border));
+  --social-collapse-panel: var(--social-panel, var(--ug-surface-raised));
+  --social-collapse-accent: var(--social-accent, var(--ug-primary-dark));
+  --social-collapse-shadow: var(--social-shadow, var(--ug-shadow));
   position: fixed;
   top: 124px;
   right: -4px;
   z-index: 48;
   width: 54px;
   min-height: 170px;
-  border: 1px solid var(--social-border);
-  border-left: 1px solid var(--social-border);
+  border: 1px solid var(--social-collapse-border);
+  border-left: 1px solid var(--social-collapse-border);
   border-right: 0;
   border-radius: 8px 0 0 8px;
-  background: var(--social-panel);
-  color: var(--social-accent);
-  box-shadow: 0 12px 28px var(--social-shadow);
+  background: var(--social-collapse-panel);
+  color: var(--social-collapse-accent);
+  box-shadow: 0 12px 28px var(--social-collapse-shadow);
   cursor: pointer;
   font: 700 13px system-ui, sans-serif;
   writing-mode: vertical-rl;
   transition: transform 180ms ease, background 180ms ease;
+}
+
+.social-forum-collapse.open {
+  animation: social-collapse-in 260ms cubic-bezier(.2,.85,.22,1) both;
+}
+
+.social-forum-collapse.closing {
+  pointer-events: none;
+  animation: social-collapse-out 240ms cubic-bezier(.4,0,.2,1) both;
 }
 
 .social-forum-collapse:hover {
@@ -3208,11 +3224,40 @@
   background: var(--ug-surface);
 }
 
+.social-forum-collapse.closing:hover {
+  background: var(--social-collapse-panel);
+}
+
+@keyframes social-collapse-in {
+  from {
+    opacity: 0.45;
+    transform: translateX(calc(-100vw + 54px));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes social-collapse-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0.45;
+    transform: translateX(calc(-100vw + 54px));
+  }
+}
+
 .social-forum-header {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(360px, 860px) minmax(220px, 1fr);
   align-items: center;
   gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 auto;
   min-height: 74px;
   padding: 10px 14px;
   border: 1px solid var(--social-border-soft);
@@ -4240,7 +4285,7 @@
   justify-self: stretch;
 }
 
-.social-chain-append {
+.social-post-modal .social-chain-append {
   min-height: 48px;
   width: 100%;
   display: grid;
@@ -4248,22 +4293,16 @@
   border: 1px dashed color-mix(in srgb, #b94d5a, var(--social-border) 42%);
   border-radius: 8px;
   background:
-    repeating-linear-gradient(
-      0deg,
-      transparent 0 9px,
-      color-mix(in srgb, #c94b5c, transparent 78%) 9px 10px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent 0 9px,
-      color-mix(in srgb, #c94b5c, transparent 80%) 9px 10px
-    ),
-    color-mix(in srgb, #fff0f2, var(--social-panel) 68%);
+    linear-gradient(rgba(196, 63, 83, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(196, 63, 83, 0.14) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(255, 236, 239, 0.88), rgba(235, 244, 250, 0.9));
+  background-size: 14px 14px, 14px 14px, 100% 100%;
   color: color-mix(in srgb, #a93845, var(--social-accent) 36%);
   font: 900 22px/1 system-ui, sans-serif;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34);
 }
 
-.social-chain-append span {
+.social-post-modal .social-chain-append span {
   width: 34px;
   height: 34px;
   display: grid;
@@ -4397,9 +4436,12 @@
 
 @media (max-width: 820px) {
   .social-forum-curtain {
+    --social-forum-gutter-left: 16px;
+    --social-forum-gutter-right: 58px;
     grid-template-rows: auto auto auto;
-    padding: 18px 58px 22px 16px;
+    padding: 18px var(--social-forum-gutter-right) 22px var(--social-forum-gutter-left);
     gap: 12px;
+    scrollbar-gutter: auto;
   }
 
   .social-forum-header,

@@ -17,6 +17,7 @@ import {
 import type { SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 import { isAtRest } from '../zoom/hybridZoom'
+import { ensureExternalRmmChild } from '../rmm/externalRmmRuntime'
 
 const ZOOM_PER_NOTCH = 1.1
 
@@ -47,7 +48,11 @@ export class WheelController {
       store.selectedIds.size === 1 &&
       (() => {
         const id = store.selectedIds.values().next().value as string
-        return store.model.nodes.get(id)?.childModelId != null
+        const node = store.model.nodes.get(id)
+        if (node?.externalRmmLink && node.childModelId && !store.models.has(node.childModelId)) {
+          void ensureExternalRmmChild(id).then(() => useOmniStore.getState().rmmZoomStep('in'))
+        }
+        return node?.childModelId != null
       })()
     const canPopStack = direction === 'out' && store.zoomStack.length > 0
 

@@ -16,10 +16,13 @@ import {
   DEFAULT_NODE,
   type Connection,
   type ConnectionKind,
+  type ExternalMpdLink,
+  type ExternalRmmLink,
   type GridSettings,
   type Model,
   type ModelNode,
 } from './types'
+import { completeExternalMpdLink, completeExternalRmmLink } from './externalMpd'
 import type { ModelCosmetics } from '../theme/types'
 import {
   applyZoomStep,
@@ -242,6 +245,16 @@ interface Actions {
    * the new dimension's model id, or null on failure. NOT undoable.
    */
   addMpdDimension(nodeId: string, label?: string): string | null
+
+  /**
+   * Add an MPD dial entry that resolves to another public graph containing
+   * the same normalized node label. NOT undoable; proposal/creative flows
+   * decide whether this mutation is public draft or private autosave.
+   */
+  addExternalMpdLink(nodeId: string, link: Omit<ExternalMpdLink, 'id'> & { id?: string }): string | null
+
+  /** Link an RMM child to a live external public graph with a matching node label. */
+  addExternalRmmLink(nodeId: string, link: Omit<ExternalRmmLink, 'id'> & { id?: string }): string | null
 
   /**
    * Create a fresh empty child model and link it to `nodeId.childModelId`.
@@ -553,6 +566,8 @@ export const useOmniStore = create<Store>((set, get) => ({
         label: uniqueNodeLabel(src.label, labelRegistry, id),
         flowEffects: src.flowEffects ? src.flowEffects.map((e) => ({ ...e })) : undefined,
         mpdDimensions: src.mpdDimensions ? [...src.mpdDimensions] : undefined,
+        externalMpdLinks: src.externalMpdLinks ? { ...src.externalMpdLinks } : undefined,
+        externalRmmLink: src.externalRmmLink ? { ...src.externalRmmLink } : undefined,
       }
       labelRegistry.set(id, node)
       tx.push({ kind: 'node', op: 'add', node })
@@ -849,6 +864,38 @@ export const useOmniStore = create<Store>((set, get) => ({
     return newId
   },
 
+  addExternalMpdLink(nodeId, rawLink) {
+    const s = get()
+    const source = s.model.nodes.get(nodeId)
+    if (!source) return null
+    const link = completeExternalMpdLink(rawLink)
+    let dims: string[] = source.mpdDimensions ? [...source.mpdDimensions] : [s.model.id]
+    if (!dims.includes(s.model.id)) dims = [s.model.id, ...dims]
+    if (!dims.includes(link.id)) dims.push(link.id)
+    const externalMpdLinks = { ...(source.externalMpdLinks ?? {}), [link.id]: link }
+    set((cur) => {
+      const models = new Map(cur.models)
+      for (const dimId of dims) {
+        const m = models.get(dimId)
+        if (!m) continue
+        const twinInM = m.nodes.get(nodeId)
+        if (!twinInM) continue
+        m.nodes.set(nodeId, { ...twinInM, mpdDimensions: dims, externalMpdLinks })
+      }
+      const live = cur.model.nodes.get(nodeId)
+      if (live) {
+        ;(live as { mpdDimensions?: string[] }).mpdDimensions = dims
+        ;(live as { externalMpdLinks?: Record<string, ExternalMpdLink> }).externalMpdLinks = externalMpdLinks
+      }
+      return {
+        model: { ...cur.model },
+        models,
+        rev: cur.rev + 1,
+      }
+    })
+    return link.id
+  },
+
   addChildModel(nodeId, name) {
     const s = get()
     const node = s.model.nodes.get(nodeId)
@@ -872,13 +919,21 @@ export const useOmniStore = create<Store>((set, get) => ({
     return newModelId
   },
 
+  addExternalRmmLink(nodeId, rawLink) {
+    const node = get().model.nodes.get(nodeId)
+    if (!node || node.childModelId) return null
+    const link = completeExternalRmmLink(rawLink)
+    get().updateNode(nodeId, { childModelId: link.id, externalRmmLink: link })
+    return link.id
+  },
+
   removeChildModel(nodeId) {
     const node = get().model.nodes.get(nodeId)
     if (!node?.childModelId) return
     // Patch only the field to keep the patch payload minimal; we deliberately
     // leave the registered child model in place (re-link with undo restores
     // the previous reference).
-    get().updateNode(nodeId, { childModelId: undefined })
+    get().updateNode(nodeId, { childModelId: undefined, externalRmmLink: undefined })
   },
 
   /**

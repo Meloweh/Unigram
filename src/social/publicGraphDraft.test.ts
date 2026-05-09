@@ -59,7 +59,25 @@ describe('public graph draft diff', () => {
     currentModel.nodes.set('a', {
       ...currentModel.nodes.get('a')!,
       childModelId: 'rmm-1',
-      mpdDimensions: ['root', 'mpd-1'],
+      mpdDimensions: ['root', 'mpd-1', 'external:graph-2:a'],
+      externalMpdLinks: {
+        'external:graph-2:a': {
+          id: 'external:graph-2:a',
+          diagramId: 'graph-2',
+          diagramTitle: 'Graph Two',
+          nodeLabel: 'A',
+        },
+      },
+    })
+    currentModel.nodes.set('b', {
+      ...currentModel.nodes.get('b')!,
+      childModelId: 'external-rmm:graph-3:beta',
+      externalRmmLink: {
+        id: 'external-rmm:graph-3:beta',
+        diagramId: 'graph-3',
+        diagramTitle: 'Graph Three',
+        nodeLabel: 'Beta',
+      },
     })
     const current: Project = {
       rootModelId: 'root',
@@ -73,7 +91,82 @@ describe('public graph draft diff', () => {
     expect(getPublicGraphDraftSteps(current)).toEqual([
       { action: 'add-rmm', nodeId: 'a', name: 'Nested detail' },
       { action: 'add-mpd', nodeId: 'a', name: 'Alternate lens' },
+      {
+        action: 'add-mpd',
+        nodeId: 'a',
+        name: 'Graph Two',
+        externalLink: {
+          id: 'external:graph-2:a',
+          diagramId: 'graph-2',
+          diagramTitle: 'Graph Two',
+          nodeLabel: 'A',
+        },
+      },
+      {
+        action: 'add-rmm',
+        nodeId: 'b',
+        name: 'Graph Three',
+        externalLink: {
+          id: 'external-rmm:graph-3:beta',
+          diagramId: 'graph-3',
+          diagramTitle: 'Graph Three',
+          nodeLabel: 'Beta',
+        },
+      },
     ])
+  })
+
+  it('captures settings, media, flow graph, references, and connection type changes', () => {
+    const baseline = projectWith(modelWithBaseGraph())
+    capturePublicGraphBaseline(baseline)
+    const currentModel = cloneModel(modelWithBaseGraph())
+    const alpha = currentModel.nodes.get('a')!
+    const edge = currentModel.edges.get('edge-ab')!
+    currentModel.nodes.set('a', {
+      ...alpha,
+      shape: 'diamond',
+      cellColor: '#ffeeaa',
+      mediaType: 'video',
+      mediaSrc: 'media/clip.mp4',
+      mediaFileName: 'clip.mp4',
+      flowEffects: [{ id: 'fx1', label: 'Emerge', graph: { nodes: [], edges: [] } }],
+      linkedNodeIds: ['b'],
+    })
+    currentModel.edges.set('edge-ab', {
+      ...edge,
+      kind: 'flow',
+      dash: 'dashed',
+      arrowStyle: 'circle',
+      cameraTracked: true,
+      references: [{ title: 'Ref', citation: 'Citation', url: 'https://example.test/ref' }],
+    })
+    currentModel.crossLinks = [
+      { id: 'xl1', from: { nodeId: 'a', effectId: 'fx1' }, to: { nodeId: 'b', effectId: 'fx2' } },
+    ]
+
+    const steps = getPublicGraphDraftSteps(projectWith(currentModel))
+    expect(steps.map((step) => step.action)).toEqual([
+      'update-node-settings',
+      'update-node-media',
+      'update-flow-effects',
+      'modify-references',
+      'update-edge-settings',
+    ])
+    expect(steps.find((step) => step.action === 'update-node-media')).toMatchObject({
+      action: 'update-node-media',
+      nodeId: 'a',
+      after: { mediaType: 'video', mediaSrc: 'media/clip.mp4', mediaFileName: 'clip.mp4' },
+    })
+    expect(steps.find((step) => step.action === 'update-edge-settings')).toMatchObject({
+      action: 'update-edge-settings',
+      edgeId: 'edge-ab',
+      after: { kind: 'flow', dash: 'dashed', arrowStyle: 'circle', cameraTracked: true },
+    })
+    expect(steps.find((step) => step.action === 'update-flow-effects')).toMatchObject({
+      action: 'update-flow-effects',
+      nodeId: 'a',
+      crossLinksAfter: currentModel.crossLinks,
+    })
   })
 })
 

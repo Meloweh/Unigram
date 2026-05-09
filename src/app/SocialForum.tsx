@@ -10,7 +10,7 @@ import {
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
 import { useOmniStore } from '../model/store'
-import { DEFAULT_EDGE, DEFAULT_NODE, type ConnectionReference, type Model, type ModelNode } from '../model/types'
+import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type ConnectionReference, type Model, type ModelNode } from '../model/types'
 import { resolvePalette, type ThemeMode } from '../theme/themes'
 import {
   addForumComment,
@@ -37,6 +37,7 @@ import {
   proposalContainsAction,
   proposalSteps,
   type ForumComment,
+  type EntityPatch,
   type ForumRef,
   type ForumThread,
   type ForumTopic,
@@ -98,7 +99,6 @@ export function SocialForumLayer({
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
   const [proposals, setProposals] = useState<GraphProposal[]>([])
   const [serverSocialScores, setServerSocialScores] = useState<EntitySocialScores>({ nodeScores: {}, edgeScores: {} })
-  const [debugSocialScores, setDebugSocialScores] = useState<EntitySocialScores>({ nodeScores: {}, edgeScores: {} })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const applyingRef = useRef(new Set<string>())
@@ -223,8 +223,8 @@ export function SocialForumLayer({
 
   useEffect(() => {
     if (!renderer) return
-    renderer.setSocialScores(mergeSocialScores(serverSocialScores, debugSocialScores))
-  }, [debugSocialScores, renderer, serverSocialScores])
+    renderer.setSocialScores(serverSocialScores)
+  }, [renderer, serverSocialScores])
 
   useEffect(() => {
     if (!diagramId) return
@@ -327,27 +327,6 @@ export function SocialForumLayer({
     setPostOpen(true)
   }
 
-  const applyDebugScore = (delta: number) => {
-    const store = useOmniStore.getState()
-    setDebugSocialScores((current) => {
-      const nodeScores = { ...current.nodeScores }
-      const edgeScores = { ...current.edgeScores }
-      const nodeVotes = { ...(current.nodeVotes ?? {}) }
-      const edgeVotes = { ...(current.edgeVotes ?? {}) }
-      const addVote = (target: NonNullable<EntitySocialScores['nodeVotes']>, id: string) => {
-        const currentVotes = target[id] ?? { positive: 0, negative: 0 }
-        target[id] = delta >= 0
-          ? { ...currentVotes, positive: currentVotes.positive + Math.max(1, Math.round(delta / 4)) }
-          : { ...currentVotes, negative: currentVotes.negative + Math.max(1, Math.round(Math.abs(delta) / 4)) }
-      }
-      for (const id of store.selectedIds) nodeScores[id] = (nodeScores[id] ?? 0) + delta
-      for (const id of store.selectedEdgeIds) edgeScores[id] = (edgeScores[id] ?? 0) + delta
-      for (const id of store.selectedIds) addVote(nodeVotes, id)
-      for (const id of store.selectedEdgeIds) addVote(edgeVotes, id)
-      return { nodeScores, edgeScores, nodeVotes, edgeVotes }
-    })
-  }
-
   const activeForumTitle = forumTitlePart(forumRef, model, projectTopic)
   const topicCountLabel = `${topics.length} ${topics.length === 1 ? 'post' : 'posts'}`
 
@@ -374,22 +353,19 @@ export function SocialForumLayer({
               <span aria-hidden>⇧</span>
             </button>
           )}
-          <div className="social-score-debug" aria-label="Debug social score controls">
-            <button type="button" onClick={() => applyDebugScore(4)} title="Sample positive vote">+</button>
-            <button type="button" onClick={() => applyDebugScore(-4)} title="Sample negative vote">−</button>
-          </div>
         </>
       )}
       {open && (
-        <section className={`social-forum-curtain ${closing ? 'closing' : 'open'}`} aria-label="Diagram forum">
+        <>
           <button
             type="button"
-            className="social-forum-collapse"
+            className={`social-forum-collapse ${closing ? 'closing' : 'open'}`}
             onClick={closeForum}
             aria-label="View graph"
           >
             View Graph
           </button>
+          <section className={`social-forum-curtain ${closing ? 'closing' : 'open'}`} aria-label="Diagram forum">
             {thread ? (
               <>
                 {error && <div className="social-forum-error">{error}</div>}
@@ -529,7 +505,8 @@ export function SocialForumLayer({
                 </main>
               </>
             )}
-        </section>
+          </section>
+        </>
       )}
       {postOpen && (
         <PostModal
@@ -1199,7 +1176,11 @@ function PostModal({
   const [error, setError] = useState<string | null>(null)
   const activeAction: GraphProposalAction = action
   const draftTransforms = transformDraft ?? []
-  const sourceOnlyAction = activeAction === 'add-rmm' || activeAction === 'add-mpd'
+  const dimensionAction = activeAction === 'add-rmm' || activeAction === 'add-mpd'
+  const sourceOnlyAction = dimensionAction ||
+    activeAction === 'update-node-settings' ||
+    activeAction === 'update-node-media' ||
+    activeAction === 'update-flow-effects'
   const workingModel = useMemo(() => projectModelForChain(model, chainSteps), [model, chainSteps])
   const workingNodes = useMemo(() => sortedNodes(workingModel), [workingModel])
   const queuedNodeIds = useMemo(() => queuedNodeIdSet(chainSteps), [chainSteps])
@@ -1334,139 +1315,6 @@ function PostModal({
           Description
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
-        {changeEditorOpen && (
-          <div className="social-proposal-fields">
-            <select
-              className="social-action-select-badge"
-              aria-label="Suggested action"
-              value={activeAction}
-              onChange={(e) => {
-                const next = e.target.value as GraphProposalAction
-                setAction(next)
-                if (next === 'modify-references') {
-                  setReferencesText(referenceLinesForSelection(workingModel, workingNodes, sourceValue, targetValue))
-                }
-              }}
-            >
-              {isGraphEmpty ? (
-                <option value="add-node">Add Node</option>
-              ) : (
-                <>
-                  <option value="add-node">Add Node</option>
-                  <option value="add-node-edge">Add node and connection</option>
-                  <option value="add-edge">Add connection</option>
-                  <option value="add-rmm">Add RMM</option>
-                  <option value="add-mpd">Add MPD</option>
-                  <option value="remove-edge">Remove connection</option>
-                  <option value="remove-node">Remove node</option>
-                  <option value="rename-node">Rename node</option>
-                  <option value="rename-edge">Rename connection</option>
-                  <option value="add-reference">Add reference</option>
-                  <option value="modify-references">Modify references</option>
-                  <option value="rewire-edge">Rewire connection</option>
-                  {!hasActiveTransformProposal && (draftTransforms.length > 0 || activeAction === 'commit-transform') && (
-                    <option value="commit-transform">Commit transform</option>
-                  )}
-                </>
-              )}
-            </select>
-            {activeAction === 'commit-transform' && (
-              <p className="social-transform-summary">
-                {draftTransforms.length} layout {draftTransforms.length === 1 ? 'change is' : 'changes are'} ready for preview and voting.
-              </p>
-            )}
-            {activeAction !== 'add-node' && activeAction !== 'commit-transform' && (
-              <div className="social-ref-selector compact">
-                <NodeSuggestInput
-                  nodes={workingNodes}
-                  previewIds={queuedNodeIds}
-                  value={sourceValue}
-                  onChange={setSourceValue}
-                  placeholder="source"
-                  aria-label="Proposal source node"
-                />
-                <span className="social-action-icon" aria-label={proposalActionLabel({ action: activeAction })} title={proposalActionLabel({ action: activeAction })}>
-                  {proposalActionIcon(activeAction)}
-                </span>
-                {sourceOnlyAction ? (
-                  <input
-                    value=""
-                    readOnly
-                    placeholder="dimension"
-                    aria-label="Dimension target"
-                    className="social-ref-disabled"
-                  />
-                ) : activeAction === 'add-node-edge' ? (
-                  <input
-                    value={targetValue}
-                    onChange={(e) => setTargetValue(e.target.value)}
-                    placeholder="new target"
-                    aria-label="Proposal target node"
-                  />
-                ) : (
-                  <NodeSuggestInput
-                    nodes={workingNodes}
-                    previewIds={queuedNodeIds}
-                    value={targetValue}
-                    onChange={setTargetValue}
-                    placeholder="target"
-                    aria-label="Proposal target node"
-                    disabled={activeAction === 'remove-node' || activeAction === 'rename-node'}
-                  />
-                )}
-              </div>
-            )}
-            {(activeAction === 'add-node' || activeAction === 'rename-node' || activeAction === 'rename-edge' || sourceOnlyAction) && (
-              <input
-                value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
-                placeholder={sourceOnlyAction ? 'dimension name' : 'new name'}
-                aria-label={sourceOnlyAction ? 'Dimension name' : 'New name'}
-              />
-            )}
-            {activeAction === 'add-edge' && (
-              <div className="social-reference-fields">
-                <input
-                  value={newLabel}
-                  onChange={(e) => setNewLabel(e.target.value)}
-                  placeholder="connection label (optional)"
-                  aria-label="Connection label"
-                />
-                <textarea
-                  value={referencesText}
-                  onChange={(e) => setReferencesText(e.target.value)}
-                  placeholder="Optional references: Title | Citation | URL"
-                  aria-label="Connection references"
-                />
-              </div>
-            )}
-            {activeAction === 'add-reference' && (
-              <div className="social-reference-fields">
-                <input value={referenceTitle} onChange={(e) => setReferenceTitle(e.target.value)} placeholder="reference title" aria-label="Reference title" />
-                <input value={referenceCitation} onChange={(e) => setReferenceCitation(e.target.value)} placeholder="citation" aria-label="Reference citation" />
-                <input value={referenceUrl} onChange={(e) => setReferenceUrl(e.target.value)} placeholder="url" aria-label="Reference URL" />
-              </div>
-            )}
-            {activeAction === 'modify-references' && (
-              <textarea
-                value={referencesText}
-                onChange={(e) => setReferencesText(e.target.value)}
-                placeholder="Title | Citation | URL"
-                aria-label="Reference list"
-              />
-            )}
-            {activeAction === 'rewire-edge' && (
-              <NodeSuggestInput
-                nodes={workingNodes}
-                previewIds={queuedNodeIds}
-                value={newTargetValue}
-                onChange={setNewTargetValue}
-                placeholder="new target"
-                aria-label="New target node"
-              />
-            )}
-          </div>
-        )}
         <div className="social-chain-builder">
           {chainSteps.length > 0 && (
             <ol aria-label="Suggested change chain">
@@ -1494,6 +1342,143 @@ function PostModal({
                 </li>
               ))}
             </ol>
+          )}
+          {changeEditorOpen && (
+            <div className="social-proposal-fields">
+              <select
+                className="social-action-select-badge"
+                aria-label="Suggested action"
+                value={activeAction}
+                onChange={(e) => {
+                  const next = e.target.value as GraphProposalAction
+                  setAction(next)
+                  if (next === 'modify-references') {
+                    setReferencesText(referenceLinesForSelection(workingModel, workingNodes, sourceValue, targetValue))
+                  }
+                }}
+              >
+                {isGraphEmpty ? (
+                  <option value="add-node">Add Node</option>
+                ) : (
+                  <>
+                    <option value="add-node">Add Node</option>
+                    <option value="add-node-edge">Add node and connection</option>
+                    <option value="add-edge">Add connection</option>
+                    <option value="add-rmm">Add RMM</option>
+                    <option value="add-mpd">Add MPD</option>
+                    <option value="update-node-settings">Update node settings</option>
+                    <option value="update-node-media">Update node media</option>
+                    <option value="update-flow-effects">Update flow effects</option>
+                    <option value="update-edge-settings">Update connection settings</option>
+                    <option value="remove-edge">Remove connection</option>
+                    <option value="remove-node">Remove node</option>
+                    <option value="rename-node">Rename node</option>
+                    <option value="rename-edge">Rename connection</option>
+                    <option value="add-reference">Add reference</option>
+                    <option value="modify-references">Modify references</option>
+                    <option value="rewire-edge">Rewire connection</option>
+                    {!hasActiveTransformProposal && (draftTransforms.length > 0 || activeAction === 'commit-transform') && (
+                      <option value="commit-transform">Commit transform</option>
+                    )}
+                  </>
+                )}
+              </select>
+              {activeAction === 'commit-transform' && (
+                <p className="social-transform-summary">
+                  {draftTransforms.length} layout {draftTransforms.length === 1 ? 'change is' : 'changes are'} ready for preview and voting.
+                </p>
+              )}
+              {activeAction !== 'add-node' && activeAction !== 'commit-transform' && (
+                <div className="social-ref-selector compact">
+                  <NodeSuggestInput
+                    nodes={workingNodes}
+                    previewIds={queuedNodeIds}
+                    value={sourceValue}
+                    onChange={setSourceValue}
+                    placeholder="source"
+                    aria-label="Proposal source node"
+                  />
+                  <span className="social-action-icon" aria-label={proposalActionLabel({ action: activeAction })} title={proposalActionLabel({ action: activeAction })}>
+                    {proposalActionIcon(activeAction)}
+                  </span>
+                  {sourceOnlyAction ? (
+                    <input
+                      value=""
+                      readOnly
+                      placeholder={dimensionAction ? 'dimension' : 'node'}
+                      aria-label={dimensionAction ? 'Dimension target' : 'Node settings target'}
+                      className="social-ref-disabled"
+                    />
+                  ) : activeAction === 'add-node-edge' ? (
+                    <input
+                      value={targetValue}
+                      onChange={(e) => setTargetValue(e.target.value)}
+                      placeholder="new target"
+                      aria-label="Proposal target node"
+                    />
+                  ) : (
+                    <NodeSuggestInput
+                      nodes={workingNodes}
+                      previewIds={queuedNodeIds}
+                      value={targetValue}
+                      onChange={setTargetValue}
+                      placeholder="target"
+                      aria-label="Proposal target node"
+                      disabled={activeAction === 'remove-node' || activeAction === 'rename-node'}
+                    />
+                  )}
+                </div>
+              )}
+              {(activeAction === 'add-node' || activeAction === 'rename-node' || activeAction === 'rename-edge' || dimensionAction) && (
+                <input
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder={dimensionAction ? 'dimension name' : 'new name'}
+                  aria-label={dimensionAction ? 'Dimension name' : 'New name'}
+                />
+              )}
+              {activeAction === 'add-edge' && (
+                <div className="social-reference-fields">
+                  <input
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    placeholder="connection label (optional)"
+                    aria-label="Connection label"
+                  />
+                  <textarea
+                    value={referencesText}
+                    onChange={(e) => setReferencesText(e.target.value)}
+                    placeholder="Optional references: Title | Citation | URL"
+                    aria-label="Connection references"
+                  />
+                </div>
+              )}
+              {activeAction === 'add-reference' && (
+                <div className="social-reference-fields">
+                  <input value={referenceTitle} onChange={(e) => setReferenceTitle(e.target.value)} placeholder="reference title" aria-label="Reference title" />
+                  <input value={referenceCitation} onChange={(e) => setReferenceCitation(e.target.value)} placeholder="citation" aria-label="Reference citation" />
+                  <input value={referenceUrl} onChange={(e) => setReferenceUrl(e.target.value)} placeholder="url" aria-label="Reference URL" />
+                </div>
+              )}
+              {activeAction === 'modify-references' && (
+                <textarea
+                  value={referencesText}
+                  onChange={(e) => setReferencesText(e.target.value)}
+                  placeholder="Title | Citation | URL"
+                  aria-label="Reference list"
+                />
+              )}
+              {activeAction === 'rewire-edge' && (
+                <NodeSuggestInput
+                  nodes={workingNodes}
+                  previewIds={queuedNodeIds}
+                  value={newTargetValue}
+                  onChange={setNewTargetValue}
+                  placeholder="new target"
+                  aria-label="New target node"
+                />
+              )}
+            </div>
           )}
           <button
             type="button"
@@ -1788,9 +1773,83 @@ function buildProposalPayload(input: {
     case 'modify-references':
       if (!edge) throw new Error('Choose an existing connection')
       return { action: input.action, edgeId: edge.id, references: parseReferenceLines(input.referencesText) }
+    case 'update-node-settings':
+      if (!source) throw new Error('Choose a node to update')
+      return { action: input.action, nodeId: source.id, after: nodeSettingsPatch(source) }
+    case 'update-node-media':
+      if (!source) throw new Error('Choose a media/content node to update')
+      return { action: input.action, nodeId: source.id, after: nodeMediaPatch(source) }
+    case 'update-flow-effects':
+      if (!source) throw new Error('Choose a node with flow effects to update')
+      return {
+        action: input.action,
+        nodeId: source.id,
+        after: nodeFlowPatch(source),
+        ...(input.model.crossLinks ? { crossLinksAfter: input.model.crossLinks } : {}),
+      }
+    case 'update-edge-settings':
+      if (!edge) throw new Error('Choose an existing connection')
+      return { action: input.action, edgeId: edge.id, after: edgeSettingsPatch(edge) }
     case 'chain':
       throw new Error('Add chain entries before posting')
   }
+}
+
+function nodeSettingsPatch(node: ModelNode): EntityPatch<ModelNode> {
+  return pickEntityPatch(node, [
+    'shape',
+    'cosmeticType',
+    'cellColor',
+    'membraneColor',
+    'membraneVisible',
+    'tip',
+    'tipAngle',
+    'tipLength',
+    'locked',
+    'hideDuringFlow',
+    'cameraTracked',
+    'textFormats',
+    'previewOf',
+    'extra',
+  ])
+}
+
+function nodeMediaPatch(node: ModelNode): EntityPatch<ModelNode> {
+  return pickEntityPatch(node, [
+    'mediaType',
+    'mediaSrc',
+    'mediaFileName',
+    'audioCoverSrc',
+    'contentSource',
+    'contentCollapsed',
+    'contentFontSize',
+  ])
+}
+
+function nodeFlowPatch(node: ModelNode): EntityPatch<ModelNode> {
+  return pickEntityPatch(node, ['flowEffects', 'linkedNodeIds'])
+}
+
+function edgeSettingsPatch(edge: Connection): EntityPatch<Connection> {
+  return pickEntityPatch(edge, [
+    'kind',
+    'dash',
+    'arrowStyle',
+    'color',
+    'width',
+    'labelFontSize',
+    'cameraTracked',
+    'dependsOnSpawn',
+    'hideDuringFlow',
+    'extra',
+  ])
+}
+
+function pickEntityPatch<T extends object>(entity: T, keys: readonly (keyof T)[]): EntityPatch<T> {
+  const patch: Record<string, unknown> = {}
+  const record = entity as Record<string, unknown>
+  for (const key of keys) patch[String(key)] = record[String(key)] ?? null
+  return patch as EntityPatch<T>
 }
 
 function proposalStepSummary(step: GraphProposalStep, model: Model): string {
@@ -1814,6 +1873,10 @@ function proposalStepSummary(step: GraphProposalStep, model: Model): string {
     case 'commit-transform': return `Commit ${step.transforms.length} layout ${step.transforms.length === 1 ? 'change' : 'changes'}`
     case 'add-reference': return `Add reference to ${edgeName(step.edgeId)}`
     case 'modify-references': return `Modify references on ${edgeName(step.edgeId)}`
+    case 'update-node-settings': return `Update settings on ${nodeName(step.nodeId)}`
+    case 'update-node-media': return `Update media on ${nodeName(step.nodeId)}`
+    case 'update-flow-effects': return `Update flow effects on ${nodeName(step.nodeId)}`
+    case 'update-edge-settings': return `Update settings on ${edgeName(step.edgeId)}`
   }
 }
 
@@ -1878,6 +1941,13 @@ function hydrateStepForm(
       setTargetValue('')
       setNewLabel(step.name)
       break
+    case 'update-node-settings':
+    case 'update-node-media':
+    case 'update-flow-effects':
+      setSourceValue(nodeName(step.nodeId))
+      setTargetValue('')
+      setNewLabel('')
+      break
     case 'remove-node':
     case 'rename-node':
       setSourceValue(nodeName(step.nodeId))
@@ -1888,6 +1958,7 @@ function hydrateStepForm(
     case 'rename-edge':
     case 'add-reference':
     case 'modify-references':
+    case 'update-edge-settings':
     case 'rewire-edge':
       if (edge) {
         setSourceValue(nodeName(edge.from))
@@ -1922,6 +1993,7 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
         if (!projected.nodes.has(nodeId)) {
           projected.nodes.set(nodeId, {
             ...DEFAULT_NODE,
+            ...(step.node ?? {}),
             id: nodeId,
             label: step.newNodeLabel,
             x: step.geometry?.x ?? 50 + index * 3,
@@ -1940,6 +2012,7 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
         if (!projected.nodes.has(nodeId)) {
           projected.nodes.set(nodeId, {
             ...DEFAULT_NODE,
+            ...(step.node ?? {}),
             id: nodeId,
             label: step.newNodeLabel,
             x: step.geometry?.x ?? (source ? source.x + Math.max(8, source.w + 3) : 50 + index * 3),
@@ -1953,7 +2026,7 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
         const target = projected.nodes.get(nodeId)
         const edgeId = step.edgeId ?? `queued_edge_${index + 1}`
         if (source && target && !projected.edges.has(edgeId)) {
-          projected.edges.set(edgeId, { ...DEFAULT_EDGE, id: edgeId, from: source.id, to: target.id, extra: { queuedPreview: true } })
+          projected.edges.set(edgeId, { ...DEFAULT_EDGE, ...(step.edge ?? {}), id: edgeId, from: source.id, to: target.id, extra: { ...(step.edge?.extra ?? {}), queuedPreview: true } })
         }
         break
       }
@@ -1964,13 +2037,14 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
         if (source && target && !projected.edges.has(edgeId)) {
           projected.edges.set(edgeId, {
             ...DEFAULT_EDGE,
+            ...(step.edge ?? {}),
             ...(step.style ?? {}),
             id: edgeId,
             from: source.id,
             to: target.id,
             ...(step.label ? { label: step.label } : {}),
             ...(step.references ? { references: step.references } : {}),
-            extra: { queuedPreview: true },
+            extra: { ...(step.edge?.extra ?? {}), queuedPreview: true },
           })
         }
         break
@@ -2016,12 +2090,34 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
           if (node) projected.nodes.set(node.id, { ...node, ...transform.to })
         }
         break
+      case 'update-node-settings':
+      case 'update-node-media':
+      case 'update-flow-effects': {
+        const node = projected.nodes.get(step.nodeId)
+        if (node) projected.nodes.set(node.id, { ...applyEntityPatch(node, step.after), id: node.id, label: node.label })
+        if (step.action === 'update-flow-effects' && step.crossLinksAfter) projected.crossLinks = step.crossLinksAfter
+        break
+      }
+      case 'update-edge-settings': {
+        const edge = projected.edges.get(step.edgeId)
+        if (edge) projected.edges.set(edge.id, { ...applyEntityPatch(edge, step.after), id: edge.id, from: edge.from, to: edge.to })
+        break
+      }
       case 'add-rmm':
       case 'add-mpd':
         break
     }
   }
   return projected
+}
+
+function applyEntityPatch<T extends object>(entity: T, patch: EntityPatch<T>): T {
+  const next: Record<string, unknown> = { ...(entity as Record<string, unknown>) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete next[key]
+    else next[key] = value
+  }
+  return next as T
 }
 
 function withQueuedIds(step: GraphProposalStep, currentSteps: GraphProposalStep[], model: Model): GraphProposalStep {
@@ -2311,6 +2407,10 @@ function proposalActionIcon(action: GraphProposalAction): string {
     case 'rename-edge': return 'Aa'
     case 'add-reference': return 'R+'
     case 'modify-references': return 'R'
+    case 'update-node-settings': return 'N'
+    case 'update-node-media': return 'M'
+    case 'update-flow-effects': return 'FX'
+    case 'update-edge-settings': return 'E'
     case 'rewire-edge': return '↪'
     case 'commit-transform': return '⇧'
     case 'chain': return '⛓'
@@ -2325,41 +2425,11 @@ function isActiveTransformProposal(proposal: GraphProposal): boolean {
   return proposalContainsAction(proposal.payload, 'commit-transform') && (proposal.status === 'pending' || proposal.status === 'accepted')
 }
 
-function mergeSocialScores(base: EntitySocialScores, debug: EntitySocialScores): EntitySocialScores {
-  return {
-    nodeScores: mergeScoreMap(base.nodeScores, debug.nodeScores),
-    edgeScores: mergeScoreMap(base.edgeScores, debug.edgeScores),
-    nodeVotes: mergeVoteMap(base.nodeVotes, debug.nodeVotes),
-    edgeVotes: mergeVoteMap(base.edgeVotes, debug.edgeVotes),
-  }
-}
-
 function rendererThemeFor(mode: ThemeMode): Parameters<SceneRenderer['setThemePalette']>[0] {
   const palette = resolvePalette(mode)
   const labelHex = palette.nodeLabel.startsWith('#') ? palette.nodeLabel : '#132949'
   const label = parseInt(labelHex.replace('#', '').padEnd(6, '0').slice(0, 6), 16)
   return { cell: palette.nodeCell, membrane: palette.nodeMembrane, label }
-}
-
-function mergeScoreMap(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
-  const next = { ...a }
-  for (const [id, score] of Object.entries(b)) next[id] = (next[id] ?? 0) + score
-  return next
-}
-
-function mergeVoteMap(
-  a: EntitySocialScores['nodeVotes'],
-  b: EntitySocialScores['nodeVotes'],
-): NonNullable<EntitySocialScores['nodeVotes']> {
-  const next: NonNullable<EntitySocialScores['nodeVotes']> = { ...(a ?? {}) }
-  for (const [id, votes] of Object.entries(b ?? {})) {
-    const current = next[id] ?? { positive: 0, negative: 0 }
-    next[id] = {
-      positive: current.positive + votes.positive,
-      negative: current.negative + votes.negative,
-    }
-  }
-  return next
 }
 
 function clamp(value: number, min: number, max: number): number {

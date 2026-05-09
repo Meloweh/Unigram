@@ -368,7 +368,19 @@ function ReferenceCard({
             </button>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setDraft({ ...EMPTY_REF })
+            setEditingIdx(null)
+            setAdding(true)
+          }}
+          style={primaryBtn}
+        >
+          + Add reference
+        </button>
+      )}
         </div>
       </div>
       {voteOpacity > 0 && (

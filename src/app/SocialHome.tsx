@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
-import type { CreativeDiagramSummary, DiagramSummary, AuthUser } from '../social/cloudClient'
-import { createCloudDiagram, getCurrentAccount, listCreativeDiagrams, searchCloudDiagrams } from '../social/cloudClient'
+import type { CreativeDiagramSummary, DiagramSuggestion, DiagramSummary, AuthUser } from '../social/cloudClient'
+import { createCloudDiagram, getCurrentAccount, listCreativeDiagrams, listDiagramSuggestions, searchCloudDiagrams } from '../social/cloudClient'
 
 interface SocialHomeProps {
   onOpenDiagram: (diagram: DiagramSummary) => Promise<void>
@@ -10,11 +10,14 @@ interface SocialHomeProps {
 export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<DiagramSummary[]>([])
+  const [suggestions, setSuggestions] = useState<DiagramSuggestion[]>([])
   const [creativeGraphs, setCreativeGraphs] = useState<CreativeDiagramSummary[]>([])
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [suggestionLoading, setSuggestionLoading] = useState(false)
   const [creativeLoading, setCreativeLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [suggestionError, setSuggestionError] = useState<string | null>(null)
   const [creativeError, setCreativeError] = useState<string | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
   const [setupOpen, setSetupOpen] = useState(false)
@@ -54,11 +57,15 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
     let cancelled = false
     const load = async () => {
       setCreativeLoading(true)
+      setSuggestionLoading(true)
       setCreativeError(null)
+      setSuggestionError(null)
       try {
         const account = await getCurrentAccount()
         if (cancelled) return
         setCurrentUser(account)
+        const suggestionItems = await listDiagramSuggestions()
+        if (!cancelled) setSuggestions(suggestionItems)
         if (!account) {
           setCreativeGraphs([])
           return
@@ -66,9 +73,16 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
         const graphs = await listCreativeDiagrams()
         if (!cancelled) setCreativeGraphs(graphs)
       } catch (err) {
-        if (!cancelled) setCreativeError(err instanceof Error ? err.message : 'Creative graphs failed')
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Home data failed'
+          setCreativeError(message)
+          setSuggestionError(message)
+        }
       } finally {
-        if (!cancelled) setCreativeLoading(false)
+        if (!cancelled) {
+          setCreativeLoading(false)
+          setSuggestionLoading(false)
+        }
       }
     }
     const reload = () => void load()
@@ -126,6 +140,7 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
         topic: setupTopic.trim(),
         description: setupDescription.trim(),
       })
+      setSuggestions(await listDiagramSuggestions())
       await onOpenDiagram(diagram)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create diagram')
@@ -200,11 +215,18 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
         </div>
       </section>
 
-      <aside style={placeholderPanelStyle} aria-label="Future suggestions">
+      <aside style={placeholderPanelStyle} aria-label="Diagram suggestions">
         <h2 style={sectionTitleStyle}>Suggestions</h2>
-        <PlaceholderCard title="Most popular" text="Prepared for ranked public diagrams." />
-        <PlaceholderCard title="Personalized" text="Prepared for account-based recommendations." />
-        <PlaceholderCard title="Last visited" text="Prepared for local and cloud visit history." />
+        {suggestionLoading && <span style={mutedStyle}>Loading recommendations...</span>}
+        {suggestionError && <div style={errorStyle}>{suggestionError}</div>}
+        {!suggestionError && suggestions.map((suggestion) => (
+          <SuggestionCard
+            key={suggestion.kind}
+            suggestion={suggestion}
+            opening={openingId !== null}
+            onOpen={open}
+          />
+        ))}
         <section style={creativePanelStyle} aria-label="Your creative graphs">
           <div style={creativeHeaderStyle}>
             <h2 style={sectionTitleStyle}>Your Creative Graphs</h2>
@@ -291,12 +313,36 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
   )
 }
 
-function PlaceholderCard({ title, text }: { title: string; text: string }) {
+function SuggestionCard({
+  suggestion,
+  opening,
+  onOpen,
+}: {
+  suggestion: DiagramSuggestion
+  opening: boolean
+  onOpen: (diagram: DiagramSummary) => Promise<void>
+}) {
+  const diagram = suggestion.diagram
+  if (!diagram) {
+    return (
+      <div style={placeholderCardStyle}>
+        <strong>{suggestion.title}</strong>
+        <span>{suggestion.reason}</span>
+      </div>
+    )
+  }
   return (
-    <div style={placeholderCardStyle}>
-      <strong>{title}</strong>
-      <span>{text}</span>
-    </div>
+    <button
+      type="button"
+      style={suggestionButtonStyle}
+      disabled={opening}
+      onClick={() => void onOpen(diagram)}
+    >
+      <span style={suggestionSlotStyle}>{suggestion.title}</span>
+      <strong>{diagram.title}</strong>
+      <span>{diagram.topic ? `${diagram.topic} · ` : ''}{diagram.visits} visits</span>
+      <small>{suggestion.reason}</small>
+    </button>
   )
 }
 
@@ -483,6 +529,26 @@ const placeholderCardStyle: CSSProperties = {
   color: '#5f7790',
   font: '13px system-ui, sans-serif',
   background: 'rgba(255,255,255,0.54)',
+}
+
+const suggestionButtonStyle: CSSProperties = {
+  ...placeholderCardStyle,
+  border: '1px solid #b9cde2',
+  borderLeft: '4px solid #365f8f',
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.84), rgba(239,246,253,0.72))',
+  color: '#17314f',
+  cursor: 'pointer',
+  textAlign: 'left',
+  boxShadow: '0 8px 22px rgba(19, 41, 73, 0.07)',
+}
+
+const suggestionSlotStyle: CSSProperties = {
+  width: 'fit-content',
+  padding: '3px 8px',
+  borderRadius: 999,
+  background: '#e2eef9',
+  color: '#365f8f',
+  font: '800 11px system-ui, sans-serif',
 }
 
 const creativePanelStyle: CSSProperties = {

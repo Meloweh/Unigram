@@ -20,6 +20,8 @@ import { GRADIENT_PRESETS, PATTERN_PRESETS } from '../theme/backgrounds'
 import { PARTICLE_PRESETS } from '../theme/particles'
 import type { BackgroundType, ThemeMode } from '../theme/types'
 import { cosmeticNodeDefaults, cosmeticTip, isCosmeticShape } from '../scene/cosmeticGeometry'
+import { listGraphLinkCandidates, listMpdCandidates, type DiagramSummary } from '../social/cloudClient'
+import { ensureExternalRmmChild } from '../rmm/externalRmmRuntime'
 
 const ALL_SHAPES: NodeShape[] = [
   'rectangle',
@@ -62,10 +64,12 @@ export function RightSidebar({
   renderer,
   initialCollapsed = false,
   variant = 'default',
+  diagramId,
 }: {
   renderer?: import('../scene/SceneRenderer').SceneRenderer | null
   initialCollapsed?: boolean
   variant?: 'default' | 'public'
+  diagramId?: string
 } = {}) {
   useStoreVersion()
   const [collapsed, setCollapsed] = useState(initialCollapsed)
@@ -80,7 +84,7 @@ export function RightSidebar({
   // Single persistent shell so the collapse/expand animation runs on the
   // outer width transition (the previous code returned different DOM trees
   // for collapsed vs expanded, which prevented React from animating).
-  const inner = collapsed ? null : renderInner(nodes, state, renderer ?? null)
+  const inner = collapsed ? null : renderInner(nodes, state, renderer ?? null, diagramId)
 
   return (
     <div style={shellStyle('right', collapsed, variant)}>
@@ -112,6 +116,7 @@ function renderInner(
   nodes: ModelNode[],
   state: ReturnType<typeof useOmniStore.getState>,
   renderer: import('../scene/SceneRenderer').SceneRenderer | null,
+  diagramId?: string,
 ): React.ReactNode {
   const selectedEdges = selectedConnections(state)
   if (nodes.length === 0) {
@@ -422,8 +427,8 @@ function renderInner(
         />
       )}
 
-      {!isMulti && <MpdSection node={nodes[0]} />}
-      {!isMulti && <RmmSection node={nodes[0]} />}
+      {!isMulti && <MpdSection node={nodes[0]} diagramId={diagramId} />}
+      {!isMulti && <RmmSection node={nodes[0]} diagramId={diagramId} />}
       {!isMulti && renderer && <FlowEffectsSection node={nodes[0]} renderer={renderer} />}
     </>
   )
@@ -933,11 +938,45 @@ function CosmeticTipControls({
   )
 }
 
-function MpdSection({ node }: { node: ModelNode }) {
+function MpdSection({ node, diagramId }: { node: ModelNode; diagramId?: string }) {
   const dims = node.mpdDimensions ?? []
   const state = useOmniStore.getState()
+  const [draft, setDraft] = useState('')
+  const [selectedCandidate, setSelectedCandidate] = useState<DiagramSummary | null>(null)
+  const [candidates, setCandidates] = useState<DiagramSummary[]>([])
+  const query = draft.trim()
+  useEffect(() => {
+    let cancelled = false
+    if (!query) {
+      setCandidates([])
+      return () => {
+        cancelled = true
+      }
+    }
+    listMpdCandidates({ nodeLabel: node.label, query, excludeDiagramId: diagramId })
+      .then((items) => {
+        if (!cancelled) setCandidates(items)
+      })
+      .catch(() => {
+        if (!cancelled) setCandidates([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [diagramId, node.label, query])
   const handleAdd = () => {
-    useOmniStore.getState().addMpdDimension(node.id)
+    if (selectedCandidate) {
+      useOmniStore.getState().addExternalMpdLink(node.id, {
+        diagramId: selectedCandidate.id,
+        diagramTitle: selectedCandidate.title,
+        nodeLabel: node.label,
+      })
+    } else {
+      useOmniStore.getState().addMpdDimension(node.id, query || undefined)
+    }
+    setDraft('')
+    setSelectedCandidate(null)
+    setCandidates([])
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
@@ -948,7 +987,26 @@ function MpdSection({ node }: { node: ModelNode }) {
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {dims.map((id) => {
             const m = state.models.get(id)
+            const external = node.externalMpdLinks?.[id]
             const isCurrent = id === state.model.id
+            if (external) {
+              return (
+                <li key={id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <span style={{
+                    ...inputStyle,
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    minHeight: 28,
+                    fontWeight: isCurrent ? 700 : 600,
+                    color: 'var(--ug-text)',
+                    background: 'var(--ug-surface)',
+                  }}>
+                    {external.diagramTitle}
+                  </span>
+                </li>
+              )
+            }
             return (
               <li key={id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                 <input
@@ -982,7 +1040,81 @@ function MpdSection({ node }: { node: ModelNode }) {
           })}
         </ul>
       )}
-      <button onClick={handleAdd} style={buttonStyle}>+ Add MPD dimension</button>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input
+            type="text"
+            value={selectedCandidate ? selectedCandidate.title : draft}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              setSelectedCandidate(null)
+            }}
+            placeholder="MPD name or linked graph"
+            style={{ ...inputStyle, width: '100%' }}
+          />
+          {selectedCandidate && (
+            <span style={{
+              position: 'absolute',
+              left: 7,
+              top: 5,
+              maxWidth: 'calc(100% - 14px)',
+              pointerEvents: 'none',
+              padding: '2px 8px',
+              borderRadius: 999,
+              border: '1px solid var(--ug-border)',
+              background: 'var(--ug-surface)',
+              color: 'var(--ug-text)',
+              fontSize: 12,
+              fontWeight: 700,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {selectedCandidate.title}
+            </span>
+          )}
+          {query && candidates.length > 0 && !selectedCandidate && (
+            <div style={{
+              position: 'absolute',
+              zIndex: 10,
+              left: 0,
+              right: 0,
+              top: 'calc(100% + 4px)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              padding: 4,
+              border: '1px solid var(--ug-border)',
+              borderRadius: 8,
+              background: 'var(--ug-panel)',
+              boxShadow: '0 10px 22px rgba(30, 54, 83, 0.16)',
+            }}>
+              {candidates.map((candidate) => (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCandidate(candidate)
+                    setDraft(candidate.title)
+                    setCandidates([])
+                  }}
+                  style={{
+                    ...buttonStyle,
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    background: 'var(--ug-surface)',
+                  }}
+                >
+                  {candidate.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={handleAdd} style={buttonStyle}>
+          + Add
+        </button>
+      </div>
     </div>
   )
 }
@@ -1001,16 +1133,53 @@ function MpdSection({ node }: { node: ModelNode }) {
  * `rmmZoomStep('in')` repeatedly until the handoff fires (handoff happens
  * at the dial boundary inside `rmmZoomStep`).
  */
-function RmmSection({ node }: { node: ModelNode }) {
+function RmmSection({ node, diagramId }: { node: ModelNode; diagramId?: string }) {
   const linkedId = node.childModelId
   const linkedModel = useOmniStore((s) => (linkedId ? s.models.get(linkedId) : undefined))
+  const external = node.externalRmmLink
+  const [draft, setDraft] = useState('')
+  const [selectedCandidate, setSelectedCandidate] = useState<DiagramSummary | null>(null)
+  const [candidates, setCandidates] = useState<DiagramSummary[]>([])
+  const query = draft.trim()
+  useEffect(() => {
+    let cancelled = false
+    if (!query || linkedId) {
+      return () => {
+        cancelled = true
+      }
+    }
+    listGraphLinkCandidates({ nodeLabel: node.label, query, excludeDiagramId: diagramId })
+      .then((items) => {
+        if (!cancelled) setCandidates(items)
+      })
+      .catch(() => {
+        if (!cancelled) setCandidates([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [diagramId, linkedId, node.label, query])
   const handleAdd = () => {
-    useOmniStore.getState().addChildModel(node.id)
+    if (selectedCandidate) {
+      useOmniStore.getState().addExternalRmmLink(node.id, {
+        diagramId: selectedCandidate.id,
+        diagramTitle: selectedCandidate.title,
+        nodeLabel: node.label,
+      })
+    } else {
+      useOmniStore.getState().addChildModel(node.id, query || undefined)
+    }
+    setDraft('')
+    setSelectedCandidate(null)
+    setCandidates([])
   }
   const handleRemove = () => {
     useOmniStore.getState().removeChildModel(node.id)
   }
-  const handleOpen = () => {
+  const handleOpen = async () => {
+    if (external && linkedId && !useOmniStore.getState().models.has(linkedId)) {
+      await ensureExternalRmmChild(node.id)
+    }
     const s = useOmniStore.getState()
     s.selectMany([node.id])
     // Step in until the handoff fires (rmmZoomStep is a no-op once the dial
@@ -1026,37 +1195,124 @@ function RmmSection({ node }: { node: ModelNode }) {
       {linkedId ? (
         <>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <input
-              type="text"
-              value={linkedModel?.name ?? linkedId}
-              disabled={!linkedModel}
-              onChange={(e) => {
-                const target = useOmniStore.getState().models.get(linkedId)
-                if (!target) return
-                useOmniStore.setState((s) => {
-                  const models = new Map(s.models)
-                  const updated = { ...target, name: e.target.value }
-                  models.set(linkedId, updated)
-                  const isActive = s.model.id === linkedId
-                  return {
-                    models,
-                    model: isActive ? updated : s.model,
-                    rev: s.rev + 1,
-                  }
-                })
-              }}
-              style={{ ...inputStyle, flex: 1 }}
-            />
+            {external ? (
+              <span style={{
+                ...inputStyle,
+                flex: 1,
+                display: 'inline-flex',
+                alignItems: 'center',
+                minHeight: 28,
+                fontWeight: 700,
+                color: 'var(--ug-text)',
+                background: 'var(--ug-surface)',
+              }}>
+                {external.diagramTitle}
+              </span>
+            ) : (
+              <input
+                type="text"
+                value={linkedModel?.name ?? linkedId}
+                disabled={!linkedModel}
+                onChange={(e) => {
+                  const target = useOmniStore.getState().models.get(linkedId)
+                  if (!target) return
+                  useOmniStore.setState((s) => {
+                    const models = new Map(s.models)
+                    const updated = { ...target, name: e.target.value }
+                    models.set(linkedId, updated)
+                    const isActive = s.model.id === linkedId
+                    return {
+                      models,
+                      model: isActive ? updated : s.model,
+                      rev: s.rev + 1,
+                    }
+                  })
+                }}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+            )}
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button onClick={handleOpen} style={{ ...buttonStyle, flex: 1 }} disabled={!linkedModel}>Open</button>
+            <button onClick={() => void handleOpen()} style={{ ...buttonStyle, flex: 1 }} disabled={!linkedModel && !external}>Open</button>
             <button onClick={handleRemove} style={{ ...buttonStyle, flex: 1 }}>Remove</button>
           </div>
         </>
       ) : (
         <>
           <span style={{ fontSize: 14, color: '#576278' }}>None</span>
-          <button onClick={handleAdd} style={buttonStyle}>+ Add RMM dimension</button>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <input
+                type="text"
+                value={selectedCandidate ? selectedCandidate.title : draft}
+                onChange={(event) => {
+                  setDraft(event.target.value)
+                  setSelectedCandidate(null)
+                }}
+                placeholder="RMM name or linked graph"
+                style={{ ...inputStyle, width: '100%' }}
+              />
+              {selectedCandidate && (
+                <span style={{
+                  position: 'absolute',
+                  left: 7,
+                  top: 5,
+                  maxWidth: 'calc(100% - 14px)',
+                  pointerEvents: 'none',
+                  padding: '2px 8px',
+                  borderRadius: 999,
+                  border: '1px solid var(--ug-border)',
+                  background: 'var(--ug-surface)',
+                  color: 'var(--ug-text)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {selectedCandidate.title}
+                </span>
+              )}
+              {query && candidates.length > 0 && !selectedCandidate && (
+                <div style={{
+                  position: 'absolute',
+                  zIndex: 10,
+                  left: 0,
+                  right: 0,
+                  top: 'calc(100% + 4px)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  padding: 4,
+                  border: '1px solid var(--ug-border)',
+                  borderRadius: 8,
+                  background: 'var(--ug-panel)',
+                  boxShadow: '0 10px 22px rgba(30, 54, 83, 0.16)',
+                }}>
+                  {candidates.map((candidate) => (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCandidate(candidate)
+                        setDraft(candidate.title)
+                        setCandidates([])
+                      }}
+                      style={{
+                        ...buttonStyle,
+                        justifyContent: 'flex-start',
+                        textAlign: 'left',
+                        background: 'var(--ug-surface)',
+                      }}
+                    >
+                      {candidate.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button onClick={handleAdd} style={buttonStyle}>+ Add</button>
+          </div>
         </>
       )}
     </div>

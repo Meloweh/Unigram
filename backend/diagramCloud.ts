@@ -1,9 +1,10 @@
-import { randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import type { ConnectionReference, Connection, NodeShape } from '../src/model/types'
+import JSZip from 'jszip'
+import type { ConnectionReference, Connection, CrossEffectLink, ExternalMpdLink, ExternalRmmLink, ModelNode, NodeShape } from '../src/model/types'
 import {
   computeAgreementRatio,
   parseForumRef,
@@ -39,6 +40,7 @@ export interface StoredDiagram {
   visits: number
   popularity: number
   bundleBase64?: string
+  nodeLabels?: string[]
 }
 
 interface DiagramDb {
@@ -50,6 +52,24 @@ interface DiagramDb {
   sessions: StoredSession[]
   topicVotes: StoredTopicVote[]
   userPreferences: StoredUserPreference[]
+  diagramVisits: StoredDiagramVisit[]
+}
+
+interface DiagramIndex {
+  diagrams: Array<Omit<StoredDiagram, 'bundleBase64'>>
+  users: StoredUser[]
+  sessions: StoredSession[]
+  userPreferences: StoredUserPreference[]
+  diagramVisits: StoredDiagramVisit[]
+}
+
+interface StoredDiagramFile {
+  diagram: StoredDiagram
+  topics: StoredForumTopic[]
+  comments: ForumComment[]
+  proposals: GraphProposal[]
+  topicVotes: StoredTopicVote[]
+  nodeLabels: string[]
 }
 
 interface StoredForumTopic {
@@ -94,8 +114,28 @@ interface StoredUserPreference {
   updatedAt: string
 }
 
+interface StoredDiagramVisit {
+  diagramId: string
+  userId?: string
+  username?: string
+  topic?: string
+  visitedAt: string
+}
+
+type DiagramSuggestionKind = 'last-visited' | 'most-popular' | 'personalized'
+
+interface DiagramSuggestion {
+  kind: DiagramSuggestionKind
+  title: string
+  reason: string
+  diagram?: Omit<StoredDiagram, 'bundleBase64'>
+}
+
 const DB_DIR = '.omnigram-cloud'
-const DB_FILE = 'diagrams.json'
+const LEGACY_DB_FILE = 'diagrams.json'
+const LEGACY_BACKUP_FILE = 'diagrams.legacy.json'
+const INDEX_FILE = 'index.json'
+const DIAGRAMS_DIR = 'diagrams'
 const MAX_BODY_BYTES = 40 * 1024 * 1024
 
 export function diagramCloudPlugin(): Plugin {
@@ -223,6 +263,19 @@ async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse):
   }
 
   const id = segments[0] ?? ''
+  if (req.method === 'GET' && id === 'suggestions') {
+    sendJson(res, 200, { suggestions: await listDiagramSuggestions(req) })
+    return
+  }
+
+  if (req.method === 'GET' && id === 'mpd-candidates') {
+    const nodeLabel = url.searchParams.get('nodeLabel') ?? ''
+    const query = url.searchParams.get('q') ?? ''
+    const excludeDiagramId = url.searchParams.get('excludeDiagramId') ?? ''
+    sendJson(res, 200, { diagrams: await listMpdCandidates(nodeLabel, query, excludeDiagramId) })
+    return
+  }
+
   if (req.method === 'GET' && id === '') {
     const query = url.searchParams.get('q') ?? ''
     const diagrams = await listDiagrams(query)
@@ -246,7 +299,7 @@ async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse):
   }
 
   if (req.method === 'GET' && id !== '') {
-    const diagram = await getDiagram(id)
+    const diagram = await getDiagram(req, id)
     sendJson(res, 200, diagram)
     return
   }
@@ -379,6 +432,68 @@ async function listDiagrams(query: string): Promise<StoredDiagram[]> {
     .slice(0, 12)
 }
 
+async function listMpdCandidates(
+  nodeLabel: string,
+  query: string,
+  excludeDiagramId: string,
+): Promise<Array<Omit<StoredDiagram, 'bundleBase64'>>> {
+  const normalizedLabel = normalizeNodeLabel(nodeLabel)
+  const q = query.trim().toLowerCase()
+  if (!normalizedLabel || !q) return []
+  const db = await readDb()
+  return db.diagrams
+    .filter((diagram) =>
+      isPublicDiagram(diagram) &&
+      diagram.id !== excludeDiagramId &&
+      diagram.title.toLowerCase().includes(q) &&
+      (diagram.nodeLabels ?? []).includes(normalizedLabel)
+    )
+    .sort(sortByPopularity)
+    .slice(0, 12)
+    .map(withoutBundle)
+}
+
+async function listDiagramSuggestions(req: IncomingMessage): Promise<DiagramSuggestion[]> {
+  const db = await readDb()
+  const viewer = authenticatedUser(db, req)
+  const ranked = db.diagrams
+    .filter(isPublicDiagram)
+    .sort(sortByPopularity)
+  const selected = new Set<string>()
+  const lastVisited = pickLastVisitedDiagram(db, ranked, viewer)
+  if (lastVisited) selected.add(lastVisited.id)
+  const mostPopular = ranked.find((diagram) => !selected.has(diagram.id))
+  if (mostPopular) selected.add(mostPopular.id)
+  const personalized = pickPersonalizedDiagram(db, ranked, viewer, selected)
+  if (personalized) selected.add(personalized.id)
+  return [
+    {
+      kind: 'last-visited',
+      title: 'Last visited',
+      reason: lastVisited ? 'Your most recently opened public graph.' : 'Open a graph and it will appear here.',
+      ...(lastVisited ? { diagram: withoutBundle(lastVisited) } : {}),
+    },
+    {
+      kind: 'most-popular',
+      title: 'Most popular',
+      reason: mostPopular
+        ? (lastVisited ? 'The highest-ranked public graph that is not your last visit.' : 'The highest-ranked public graph right now.')
+        : 'Popularity starts building once graphs get visits.',
+      ...(mostPopular ? { diagram: withoutBundle(mostPopular) } : {}),
+    },
+    {
+      kind: 'personalized',
+      title: 'Personalized',
+      reason: personalized
+        ? 'Popular in the topic you visit most, excluding the other picks.'
+        : viewer
+          ? 'Visit graphs with topics to train this slot.'
+          : 'Log in to personalize by your most visited topics.',
+      ...(personalized ? { diagram: withoutBundle(personalized) } : {}),
+    },
+  ]
+}
+
 async function createDiagram(
   title: string,
   metadata: { topic?: string; description?: string } = {},
@@ -394,17 +509,21 @@ async function createDiagram(
     updatedAt: now,
     visits: 0,
     popularity: 0,
+    nodeLabels: [],
   }
   db.diagrams.push(diagram)
   await writeDb(db)
   return diagram
 }
 
-async function getDiagram(id: string): Promise<StoredDiagram> {
+async function getDiagram(req: IncomingMessage, id: string): Promise<StoredDiagram> {
   const db = await readDb()
   const diagram = ensurePublicDiagram(db, id)
+  const viewer = authenticatedUser(db, req)
+  const now = new Date().toISOString()
   diagram.visits += 1
-  diagram.updatedAt = new Date().toISOString()
+  diagram.updatedAt = now
+  recordDiagramVisit(db, diagram, viewer, now)
   await writeDb(db)
   return diagram
 }
@@ -413,11 +532,85 @@ async function updateDiagram(id: string, patch: { title?: string; bundleBase64?:
   const db = await readDb()
   const diagram = ensurePublicDiagram(db, id)
   if (patch.title && patch.title.length > 0) diagram.title = patch.title
-  if (patch.bundleBase64 !== undefined) diagram.bundleBase64 = patch.bundleBase64
+  if (patch.bundleBase64 !== undefined) {
+    diagram.bundleBase64 = await normalizeBundleBase64Media(patch.bundleBase64)
+    diagram.nodeLabels = await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+  }
   diagram.updatedAt = new Date().toISOString()
   diagram.popularity = Math.max(diagram.popularity, diagram.visits)
   await writeDb(db)
   return diagram
+}
+
+function pickLastVisitedDiagram(
+  db: DiagramDb,
+  ranked: readonly StoredDiagram[],
+  viewer: StoredUser | null,
+): StoredDiagram | undefined {
+  const publicIds = new Set(ranked.map((diagram) => diagram.id))
+  const visits = db.diagramVisits
+    .filter((visit) => publicIds.has(visit.diagramId) && (!viewer || visit.userId === viewer.id))
+    .sort((a, b) => b.visitedAt.localeCompare(a.visitedAt))
+  for (const visit of visits) {
+    const diagram = ranked.find((item) => item.id === visit.diagramId)
+    if (diagram) return diagram
+  }
+  return undefined
+}
+
+function pickPersonalizedDiagram(
+  db: DiagramDb,
+  ranked: readonly StoredDiagram[],
+  viewer: StoredUser | null,
+  excluded: ReadonlySet<string>,
+): StoredDiagram | undefined {
+  if (!viewer) return undefined
+  const byId = new Map(ranked.map((diagram) => [diagram.id, diagram]))
+  const tagCounts = new Map<string, number>()
+  for (const visit of db.diagramVisits) {
+    if (visit.userId !== viewer.id) continue
+    const diagram = byId.get(visit.diagramId)
+    if (!diagram) continue
+    for (const tag of tagsForDiagram(diagram)) {
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+    }
+  }
+  const preferredTags = [...tagCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([tag]) => tag)
+  for (const tag of preferredTags) {
+    const candidate = ranked.find((diagram) => !excluded.has(diagram.id) && tagsForDiagram(diagram).includes(tag))
+    if (candidate) return candidate
+  }
+  return undefined
+}
+
+function sortByPopularity(a: StoredDiagram, b: StoredDiagram): number {
+  return b.popularity - a.popularity || b.visits - a.visits || b.updatedAt.localeCompare(a.updatedAt)
+}
+
+function recordDiagramVisit(db: DiagramDb, diagram: StoredDiagram, viewer: StoredUser | null, visitedAt: string): void {
+  db.diagramVisits.push({
+    diagramId: diagram.id,
+    ...(viewer ? { userId: viewer.id, username: viewer.username } : {}),
+    ...(diagram.topic ? { topic: diagram.topic } : {}),
+    visitedAt,
+  })
+  if (db.diagramVisits.length > 2000) {
+    db.diagramVisits = db.diagramVisits
+      .sort((a, b) => b.visitedAt.localeCompare(a.visitedAt))
+      .slice(0, 2000)
+  }
+}
+
+function tagsForDiagram(diagram: Pick<StoredDiagram, 'topic'>): string[] {
+  const topic = diagram.topic?.trim()
+  if (!topic) return []
+  const tags = topic
+    .split(/[,;|#/]+/g)
+    .map((part) => part.trim().toLowerCase().replace(/\s+/g, ' '))
+    .filter(Boolean)
+  return tags.length > 0 ? [...new Set(tags)] : [topic.toLowerCase()]
 }
 
 async function listForumTopics(req: IncomingMessage, diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
@@ -616,6 +809,9 @@ async function listSocialScores(diagramId: string): Promise<{
       case 'add-mpd':
       case 'remove-node':
       case 'rename-node':
+      case 'update-node-settings':
+      case 'update-node-media':
+      case 'update-flow-effects':
         addScore(nodeScores, payload.nodeId, activity)
         addVotes(nodeVotes, payload.nodeId, votes)
         break
@@ -624,6 +820,7 @@ async function listSocialScores(diagramId: string): Promise<{
       case 'add-reference':
       case 'modify-references':
       case 'rewire-edge':
+      case 'update-edge-settings':
         addScore(edgeScores, payload.edgeId, activity)
         addVotes(edgeVotes, payload.edgeId, votes)
         break
@@ -739,6 +936,7 @@ async function createCreativeCopy(
     ? body.title.trim()
     : `${source.title} creative copy`
   const bundleBase64 = typeof body.bundleBase64 === 'string' ? body.bundleBase64 : source.bundleBase64
+  const normalizedBundleBase64 = bundleBase64 ? await normalizeBundleBase64Media(bundleBase64) : undefined
   const now = new Date().toISOString()
   const diagram: StoredDiagram = {
     id: randomUUID(),
@@ -750,7 +948,8 @@ async function createCreativeCopy(
     updatedAt: now,
     visits: 0,
     popularity: 0,
-    ...(bundleBase64 ? { bundleBase64 } : {}),
+    nodeLabels: normalizedBundleBase64 ? await extractRootNodeLabelsFromBundleBase64(normalizedBundleBase64) : [],
+    ...(normalizedBundleBase64 ? { bundleBase64: normalizedBundleBase64 } : {}),
   }
   db.diagrams.push(diagram)
   await writeDb(db)
@@ -785,46 +984,256 @@ async function updateCreativeDiagram(
   const user = requireAuthenticatedUser(db, req)
   const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
   if (typeof patch.title === 'string' && patch.title.trim()) diagram.title = patch.title.trim()
-  if (typeof patch.bundleBase64 === 'string') diagram.bundleBase64 = patch.bundleBase64
+  if (typeof patch.bundleBase64 === 'string') {
+    diagram.bundleBase64 = await normalizeBundleBase64Media(patch.bundleBase64)
+    diagram.nodeLabels = await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+  }
   diagram.updatedAt = new Date().toISOString()
   await writeDb(db)
   return creativeSummary(db, diagram)
 }
 
-async function readDb(): Promise<DiagramDb> {
-  const file = dbPath()
+async function normalizeBundleBase64Media(bundleBase64: string): Promise<string> {
+  if (!bundleBase64.trim()) return bundleBase64
+  const zip = await JSZip.loadAsync(Buffer.from(bundleBase64, 'base64')).catch(() => {
+    throw new BadRequestError('Invalid diagram bundle')
+  })
+  const entry = zip.file('project.json')
+  if (!entry) return bundleBase64
+  let project: { models?: Record<string, { nodes?: Array<Record<string, unknown>> }> }
   try {
-    const raw = await readFile(file, 'utf8')
-    if (raw.trim().length === 0) return emptyDb()
-    const parsed = JSON.parse(raw) as Partial<DiagramDb>
+    project = JSON.parse(await entry.async('string')) as { models?: Record<string, { nodes?: Array<Record<string, unknown>> }> }
+  } catch {
+    throw new BadRequestError('Invalid diagram bundle metadata')
+  }
+  const mediaPathByHash = new Map<string, string>()
+  let changed = false
+  for (const model of Object.values(project.models ?? {})) {
+    for (const node of model.nodes ?? []) {
+      for (const field of ['mediaSrc', 'audioCoverSrc'] as const) {
+        const path = node[field]
+        if (typeof path !== 'string' || !path.startsWith('media/')) continue
+        const mediaEntry = zip.file(path)
+        if (!mediaEntry) continue
+        const bytes = Buffer.from(await mediaEntry.async('uint8array'))
+        const hash = createHash('sha256').update(bytes).digest('hex')
+        const canonicalPath = mediaPathByHash.get(hash)
+        if (canonicalPath) {
+          node[field] = canonicalPath
+          zip.remove(path)
+          changed = true
+        } else {
+          mediaPathByHash.set(hash, path)
+        }
+      }
+    }
+  }
+  if (!changed) return bundleBase64
+  zip.file('project.json', JSON.stringify(project, null, 2))
+  const normalized = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return normalized.toString('base64')
+}
+
+async function extractRootNodeLabelsFromBundleBase64(bundleBase64: string | undefined): Promise<string[]> {
+  if (!bundleBase64?.trim()) return []
+  const zip = await JSZip.loadAsync(Buffer.from(bundleBase64, 'base64')).catch(() => null)
+  if (!zip) return []
+  const entry = zip.file('project.json')
+  if (!entry) return []
+  try {
+    const project = JSON.parse(await entry.async('string')) as {
+      rootModelId?: unknown
+      models?: Record<string, { nodes?: Array<{ label?: unknown }> }>
+    }
+    const rootModelId = typeof project.rootModelId === 'string'
+      ? project.rootModelId
+      : Object.keys(project.models ?? {})[0]
+    const rootModel = rootModelId ? project.models?.[rootModelId] : undefined
+    const labels = new Set<string>()
+    for (const node of rootModel?.nodes ?? []) {
+      const label = typeof node.label === 'string' ? normalizeNodeLabel(node.label) : ''
+      if (label) labels.add(label)
+    }
+    return [...labels].sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+async function readDb(): Promise<DiagramDb> {
+  await migrateLegacyDbIfNeeded()
+  const index = await readIndex()
+  const db = emptyDb()
+  db.users = index.users
+  db.sessions = index.sessions
+  db.userPreferences = index.userPreferences
+  db.diagramVisits = index.diagramVisits
+  for (const summary of index.diagrams) {
+    const file = await readDiagramFile(summary.id)
+    if (!file) {
+      db.diagrams.push({ ...summary })
+      continue
+    }
+    const nodeLabels = file.nodeLabels.length > 0
+      ? file.nodeLabels
+      : file.diagram.nodeLabels ?? summary.nodeLabels ?? []
+    db.diagrams.push({
+      ...summary,
+      ...file.diagram,
+      nodeLabels,
+    })
+    db.topics.push(...file.topics)
+    db.comments.push(...file.comments)
+    db.proposals.push(...file.proposals)
+    db.topicVotes.push(...file.topicVotes)
+  }
+  return db
+}
+
+async function writeDb(db: DiagramDb): Promise<void> {
+  await writeSplitDb(db)
+}
+
+async function readIndex(): Promise<DiagramIndex> {
+  try {
+    const raw = await readFile(indexPath(), 'utf8')
+    if (raw.trim().length === 0) return emptyIndex()
+    const parsed = JSON.parse(raw) as Partial<DiagramIndex>
     return {
       diagrams: Array.isArray(parsed.diagrams) ? parsed.diagrams : [],
-      topics: Array.isArray(parsed.topics) ? parsed.topics : [],
-      comments: Array.isArray(parsed.comments) ? parsed.comments : [],
-      proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
       users: Array.isArray(parsed.users) ? parsed.users : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-      topicVotes: Array.isArray(parsed.topicVotes) ? parsed.topicVotes : [],
       userPreferences: Array.isArray(parsed.userPreferences) ? parsed.userPreferences : [],
+      diagramVisits: Array.isArray(parsed.diagramVisits) ? parsed.diagramVisits : [],
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return emptyDb()
-    }
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyIndex()
     throw err
   }
 }
 
-async function writeDb(db: DiagramDb): Promise<void> {
-  await mkdir(join(process.cwd(), DB_DIR), { recursive: true })
-  const file = dbPath()
-  const tmp = `${file}.tmp`
-  await writeFile(tmp, `${JSON.stringify(db, null, 2)}\n`, 'utf8')
-  await rename(tmp, file)
+async function readDiagramFile(id: string): Promise<StoredDiagramFile | null> {
+  try {
+    const raw = await readFile(diagramFilePath(id), 'utf8')
+    if (raw.trim().length === 0) return null
+    const parsed = JSON.parse(raw) as Partial<StoredDiagramFile>
+    const diagram = parsed.diagram
+    if (!diagram || typeof diagram.id !== 'string') return null
+    return {
+      diagram,
+      topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+      comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+      proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
+      topicVotes: Array.isArray(parsed.topicVotes) ? parsed.topicVotes : [],
+      nodeLabels: Array.isArray(parsed.nodeLabels)
+        ? parsed.nodeLabels.filter((label): label is string => typeof label === 'string')
+        : diagram.nodeLabels ?? [],
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+async function writeSplitDb(db: DiagramDb): Promise<void> {
+  await mkdir(diagramDirPath(), { recursive: true })
+  const index = emptyIndex()
+  index.users = db.users
+  index.sessions = db.sessions
+  index.userPreferences = db.userPreferences
+  index.diagramVisits = db.diagramVisits
+  for (const diagram of db.diagrams) {
+    const nodeLabels = diagram.nodeLabels ?? await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+    const diagramWithLabels: StoredDiagram = { ...diagram, nodeLabels }
+    index.diagrams.push(withoutBundle(diagramWithLabels))
+    const file: StoredDiagramFile = {
+      diagram: diagramWithLabels,
+      topics: db.topics.filter((topic) => topic.diagramId === diagram.id),
+      comments: db.comments.filter((comment) => comment.diagramId === diagram.id),
+      proposals: db.proposals.filter((proposal) => proposal.diagramId === diagram.id),
+      topicVotes: db.topicVotes.filter((vote) => vote.diagramId === diagram.id),
+      nodeLabels,
+    }
+    await writeJsonAtomic(diagramFilePath(diagram.id), file)
+  }
+  await writeJsonAtomic(indexPath(), index)
+}
+
+async function migrateLegacyDbIfNeeded(): Promise<void> {
+  if (await fileExists(indexPath())) return
+  const legacyPath = dbPath()
+  if (!await fileExists(legacyPath)) return
+  const raw = await readFile(legacyPath, 'utf8')
+  const parsed = raw.trim().length === 0 ? emptyDb() : normalizeLegacyDb(JSON.parse(raw) as Partial<DiagramDb>)
+  for (const diagram of parsed.diagrams) {
+    diagram.nodeLabels = diagram.nodeLabels ?? await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+  }
+  await writeSplitDb(parsed)
+  const backupPath = join(process.cwd(), DB_DIR, LEGACY_BACKUP_FILE)
+  if (!await fileExists(backupPath)) {
+    await rename(legacyPath, backupPath)
+  }
+}
+
+function normalizeLegacyDb(parsed: Partial<DiagramDb>): DiagramDb {
+  return {
+    diagrams: Array.isArray(parsed.diagrams) ? parsed.diagrams : [],
+    topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+    comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+    proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
+    users: Array.isArray(parsed.users) ? parsed.users : [],
+    sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    topicVotes: Array.isArray(parsed.topicVotes) ? parsed.topicVotes : [],
+    userPreferences: Array.isArray(parsed.userPreferences) ? parsed.userPreferences : [],
+    diagramVisits: Array.isArray(parsed.diagramVisits) ? parsed.diagramVisits : [],
+  }
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await mkdir(join(path, '..'), { recursive: true })
+  const tmp = `${path}.tmp`
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await rename(tmp, path)
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path, 'utf8')
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
+}
+
+function normalizeNodeLabel(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 function dbPath(): string {
-  return join(process.cwd(), DB_DIR, DB_FILE)
+  return join(process.cwd(), DB_DIR, LEGACY_DB_FILE)
+}
+
+function indexPath(): string {
+  return join(process.cwd(), DB_DIR, INDEX_FILE)
+}
+
+function diagramDirPath(): string {
+  return join(process.cwd(), DB_DIR, DIAGRAMS_DIR)
+}
+
+function diagramFilePath(id: string): string {
+  return join(diagramDirPath(), `${id}.json`)
+}
+
+function emptyIndex(): DiagramIndex {
+  return {
+    diagrams: [],
+    users: [],
+    sessions: [],
+    userPreferences: [],
+    diagramVisits: [],
+  }
 }
 
 function emptyDb(): DiagramDb {
@@ -837,6 +1246,7 @@ function emptyDb(): DiagramDb {
     sessions: [],
     topicVotes: [],
     userPreferences: [],
+    diagramVisits: [],
   }
 }
 
@@ -1135,6 +1545,7 @@ function sanitizeProposalStep(value: unknown): GraphProposalStep {
         ...optionalIdField('nodeId', value.nodeId),
         ...optionalGeometryField(value.geometry),
         ...optionalShapeField(value.shape),
+        ...optionalNodeSnapshot(value.node),
       }
     case 'add-node-edge':
       return {
@@ -1145,6 +1556,8 @@ function sanitizeProposalStep(value: unknown): GraphProposalStep {
         ...optionalIdField('edgeId', value.edgeId),
         ...optionalGeometryField(value.geometry),
         ...optionalShapeField(value.shape),
+        ...optionalNodeSnapshot(value.node),
+        ...optionalEdgeSnapshot(value.edge),
       }
     case 'add-edge': {
       const style = sanitizeEdgeStyle(value.style)
@@ -1160,6 +1573,7 @@ function sanitizeProposalStep(value: unknown): GraphProposalStep {
           ? { references: value.references.slice(0, 50).map((item) => sanitizeReference(item)) }
           : {}),
         ...(style ? { style } : {}),
+        ...optionalEdgeSnapshot(value.edge),
       }
     }
     case 'add-rmm':
@@ -1167,12 +1581,14 @@ function sanitizeProposalStep(value: unknown): GraphProposalStep {
         action: value.action,
         nodeId: cleanRequired(value.nodeId, 'Node'),
         name: cleanRequired(value.name, 'RMM name'),
+        ...optionalExternalRmmLink(value.externalLink),
       }
     case 'add-mpd':
       return {
         action: value.action,
         nodeId: cleanRequired(value.nodeId, 'Node'),
         name: cleanRequired(value.name, 'MPD name'),
+        ...optionalExternalMpdLink(value.externalLink),
       }
     case 'remove-edge':
       return {
@@ -1227,9 +1643,135 @@ function sanitizeProposalStep(value: unknown): GraphProposalStep {
         transforms: value.transforms.map((item) => sanitizeTransformEntry(item)),
       }
     }
+    case 'update-node-settings': {
+      const after = sanitizeEntityPatch<ModelNode>(value.after, 'Node settings', ['id', 'label', 'x', 'y', 'w', 'h'])
+      if (Object.keys(after).length === 0) throw new BadRequestError('Node settings are required')
+      const before = sanitizeOptionalEntityPatch<ModelNode>(value.before, 'Previous node settings', ['id'])
+      return {
+        action: value.action,
+        nodeId: cleanRequired(value.nodeId, 'Node'),
+        ...(before ? { before } : {}),
+        after,
+      }
+    }
+    case 'update-node-media': {
+      const after = sanitizeEntityPatch<ModelNode>(value.after, 'Node media', ['id', 'label', 'x', 'y', 'w', 'h'])
+      if (Object.keys(after).length === 0) throw new BadRequestError('Node media is required')
+      const before = sanitizeOptionalEntityPatch<ModelNode>(value.before, 'Previous node media', ['id'])
+      return {
+        action: value.action,
+        nodeId: cleanRequired(value.nodeId, 'Node'),
+        ...(before ? { before } : {}),
+        after,
+      }
+    }
+    case 'update-flow-effects': {
+      const after = sanitizeOptionalEntityPatch<ModelNode>(value.after, 'Flow effects', ['id', 'label', 'x', 'y', 'w', 'h']) ?? {}
+      const before = sanitizeOptionalEntityPatch<ModelNode>(value.before, 'Previous flow effects', ['id'])
+      const crossLinksBefore = sanitizeOptionalCrossLinks(value.crossLinksBefore, 'Previous cross-links')
+      const crossLinksAfter = sanitizeOptionalCrossLinks(value.crossLinksAfter, 'Next cross-links')
+      if (Object.keys(after).length === 0 && !crossLinksAfter) throw new BadRequestError('Flow effect changes are required')
+      return {
+        action: value.action,
+        nodeId: cleanRequired(value.nodeId, 'Node'),
+        ...(before ? { before } : {}),
+        after,
+        ...(crossLinksBefore ? { crossLinksBefore } : {}),
+        ...(crossLinksAfter ? { crossLinksAfter } : {}),
+      }
+    }
+    case 'update-edge-settings': {
+      const after = sanitizeEntityPatch<Connection>(value.after, 'Connection settings', ['id', 'from', 'to'])
+      if (Object.keys(after).length === 0) throw new BadRequestError('Connection settings are required')
+      const before = sanitizeOptionalEntityPatch<Connection>(value.before, 'Previous connection settings', ['id'])
+      return {
+        action: value.action,
+        edgeId: cleanRequired(value.edgeId, 'Connection'),
+        ...(before ? { before } : {}),
+        after,
+      }
+    }
     default:
       throw new BadRequestError('Unsupported proposal action')
   }
+}
+
+function optionalNodeSnapshot(value: unknown): { node?: ModelNode } {
+  if (!isRecord(value)) return {}
+  return { node: sanitizeJsonLimited<ModelNode>(value, 'Node snapshot', 350_000) }
+}
+
+function optionalEdgeSnapshot(value: unknown): { edge?: Connection } {
+  if (!isRecord(value)) return {}
+  return { edge: sanitizeJsonLimited<Connection>(value, 'Connection snapshot', 180_000) }
+}
+
+function optionalExternalMpdLink(value: unknown): { externalLink?: ExternalMpdLink } {
+  if (!isRecord(value)) return {}
+  const diagramId = cleanRequired(value.diagramId, 'External diagram')
+  const nodeLabel = cleanRequired(value.nodeLabel, 'External node label')
+  const link: ExternalMpdLink = {
+    id: typeof value.id === 'string' && value.id.trim()
+      ? value.id.trim().slice(0, 240)
+      : `external:${diagramId}:${normalizeNodeLabel(nodeLabel)}`,
+    diagramId,
+    diagramTitle: cleanRequired(value.diagramTitle, 'External diagram title').slice(0, 240),
+    nodeLabel,
+  }
+  if (typeof value.targetNodeId === 'string' && value.targetNodeId.trim()) {
+    link.targetNodeId = value.targetNodeId.trim().slice(0, 160)
+  }
+  return { externalLink: link }
+}
+
+function optionalExternalRmmLink(value: unknown): { externalLink?: ExternalRmmLink } {
+  if (!isRecord(value)) return {}
+  const diagramId = cleanRequired(value.diagramId, 'External diagram')
+  const nodeLabel = cleanRequired(value.nodeLabel, 'External node label')
+  const link: ExternalRmmLink = {
+    id: typeof value.id === 'string' && value.id.trim()
+      ? value.id.trim().slice(0, 240)
+      : `external-rmm:${diagramId}:${normalizeNodeLabel(nodeLabel)}`,
+    diagramId,
+    diagramTitle: cleanRequired(value.diagramTitle, 'External diagram title').slice(0, 240),
+    nodeLabel,
+  }
+  if (typeof value.targetNodeId === 'string' && value.targetNodeId.trim()) {
+    link.targetNodeId = value.targetNodeId.trim().slice(0, 160)
+  }
+  return { externalLink: link }
+}
+
+function sanitizeEntityPatch<T extends object>(
+  value: unknown,
+  label: string,
+  forbiddenKeys: readonly string[],
+): Partial<{ [K in keyof T]: T[K] | null }> {
+  if (!isRecord(value)) throw new BadRequestError(`${label} is required`)
+  const patch = sanitizeJsonLimited<Record<string, unknown>>(value, label, 350_000)
+  for (const key of forbiddenKeys) delete patch[key]
+  return patch as Partial<{ [K in keyof T]: T[K] | null }>
+}
+
+function sanitizeOptionalEntityPatch<T extends object>(
+  value: unknown,
+  label: string,
+  forbiddenKeys: readonly string[],
+): Partial<{ [K in keyof T]: T[K] | null }> | undefined {
+  if (!isRecord(value)) return undefined
+  return sanitizeEntityPatch<T>(value, label, forbiddenKeys)
+}
+
+function sanitizeOptionalCrossLinks(value: unknown, label: string): CrossEffectLink[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  if (value.length > 1000) throw new BadRequestError(`${label} list is too large`)
+  return sanitizeJsonLimited<CrossEffectLink[]>(value, label, 350_000)
+}
+
+function sanitizeJsonLimited<T>(value: unknown, label: string, maxChars: number): T {
+  const raw = JSON.stringify(value)
+  if (raw.length > maxChars) throw new BadRequestError(`${label} is too large`)
+  return JSON.parse(raw) as T
 }
 
 function optionalIdField<K extends 'nodeId' | 'edgeId'>(key: K, value: unknown): Partial<Record<K, string>> {

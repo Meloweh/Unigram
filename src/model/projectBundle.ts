@@ -44,6 +44,7 @@ export interface ProjectSnapshot {
 /** Serialize the project to a `.unigram` zip blob. */
 export async function exportBundle(snapshot: ProjectSnapshot): Promise<Blob> {
   const zip = new JSZip()
+  const mediaAssets = new Map<string, string>()
   const file: ProjectFile = {
     version: 1,
     rootModelId: snapshot.rootModelId,
@@ -52,7 +53,7 @@ export async function exportBundle(snapshot: ProjectSnapshot): Promise<Blob> {
   for (const [id, m] of snapshot.models) {
     const nodes: ModelNode[] = []
     for (const node of m.nodes.values()) {
-      nodes.push(await serializeNodeMedia(node, zip))
+      nodes.push(await serializeNodeMedia(node, zip, mediaAssets))
     }
     file.models[id] = {
       id: m.id,
@@ -120,14 +121,14 @@ function migrateCosmeticNode(node: ModelNode): ModelNode {
   }
 }
 
-async function serializeNodeMedia(node: ModelNode, zip: JSZip): Promise<ModelNode> {
+async function serializeNodeMedia(node: ModelNode, zip: JSZip, mediaAssets: Map<string, string>): Promise<ModelNode> {
   let next = node
   if (node.mediaSrc) {
-    const mediaSrc = await writeMediaAsset(zip, node.mediaSrc, node.mediaFileName, `${node.id}-media`)
+    const mediaSrc = await writeMediaAsset(zip, mediaAssets, node.mediaSrc, node.mediaFileName, `${node.id}-media`)
     if (mediaSrc !== node.mediaSrc) next = { ...next, mediaSrc }
   }
   if (node.audioCoverSrc) {
-    const audioCoverSrc = await writeMediaAsset(zip, node.audioCoverSrc, undefined, `${node.id}-cover`)
+    const audioCoverSrc = await writeMediaAsset(zip, mediaAssets, node.audioCoverSrc, undefined, `${node.id}-cover`)
     if (audioCoverSrc !== node.audioCoverSrc) next = { ...next, audioCoverSrc }
   }
   return next
@@ -135,15 +136,19 @@ async function serializeNodeMedia(node: ModelNode, zip: JSZip): Promise<ModelNod
 
 async function writeMediaAsset(
   zip: JSZip,
+  mediaAssets: Map<string, string>,
   src: string,
   fileName: string | undefined,
   fallbackName: string,
 ): Promise<string> {
   const blob = getMediaBlob(src)
   if (!blob) return src
+  const cached = mediaAssets.get(src)
+  if (cached) return cached
   const ext = extensionFor(fileName, blob.type)
   const path = `media/${safePathPart(fallbackName)}${ext}`
   zip.file(path, blob)
+  mediaAssets.set(src, path)
   return path
 }
 

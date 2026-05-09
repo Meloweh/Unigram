@@ -1,6 +1,7 @@
 import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type Model, type ModelNode, type Project } from '../model/types'
 import { useOmniStore } from '../model/store'
 import { applyPatch, type Patch } from '../model/undo'
+import { completeExternalMpdLink, completeExternalRmmLink } from '../model/externalMpd'
 import type { GraphProposal, GraphProposalStep, TransformProposalEntry } from './forumTypes'
 import { findEdgeBetween, proposalSteps } from './forumTypes'
 import { acceptTransformProposalBaseline } from './transformDraft'
@@ -17,6 +18,14 @@ export function applyAcceptedProposal(proposal: GraphProposal): ProposalApplyRes
   const projection = projectProposal(model, useOmniStore.getState().models, proposal)
   if (projection.status === 'blocked') return projection
   if (projection.patches.length > 0) store.applyTransaction(projection.patches)
+  if (projection.crossLinks) {
+    useOmniStore.setState((s) => {
+      const model: Model = { ...s.model, crossLinks: projection.crossLinks }
+      const models = new Map(s.models)
+      models.set(model.id, model)
+      return { model, models, rev: s.rev + 1 }
+    })
+  }
   if (projection.models.size > 0) {
     useOmniStore.setState((s) => {
       const models = new Map(s.models)
@@ -36,6 +45,7 @@ interface ProposalProjection {
   models: Map<string, Model>
   clearedDraftEdges: string[]
   transforms: TransformProposalEntry[]
+  crossLinks?: Model['crossLinks']
 }
 
 function projectProposal(
@@ -47,6 +57,7 @@ function projectProposal(
     ...model,
     nodes: cloneNodeMap(model.nodes),
     edges: cloneEdgeMap(model.edges),
+    crossLinks: model.crossLinks ? model.crossLinks.map(cloneCrossLink) : undefined,
   }
   const newModels = new Map<string, Model>()
   const clearedDraftEdges: string[] = []
@@ -64,6 +75,9 @@ function projectProposal(
     models: newModels,
     clearedDraftEdges,
     transforms,
+    ...(sameEntity(model.crossLinks ?? [], projected.crossLinks ?? [])
+      ? {}
+      : { crossLinks: projected.crossLinks ? projected.crossLinks.map(cloneCrossLink) : [] }),
   }
 }
 
@@ -84,6 +98,7 @@ function projectStep(
       if (!model.nodes.has(nodeId)) {
         model.nodes.set(nodeId, {
           ...DEFAULT_NODE,
+          ...(payload.node ?? {}),
           id: nodeId,
           label: payload.newNodeLabel.trim() || 'New node',
           x: payload.geometry?.x ?? 50,
@@ -103,6 +118,7 @@ function projectStep(
       if (!model.nodes.has(nodeId)) {
         const node: ModelNode = {
           ...DEFAULT_NODE,
+          ...(payload.node ?? {}),
           id: nodeId,
           label: payload.newNodeLabel.trim() || 'New node',
           x: payload.geometry?.x ?? source.x + Math.max(8, source.w + 3),
@@ -116,7 +132,7 @@ function projectStep(
       if (!model.edges.has(edgeId)) {
         const target = model.nodes.get(nodeId)
         if (!target) return { status: 'blocked', reason: 'Created node is unavailable' }
-        model.edges.set(edgeId, { ...DEFAULT_EDGE, id: edgeId, from: source.id, to: target.id })
+        model.edges.set(edgeId, { ...DEFAULT_EDGE, ...(payload.edge ?? {}), id: edgeId, from: source.id, to: target.id })
       }
       return { status: 'applied', clearedDraftEdges, transforms }
     }
@@ -132,9 +148,13 @@ function projectStep(
         }
         model.edges.set(edgeId, {
           ...existingById,
+          ...(payload.edge ?? {}),
           ...(payload.style ?? {}),
           ...(payload.label ? { label: payload.label.trim() } : {}),
           ...(payload.references && payload.references.length > 0 ? { references: payload.references } : {}),
+          id: edgeId,
+          from: source.id,
+          to: target.id,
         })
         if (existingById.extra?.socialDraft === true) clearedDraftEdges.push(existingById.id)
         return { status: 'applied', clearedDraftEdges, transforms }
@@ -145,10 +165,14 @@ function projectStep(
         void socialDraft
         model.edges.set(existing.id, {
           ...existing,
+          ...(payload.edge ?? {}),
           extra: Object.keys(extra).length > 0 ? extra : undefined,
           ...(payload.style ?? {}),
           ...(payload.label ? { label: payload.label.trim() } : {}),
           ...(payload.references && payload.references.length > 0 ? { references: payload.references } : {}),
+          id: existing.id,
+          from: source.id,
+          to: target.id,
         })
         clearedDraftEdges.push(existing.id)
         return { status: 'applied', clearedDraftEdges, transforms }
@@ -158,6 +182,7 @@ function projectStep(
       }
       model.edges.set(edgeId, {
         ...DEFAULT_EDGE,
+        ...(payload.edge ?? {}),
         ...(payload.style ?? {}),
         id: edgeId,
         from: source.id,
@@ -171,6 +196,11 @@ function projectStep(
       const node = model.nodes.get(payload.nodeId)
       if (!node) return { status: 'blocked', reason: 'Node is missing' }
       if (!node.childModelId) {
+        if (payload.externalLink) {
+          const link = completeExternalRmmLink(payload.externalLink)
+          model.nodes.set(node.id, { ...node, childModelId: link.id, externalRmmLink: link })
+          return { status: 'applied', clearedDraftEdges, transforms }
+        }
         const modelId = proposalCreatedModelId(proposal.id, index, 'rmm')
         model.nodes.set(node.id, { ...node, childModelId: modelId })
         newModels.set(modelId, { id: modelId, name: payload.name.trim(), nodes: new Map(), edges: new Map() })
@@ -183,6 +213,13 @@ function projectStep(
       const name = payload.name.trim()
       const currentDims = node.mpdDimensions ? [...node.mpdDimensions] : [model.id]
       if (!currentDims.includes(model.id)) currentDims.unshift(model.id)
+      if (payload.externalLink) {
+        const link = completeExternalMpdLink(payload.externalLink)
+        const dims = currentDims.includes(link.id) ? currentDims : [...currentDims, link.id]
+        const externalMpdLinks = { ...(node.externalMpdLinks ?? {}), [link.id]: link }
+        model.nodes.set(node.id, { ...node, mpdDimensions: dims, externalMpdLinks })
+        return { status: 'applied', clearedDraftEdges, transforms }
+      }
       if (!currentDims.some((id) => id !== model.id && (newModels.get(id) ?? models.get(id))?.name === name)) {
         const modelId = proposalCreatedModelId(proposal.id, index, 'mpd')
         const dims = [...currentDims, modelId]
@@ -254,6 +291,32 @@ function projectStep(
       model.edges.set(edge.id, { ...edge, references: payload.references.length > 0 ? payload.references : undefined })
       return { status: 'applied', clearedDraftEdges, transforms }
     }
+    case 'update-node-settings':
+    case 'update-node-media':
+    case 'update-flow-effects': {
+      const node = model.nodes.get(payload.nodeId)
+      if (!node) return { status: 'blocked', reason: 'Node is missing' }
+      model.nodes.set(node.id, {
+        ...applyEntityPatch(node, payload.after),
+        id: node.id,
+        label: node.label,
+      })
+      if (payload.action === 'update-flow-effects' && payload.crossLinksAfter) {
+        model.crossLinks = payload.crossLinksAfter.map(cloneCrossLink)
+      }
+      return { status: 'applied', clearedDraftEdges, transforms }
+    }
+    case 'update-edge-settings': {
+      const edge = model.edges.get(payload.edgeId)
+      if (!edge) return { status: 'blocked', reason: 'Connection is missing' }
+      model.edges.set(edge.id, {
+        ...applyEntityPatch(edge, payload.after),
+        id: edge.id,
+        from: edge.from,
+        to: edge.to,
+      })
+      return { status: 'applied', clearedDraftEdges, transforms }
+    }
   }
 }
 
@@ -265,11 +328,17 @@ function cloneNodeMap(nodes: ReadonlyMap<string, ModelNode>): Map<string, ModelN
       flowEffects: node.flowEffects ? node.flowEffects.map((effect) => ({ ...effect })) : undefined,
       textFormats: node.textFormats ? node.textFormats.map((format) => ({ ...format })) : undefined,
       mpdDimensions: node.mpdDimensions ? [...node.mpdDimensions] : undefined,
+      externalMpdLinks: node.externalMpdLinks ? { ...node.externalMpdLinks } : undefined,
+      externalRmmLink: node.externalRmmLink ? { ...node.externalRmmLink } : undefined,
       linkedNodeIds: node.linkedNodeIds ? [...node.linkedNodeIds] : undefined,
       extra: node.extra ? { ...node.extra } : undefined,
     })
   }
   return next
+}
+
+function cloneCrossLink<T extends { from: object; to: object }>(link: T): T {
+  return { ...link, from: { ...link.from }, to: { ...link.to } }
 }
 
 function cloneEdgeMap(edges: ReadonlyMap<string, Connection>): Map<string, Connection> {
@@ -305,6 +374,15 @@ function diffModels(before: Model, after: Model): Patch[] {
   return patches
 }
 
+function applyEntityPatch<T extends object>(entity: T, patch: Partial<{ [K in keyof T]: T[K] | null }>): T {
+  const next: Record<string, unknown> = { ...(entity as Record<string, unknown>) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete next[key]
+    else next[key] = value
+  }
+  return next as T
+}
+
 function sameEntity(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -322,6 +400,7 @@ export function previewModelForProposal(model: Model, models: ReadonlyMap<string
   if (projection.status === 'blocked') return null
   const preview: Model = { ...model, nodes: cloneNodeMap(model.nodes), edges: cloneEdgeMap(model.edges) }
   for (const patch of projection.patches) applyPatch(patch, preview.nodes, preview.edges)
+  if (projection.crossLinks) preview.crossLinks = projection.crossLinks.map(cloneCrossLink)
   return preview
 }
 
@@ -332,6 +411,7 @@ export function previewProjectForProposal(project: Project, proposal: GraphPropo
   if (projection.status === 'blocked') return null
   const preview: Model = { ...model, nodes: cloneNodeMap(model.nodes), edges: cloneEdgeMap(model.edges) }
   for (const patch of projection.patches) applyPatch(patch, preview.nodes, preview.edges)
+  if (projection.crossLinks) preview.crossLinks = projection.crossLinks.map(cloneCrossLink)
   const models = new Map(project.models)
   models.set(model.id, preview)
   for (const [id, nextModel] of projection.models) models.set(id, nextModel)

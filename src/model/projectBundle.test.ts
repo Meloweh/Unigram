@@ -20,7 +20,15 @@ const mkModel = (id: string, name: string): Model => ({
         shape: 'rounded-rect',
         cellColor: '#fff',
         membraneColor: '#000',
-        mpdDimensions: [id, 'mpd_x'],
+        mpdDimensions: [id, 'mpd_x', 'external:graph-2:hello'],
+        externalMpdLinks: {
+          'external:graph-2:hello': {
+            id: 'external:graph-2:hello',
+            diagramId: 'graph-2',
+            diagramTitle: 'Graph Two',
+            nodeLabel: 'hello',
+          },
+        },
       },
     ],
     [
@@ -35,7 +43,13 @@ const mkModel = (id: string, name: string): Model => ({
         shape: 'circle',
         cellColor: '#abc',
         membraneColor: '#123',
-        childModelId: 'child',
+        childModelId: 'external-rmm:graph-2:world',
+        externalRmmLink: {
+          id: 'external-rmm:graph-2:world',
+          diagramId: 'graph-2',
+          diagramTitle: 'Graph Two',
+          nodeLabel: 'world',
+        },
       },
     ],
   ]),
@@ -72,8 +86,18 @@ describe('projectBundle round-trip', () => {
     expect(r.grid).toEqual({ enabled: true, snap: true, sizePercent: 5 })
     expect(r.nodes.size).toBe(2)
     expect(r.nodes.get('n1')?.label).toBe('hello')
-    expect(r.nodes.get('n1')?.mpdDimensions).toEqual(['root', 'mpd_x'])
-    expect(r.nodes.get('n2')?.childModelId).toBe('child')
+    expect(r.nodes.get('n1')?.mpdDimensions).toEqual(['root', 'mpd_x', 'external:graph-2:hello'])
+    expect(r.nodes.get('n1')?.externalMpdLinks?.['external:graph-2:hello']).toMatchObject({
+      diagramId: 'graph-2',
+      diagramTitle: 'Graph Two',
+      nodeLabel: 'hello',
+    })
+    expect(r.nodes.get('n2')?.childModelId).toBe('external-rmm:graph-2:world')
+    expect(r.nodes.get('n2')?.externalRmmLink).toMatchObject({
+      diagramId: 'graph-2',
+      diagramTitle: 'Graph Two',
+      nodeLabel: 'world',
+    })
     expect(r.edges.size).toBe(1)
     expect(r.edges.get('e1')).toMatchObject({ from: 'n1', to: 'n2', color: '#444', width: 0.2 })
     expect(r.crossLinks).toEqual(root.crossLinks)
@@ -238,5 +262,46 @@ describe('projectBundle round-trip', () => {
     expect(node.audioCoverSrc).toMatch(/^blob:/)
     expect(getMediaBlob(node.mediaSrc!)?.type).toBe('image/png')
     expect(getMediaBlob(node.audioCoverSrc!)?.type).toBe('image/jpeg')
+  })
+
+  it('writes shared media blobs once per bundle export', async () => {
+    clearMediaStore()
+    const imageUrl = await storeMediaBlob(new Blob([new Uint8Array([9, 8, 7])], { type: 'image/png' }))
+    const root = mkModel('root', 'Shared Media')
+    root.nodes.set('m1', {
+      id: 'm1',
+      x: 10,
+      y: 10,
+      w: 8,
+      h: 8,
+      label: '',
+      shape: 'rounded-rect',
+      cellColor: '#fff',
+      membraneColor: '#000',
+      mediaType: 'image',
+      mediaSrc: imageUrl,
+      mediaFileName: 'shared.png',
+    })
+    root.nodes.set('m2', {
+      id: 'm2',
+      x: 20,
+      y: 10,
+      w: 8,
+      h: 8,
+      label: '',
+      shape: 'rounded-rect',
+      cellColor: '#fff',
+      membraneColor: '#000',
+      mediaType: 'image',
+      mediaSrc: imageUrl,
+      mediaFileName: 'shared.png',
+    })
+
+    const zip = await JSZip.loadAsync(await exportBundle({ rootModelId: 'root', models: new Map([['root', root]]) }))
+    const mediaEntries = Object.keys(zip.files).filter((path) => path.startsWith('media/') && !zip.files[path].dir)
+    expect(mediaEntries).toHaveLength(1)
+    const project = JSON.parse(await zip.file('project.json')!.async('string')) as { models: { root: { nodes: Array<{ id: string; mediaSrc?: string }> } } }
+    const mediaNodes = project.models.root.nodes.filter((node) => node.id === 'm1' || node.id === 'm2')
+    expect(new Set(mediaNodes.map((node) => node.mediaSrc))).toEqual(new Set(mediaEntries))
   })
 })

@@ -111,6 +111,60 @@ describe('applyAcceptedProposal', () => {
     expect(model.edges.get('edge-ab')).toMatchObject({ from: a, to: 'b', label: 'supports' })
   })
 
+  it('applies rich node and connection snapshots plus update steps', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
+    const b = useOmniStore.getState().addNode({ id: 'b', x: 10, y: 0, label: 'B' })
+    const edge = useOmniStore.getState().addEdge(a, b)!
+    const proposal = makeProposal('rich', {
+      action: 'chain',
+      steps: [
+        {
+          action: 'add-node',
+          nodeId: 'media-node',
+          newNodeLabel: 'Clip',
+          node: {
+            id: 'media-node',
+            label: 'Clip',
+            x: 20,
+            y: 20,
+            w: 14,
+            h: 10,
+            shape: 'rounded-rect',
+            cellColor: '#101010',
+            membraneColor: '#facc15',
+            mediaType: 'video',
+            mediaSrc: 'media/clip.mp4',
+            mediaFileName: 'clip.mp4',
+          },
+        },
+        {
+          action: 'update-node-settings',
+          nodeId: a,
+          after: { shape: 'diamond', cellColor: '#ffeeaa', textFormats: [{ start: 0, end: 1, color: '#f00' }] },
+        },
+        {
+          action: 'update-flow-effects',
+          nodeId: a,
+          after: { flowEffects: [{ id: 'fx1', label: 'FX', graph: { nodes: [], edges: [] } }], linkedNodeIds: [b] },
+          crossLinksAfter: [{ id: 'xl1', from: { nodeId: a, effectId: 'fx1' }, to: { nodeId: b, effectId: 'fx2' } }],
+        },
+        {
+          action: 'update-edge-settings',
+          edgeId: edge,
+          after: { kind: 'default', dash: 'dashed', arrowStyle: 'circle', cameraTracked: true },
+        },
+      ],
+    })
+
+    expect(applyAcceptedProposal(proposal)).toEqual({ status: 'applied' })
+    const model = useOmniStore.getState().model
+    expect(model.nodes.get('media-node')).toMatchObject({ mediaType: 'video', mediaSrc: 'media/clip.mp4', cellColor: '#101010' })
+    expect(model.nodes.get(a)).toMatchObject({ shape: 'diamond', cellColor: '#ffeeaa', linkedNodeIds: [b] })
+    expect(model.nodes.get(a)?.flowEffects?.[0]?.label).toBe('FX')
+    expect(model.crossLinks).toHaveLength(1)
+    expect(model.edges.get(edge)).toMatchObject({ kind: 'default', dash: 'dashed', arrowStyle: 'circle', cameraTracked: true })
+  })
+
   it('blocks invalid chains atomically without mutating the store', () => {
     useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
     const proposal = makeProposal('chain-bad', {
@@ -139,6 +193,25 @@ describe('applyAcceptedProposal', () => {
     expect(rmmId).toBeTruthy()
     expect(useOmniStore.getState().models.get(rmmId ?? '')?.name).toBe('A detail')
 
+    const b = useOmniStore.getState().addNode({ id: 'b', x: 12, y: 0, label: 'B' })
+    expect(applyAcceptedProposal(makeProposal('rmm-external', {
+      action: 'add-rmm',
+      nodeId: b,
+      name: 'Linked RMM graph',
+      externalLink: {
+        id: 'external-rmm:linked-graph:b',
+        diagramId: 'linked-graph',
+        diagramTitle: 'Linked RMM graph',
+        nodeLabel: 'B',
+      },
+    }))).toEqual({ status: 'applied' })
+    expect(useOmniStore.getState().model.nodes.get(b)?.childModelId).toBe('external-rmm:linked-graph:b')
+    expect(useOmniStore.getState().model.nodes.get(b)?.externalRmmLink).toMatchObject({
+      diagramId: 'linked-graph',
+      diagramTitle: 'Linked RMM graph',
+      nodeLabel: 'B',
+    })
+
     expect(applyAcceptedProposal(makeProposal('mpd', {
       action: 'add-mpd',
       nodeId: a,
@@ -147,6 +220,25 @@ describe('applyAcceptedProposal', () => {
     const dims = useOmniStore.getState().model.nodes.get(a)?.mpdDimensions ?? []
     expect(dims.length).toBe(2)
     expect(useOmniStore.getState().models.get(dims[1])?.name).toBe('A alternate')
+
+    expect(applyAcceptedProposal(makeProposal('mpd-external', {
+      action: 'add-mpd',
+      nodeId: a,
+      name: 'Linked graph',
+      externalLink: {
+        id: 'external:linked-graph:a',
+        diagramId: 'linked-graph',
+        diagramTitle: 'Linked graph',
+        nodeLabel: 'A',
+      },
+    }))).toEqual({ status: 'applied' })
+    const node = useOmniStore.getState().model.nodes.get(a)
+    expect(node?.mpdDimensions).toContain('external:linked-graph:a')
+    expect(node?.externalMpdLinks?.['external:linked-graph:a']).toMatchObject({
+      diagramId: 'linked-graph',
+      diagramTitle: 'Linked graph',
+      nodeLabel: 'A',
+    })
   })
 
   it('previews a proposal against a project baseline including created child models', () => {

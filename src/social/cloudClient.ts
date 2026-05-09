@@ -33,6 +33,13 @@ export interface DiagramDetail extends DiagramSummary {
   bundleBase64?: string
 }
 
+export interface DiagramSuggestion {
+  kind: 'last-visited' | 'most-popular' | 'personalized'
+  title: string
+  reason: string
+  diagram?: DiagramSummary
+}
+
 export interface CreativeDiagramSummary extends DiagramSummary {
   visibility: 'private'
   ownerUserId: string
@@ -167,6 +174,30 @@ export async function searchCloudDiagrams(query: string): Promise<DiagramSummary
   return Array.isArray(body.diagrams) ? body.diagrams : []
 }
 
+export async function listDiagramSuggestions(): Promise<DiagramSuggestion[]> {
+  const res = await fetch('/api/diagrams/suggestions', { headers: authHeaders() })
+  if (!res.ok) throw new Error(`Suggestions failed (${res.status})`)
+  const body = await res.json() as { suggestions?: DiagramSuggestion[] }
+  return Array.isArray(body.suggestions) ? body.suggestions : []
+}
+
+export async function listMpdCandidates(input: {
+  nodeLabel: string
+  query: string
+  excludeDiagramId?: string
+}): Promise<DiagramSummary[]> {
+  const params = new URLSearchParams()
+  params.set('nodeLabel', input.nodeLabel)
+  params.set('q', input.query)
+  if (input.excludeDiagramId) params.set('excludeDiagramId', input.excludeDiagramId)
+  const res = await fetch(`/api/diagrams/mpd-candidates?${params.toString()}`)
+  if (!res.ok) throw new Error(`MPD candidates failed (${res.status})`)
+  const body = await res.json() as { diagrams?: DiagramSummary[] }
+  return Array.isArray(body.diagrams) ? body.diagrams : []
+}
+
+export const listGraphLinkCandidates = listMpdCandidates
+
 export interface DiagramCreateInput {
   title: string
   topic?: string
@@ -185,7 +216,7 @@ export async function createCloudDiagram(input: string | DiagramCreateInput): Pr
 }
 
 export async function getCloudDiagram(id: string): Promise<DiagramDetail> {
-  const res = await fetch(`/api/diagrams/${encodeURIComponent(id)}`)
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(id)}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`Diagram load failed (${res.status})`)
   return await res.json() as DiagramDetail
 }

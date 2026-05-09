@@ -29,6 +29,7 @@ import { EditorToolbar } from '../ui/EditorToolbar'
 import { ConnectionReferencePopup } from '../ui/ConnectionReferencePopup'
 import { RichNodeOverlay } from '../ui/RichNodeOverlay'
 import { MpdDial } from '../mpd/MpdDial'
+import { resolveMpdOptions, switchMpdDimension } from '../mpd/externalMpdRuntime'
 import { clientToScene, SCENE_H, SCENE_W } from '../scene/sceneConstants'
 import type { GridSettings, ModelNode, NodeShape } from '../model/types'
 import { DEFAULT_GRID, DEFAULT_NODE } from '../model/types'
@@ -381,11 +382,18 @@ export function OmnigramApp({
           initialCollapsed={!isCreative}
         />
       )}
-      {graphMounted && showSidebars && <RightSidebar renderer={renderer} variant={isCreative ? 'default' : 'public'} initialCollapsed={!isCreative} />}
+      {graphMounted && showSidebars && (
+        <RightSidebar
+          renderer={renderer}
+          variant={isCreative ? 'default' : 'public'}
+          initialCollapsed={!isCreative}
+          diagramId={cloudDiagramId}
+        />
+      )}
       {showPublicSidebars && !showSidebars && (
         <>
           <LeftSidebar variant="public" initialCollapsed />
-          <RightSidebar renderer={renderer} variant="public" initialCollapsed />
+          <RightSidebar renderer={renderer} variant="public" initialCollapsed diagramId={cloudDiagramId} />
         </>
       )}
       {graphMounted && <ConnectionReferencePopup renderer={renderer} />}
@@ -1176,33 +1184,23 @@ function MpdDialOverlay({ renderer }: { renderer: SceneRenderer | null }) {
   const sourceNode = state.model.nodes.get(sourceId)
   const dims = sourceNode?.mpdDimensions
   if (!sourceNode || !dims || dims.length < 2) return null
-  const options = dims
-    .map((id) => {
-      const m = state.models.get(id)
-      return m ? { id, label: m.name } : null
-    })
-    .filter((x): x is { id: string; label: string } => x !== null)
+  const options = resolveMpdOptions(sourceNode, state.models)
   if (options.length < 2) return null
   const activeIndex = Math.max(0, options.findIndex((o) => o.id === state.model.id))
 
   const handleSelect = (idx: number, direction: 'left' | 'right') => {
-    const target = options[idx].id
-    if (target === state.model.id) return
-    const targetModel = state.models.get(target)
-    if (!targetModel) return
-    const oldNode = state.model.nodes.get(sourceId)
-    const twin = targetModel.nodes.get(sourceId)
-    if (!oldNode || !twin) return
-    // Camera adjust so the twin lands at the source's prior screen position.
-    const dx = ((oldNode.x - twin.x) / 100) * SCENE_W
-    const dy = ((oldNode.y - twin.y) / 100) * SCENE_H
-
-    renderer.beginMpdCurtain()
-    const store = useOmniStore.getState()
-    store.setActiveModel(target)
-    const cam = store.camera
-    store.setCamera({ panX: cam.panX + dx, panY: cam.panY + dy })
-    renderer.playMpdCurtain(direction, 500)
+    const option = options[idx]
+    if (!option) return
+    void switchMpdDimension(
+      sourceId,
+      option,
+      direction,
+      {
+        begin: () => renderer.beginMpdCurtain(),
+        play: (dir, duration) => renderer.playMpdCurtain(dir, duration),
+      },
+      500,
+    )
   }
 
   return (

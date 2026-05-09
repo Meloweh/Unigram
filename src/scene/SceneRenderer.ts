@@ -38,6 +38,8 @@ import type { CrossEffectLink } from '../model/types'
 import { proposalSteps, type EntitySocialScores, type GraphProposal, type GraphProposalAction, type TransformProposalEntry } from '../social/forumTypes'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
 import { NODE_FONT_FAMILY, NODE_FONT_SIZE, NODE_LABEL_FILL, NODE_STROKE_WIDTH, nodeFillGradient } from './nodeStyle'
+import { resolveMpdOptions, switchMpdDimension } from '../mpd/externalMpdRuntime'
+import { ensureExternalRmmChild } from '../rmm/externalRmmRuntime'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -545,18 +547,24 @@ export class SceneRenderer {
     // node's `mpdDimensions` by `direction` (+1 next, -1 prev) and runs
     // the curtain. Each fires once per task activation.
     this.flow.onHandoffRmm = (targetId) => {
-      const store = useOmniStore.getState()
-      // Seed selection on the host so rmmZoomStep('in') picks it as focus.
-      if (!store.focusedNodeId) store.select(targetId)
-      // Walk the dial in until handoff fires (the store no-ops once the
-      // child is unavailable or the swap completes).
-      for (let i = 0; i < 32; i++) {
-        const before = useOmniStore.getState().model.id
-        useOmniStore.getState().rmmZoomStep('in')
-        const after = useOmniStore.getState()
-        if (after.model.id !== before) return // handoff completed
-        if (after.zoom.progress >= 0.999 && before === after.model.id) return
+      const runHandoff = () => {
+        const store = useOmniStore.getState()
+        if (!store.focusedNodeId) store.select(targetId)
+        for (let i = 0; i < 32; i++) {
+          const before = useOmniStore.getState().model.id
+          useOmniStore.getState().rmmZoomStep('in')
+          const after = useOmniStore.getState()
+          if (after.model.id !== before) return
+          if (after.zoom.progress >= 0.999 && before === after.model.id) return
+        }
       }
+      const store = useOmniStore.getState()
+      const node = store.model.nodes.get(targetId)
+      if (node?.externalRmmLink && node.childModelId && !store.models.has(node.childModelId)) {
+        void ensureExternalRmmChild(targetId).then(runHandoff)
+        return
+      }
+      runHandoff()
     }
     this.flow.onReturnRmm = () => {
       const store = useOmniStore.getState()
@@ -572,24 +580,17 @@ export class SceneRenderer {
     this.flow.onHandoffMpd = (targetId, params) => {
       const store = useOmniStore.getState()
       const node = store.model.nodes.get(targetId)
-      const dims = node?.mpdDimensions
-      if (!node || !dims || dims.length < 2) return
-      const curIdx = dims.indexOf(store.model.id)
+      if (!node) return
+      const options = resolveMpdOptions(node, store.models)
+      if (options.length < 2) return
+      const curIdx = options.findIndex((option) => option.id === store.model.id)
       const dir = (params.direction ?? 1) >= 0 ? 1 : -1
-      const nextIdx = ((curIdx < 0 ? 0 : curIdx) + dir + dims.length) % dims.length
-      const target = dims[nextIdx]
-      if (target === store.model.id) return
-      const targetModel = store.models.get(target)
-      const twin = targetModel?.nodes.get(targetId)
-      if (!targetModel || !twin) return
-      const dx = ((node.x - twin.x) / 100) * SCENE_W
-      const dy = ((node.y - twin.y) / 100) * SCENE_H
-      this.beginMpdCurtain()
-      store.setActiveModel(target)
-      const cam = useOmniStore.getState().camera
-      useOmniStore.getState().setCamera({ panX: cam.panX + dx, panY: cam.panY + dy })
+      const nextIdx = ((curIdx < 0 ? 0 : curIdx) + dir + options.length) % options.length
       const direction: 'left' | 'right' = dir > 0 ? 'right' : 'left'
-      this.playMpdCurtain(direction, Math.max(50, params.ms ?? 500))
+      void switchMpdDimension(targetId, options[nextIdx], direction, {
+        begin: () => this.beginMpdCurtain(),
+        play: (curtainDirection, duration) => this.playMpdCurtain(curtainDirection, duration),
+      }, Math.max(50, params.ms ?? 500))
     }
     // Bridge spawn / spawn-circular ephemeral decorations.
     this.flow.onSpawn = (targetId, params, effectNodeId, spawnItems) => {
@@ -2009,7 +2010,10 @@ export class SceneRenderer {
           break
         }
         case 'add-rmm':
-        case 'add-mpd': {
+        case 'add-mpd':
+        case 'update-node-settings':
+        case 'update-node-media':
+        case 'update-flow-effects': {
           const node = this.model.nodes.get(step.nodeId)
           if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
           break
@@ -2024,6 +2028,7 @@ export class SceneRenderer {
         case 'rename-edge':
         case 'add-reference':
         case 'modify-references':
+        case 'update-edge-settings':
         case 'rewire-edge': {
           const edge = this.model.edges.get(step.edgeId)
           if (!edge) break
@@ -3659,6 +3664,10 @@ function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' |
     case 'rename-edge':
     case 'add-reference':
     case 'modify-references':
+    case 'update-node-settings':
+    case 'update-node-media':
+    case 'update-flow-effects':
+    case 'update-edge-settings':
       return 'rename'
     case 'rewire-edge':
     case 'commit-transform':

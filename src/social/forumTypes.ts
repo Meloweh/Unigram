@@ -1,4 +1,4 @@
-import type { Connection, ConnectionReference, Model, ModelNode } from '../model/types'
+import type { Connection, ConnectionReference, CrossEffectLink, ExternalMpdLink, ExternalRmmLink, Model, ModelNode } from '../model/types'
 import type { BackgroundConfig, ThemeMode } from '../theme/types'
 
 export type ForumRef =
@@ -26,6 +26,10 @@ export type GraphProposalAction =
   | 'commit-transform'
   | 'add-reference'
   | 'modify-references'
+  | 'update-node-settings'
+  | 'update-node-media'
+  | 'update-flow-effects'
+  | 'update-edge-settings'
   | 'chain'
 
 export interface NodeGeometry {
@@ -41,6 +45,8 @@ export interface TransformProposalEntry {
   to: NodeGeometry
 }
 
+export type EntityPatch<T extends object> = Partial<{ [K in keyof T]: T[K] | null }>
+
 export type GraphProposalStep =
   | {
     action: 'add-node'
@@ -48,8 +54,19 @@ export type GraphProposalStep =
     nodeId?: string
     geometry?: NodeGeometry
     shape?: ModelNode['shape']
+    node?: ModelNode
   }
-  | { action: 'add-node-edge'; sourceNodeId: string; newNodeLabel: string; nodeId?: string; edgeId?: string; geometry?: NodeGeometry; shape?: ModelNode['shape'] }
+  | {
+    action: 'add-node-edge'
+    sourceNodeId: string
+    newNodeLabel: string
+    nodeId?: string
+    edgeId?: string
+    geometry?: NodeGeometry
+    shape?: ModelNode['shape']
+    node?: ModelNode
+    edge?: Connection
+  }
   | {
     action: 'add-edge'
     sourceNodeId: string
@@ -58,9 +75,10 @@ export type GraphProposalStep =
     label?: string
     references?: ConnectionReference[]
     style?: Partial<Pick<Connection, 'kind' | 'dash' | 'arrowStyle' | 'color' | 'width' | 'labelFontSize' | 'cameraTracked'>>
+    edge?: Connection
   }
-  | { action: 'add-rmm'; nodeId: string; name: string }
-  | { action: 'add-mpd'; nodeId: string; name: string }
+  | { action: 'add-rmm'; nodeId: string; name: string; externalLink?: ExternalRmmLink }
+  | { action: 'add-mpd'; nodeId: string; name: string; externalLink?: ExternalMpdLink }
   | { action: 'remove-edge'; edgeId: string }
   | { action: 'remove-node'; nodeId: string }
   | { action: 'rename-node'; nodeId: string; nextLabel: string }
@@ -69,6 +87,17 @@ export type GraphProposalStep =
   | { action: 'commit-transform'; transforms: TransformProposalEntry[] }
   | { action: 'add-reference'; edgeId: string; reference: ConnectionReference }
   | { action: 'modify-references'; edgeId: string; references: ConnectionReference[] }
+  | { action: 'update-node-settings'; nodeId: string; before?: EntityPatch<ModelNode>; after: EntityPatch<ModelNode> }
+  | { action: 'update-node-media'; nodeId: string; before?: EntityPatch<ModelNode>; after: EntityPatch<ModelNode> }
+  | {
+    action: 'update-flow-effects'
+    nodeId: string
+    before?: EntityPatch<ModelNode>
+    after: EntityPatch<ModelNode>
+    crossLinksBefore?: CrossEffectLink[]
+    crossLinksAfter?: CrossEffectLink[]
+  }
+  | { action: 'update-edge-settings'; edgeId: string; before?: EntityPatch<Connection>; after: EntityPatch<Connection> }
 
 export type GraphProposalPayload =
   | GraphProposalStep
@@ -238,6 +267,10 @@ export function proposalActionLabel(proposal: Pick<GraphProposal, 'action'> | Gr
     case 'commit-transform': return 'Commit transform'
     case 'add-reference': return 'Add reference'
     case 'modify-references': return 'Modify references'
+    case 'update-node-settings': return 'Update node settings'
+    case 'update-node-media': return 'Update node media'
+    case 'update-flow-effects': return 'Update flow effects'
+    case 'update-edge-settings': return 'Update connection settings'
     case 'chain': return 'Change chain'
   }
 }
@@ -270,6 +303,9 @@ export function proposalNodeTarget(proposal: GraphProposal, model: Model): Model
       return model.nodes.get(step.sourceNodeId) ?? null
     case 'add-rmm':
     case 'add-mpd':
+    case 'update-node-settings':
+    case 'update-node-media':
+    case 'update-flow-effects':
       return model.nodes.get(step.nodeId) ?? null
     case 'remove-node':
     case 'rename-node':
@@ -280,6 +316,7 @@ export function proposalNodeTarget(proposal: GraphProposal, model: Model): Model
     case 'rename-edge':
     case 'add-reference':
     case 'modify-references':
+    case 'update-edge-settings':
     case 'rewire-edge': {
       const edge = model.edges.get(step.edgeId)
       return edge ? model.nodes.get(edge.from) ?? model.nodes.get(edge.to) ?? null : null
@@ -295,6 +332,7 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
       case 'add-reference':
       case 'modify-references':
       case 'rewire-edge':
+      case 'update-edge-settings':
       case 'add-edge':
         return true
       default:
@@ -308,6 +346,7 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
     case 'add-reference':
     case 'modify-references':
     case 'rewire-edge':
+    case 'update-edge-settings':
       return model.edges.get(step.edgeId) ?? null
     case 'add-edge':
       return findEdgeBetween(model, step.sourceNodeId, step.targetNodeId)
@@ -315,6 +354,9 @@ export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Conne
     case 'add-node':
     case 'add-rmm':
     case 'add-mpd':
+    case 'update-node-settings':
+    case 'update-node-media':
+    case 'update-flow-effects':
     case 'remove-node':
     case 'rename-node':
     case 'commit-transform':
