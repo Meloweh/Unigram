@@ -26,6 +26,7 @@ export type GraphProposalAction =
   | 'commit-transform'
   | 'add-reference'
   | 'modify-references'
+  | 'chain'
 
 export interface NodeGeometry {
   x: number
@@ -40,10 +41,24 @@ export interface TransformProposalEntry {
   to: NodeGeometry
 }
 
-export type GraphProposalPayload =
-  | { action: 'add-node'; newNodeLabel: string }
-  | { action: 'add-node-edge'; sourceNodeId: string; newNodeLabel: string }
-  | { action: 'add-edge'; sourceNodeId: string; targetNodeId: string; label?: string; references?: ConnectionReference[] }
+export type GraphProposalStep =
+  | {
+    action: 'add-node'
+    newNodeLabel: string
+    nodeId?: string
+    geometry?: NodeGeometry
+    shape?: ModelNode['shape']
+  }
+  | { action: 'add-node-edge'; sourceNodeId: string; newNodeLabel: string; nodeId?: string; edgeId?: string; geometry?: NodeGeometry; shape?: ModelNode['shape'] }
+  | {
+    action: 'add-edge'
+    sourceNodeId: string
+    targetNodeId: string
+    edgeId?: string
+    label?: string
+    references?: ConnectionReference[]
+    style?: Partial<Pick<Connection, 'kind' | 'dash' | 'arrowStyle' | 'color' | 'width' | 'labelFontSize' | 'cameraTracked'>>
+  }
   | { action: 'add-rmm'; nodeId: string; name: string }
   | { action: 'add-mpd'; nodeId: string; name: string }
   | { action: 'remove-edge'; edgeId: string }
@@ -54,6 +69,10 @@ export type GraphProposalPayload =
   | { action: 'commit-transform'; transforms: TransformProposalEntry[] }
   | { action: 'add-reference'; edgeId: string; reference: ConnectionReference }
   | { action: 'modify-references'; edgeId: string; references: ConnectionReference[] }
+
+export type GraphProposalPayload =
+  | GraphProposalStep
+  | { action: 'chain'; steps: GraphProposalStep[] }
 
 export interface GraphProposal {
   id: string
@@ -219,45 +238,79 @@ export function proposalActionLabel(proposal: Pick<GraphProposal, 'action'> | Gr
     case 'commit-transform': return 'Commit transform'
     case 'add-reference': return 'Add reference'
     case 'modify-references': return 'Modify references'
+    case 'chain': return 'Change chain'
   }
 }
 
+export function proposalSteps(payload: GraphProposalPayload): GraphProposalStep[] {
+  return payload.action === 'chain' ? payload.steps : [payload]
+}
+
+export function proposalContainsAction(payload: GraphProposalPayload, action: GraphProposalAction): boolean {
+  if (payload.action === action) return true
+  return payload.action === 'chain' && payload.steps.some((step) => step.action === action)
+}
+
 export function proposalNodeTarget(proposal: GraphProposal, model: Model): ModelNode | null {
-  switch (proposal.payload.action) {
+  const step = proposalSteps(proposal.payload).find((item) => {
+    switch (item.action) {
+      case 'add-node':
+      case 'commit-transform':
+        return false
+      default:
+        return true
+    }
+  })
+  if (!step) return null
+  switch (step.action) {
     case 'add-node':
     case 'commit-transform':
       return null
     case 'add-node-edge':
-      return model.nodes.get(proposal.payload.sourceNodeId) ?? null
+      return model.nodes.get(step.sourceNodeId) ?? null
     case 'add-rmm':
     case 'add-mpd':
-      return model.nodes.get(proposal.payload.nodeId) ?? null
+      return model.nodes.get(step.nodeId) ?? null
     case 'remove-node':
     case 'rename-node':
-      return model.nodes.get(proposal.payload.nodeId) ?? null
+      return model.nodes.get(step.nodeId) ?? null
     case 'add-edge':
-      return model.nodes.get(proposal.payload.sourceNodeId) ?? model.nodes.get(proposal.payload.targetNodeId) ?? null
+      return model.nodes.get(step.sourceNodeId) ?? model.nodes.get(step.targetNodeId) ?? null
     case 'remove-edge':
     case 'rename-edge':
     case 'add-reference':
     case 'modify-references':
     case 'rewire-edge': {
-      const edge = model.edges.get(proposal.payload.edgeId)
+      const edge = model.edges.get(step.edgeId)
       return edge ? model.nodes.get(edge.from) ?? model.nodes.get(edge.to) ?? null : null
     }
   }
 }
 
 export function proposalEdgeTarget(proposal: GraphProposal, model: Model): Connection | null {
-  switch (proposal.payload.action) {
+  const step = proposalSteps(proposal.payload).find((item) => {
+    switch (item.action) {
+      case 'remove-edge':
+      case 'rename-edge':
+      case 'add-reference':
+      case 'modify-references':
+      case 'rewire-edge':
+      case 'add-edge':
+        return true
+      default:
+        return false
+    }
+  })
+  if (!step) return null
+  switch (step.action) {
     case 'remove-edge':
     case 'rename-edge':
     case 'add-reference':
     case 'modify-references':
     case 'rewire-edge':
-      return model.edges.get(proposal.payload.edgeId) ?? null
+      return model.edges.get(step.edgeId) ?? null
     case 'add-edge':
-      return findEdgeBetween(model, proposal.payload.sourceNodeId, proposal.payload.targetNodeId)
+      return findEdgeBetween(model, step.sourceNodeId, step.targetNodeId)
     case 'add-node-edge':
     case 'add-node':
     case 'add-rmm':

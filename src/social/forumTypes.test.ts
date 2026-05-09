@@ -6,6 +6,8 @@ import {
   nodeForumRef,
   parseForumRef,
   proposalActionLabel,
+  proposalContainsAction,
+  proposalSteps,
   resolveExpiredProposalStatus,
   type ForumComment,
   type GraphProposal,
@@ -52,5 +54,21 @@ describe('forumTypes', () => {
     expect(proposalActionLabel({ action: 'rewire-edge' })).toBe('Rewire connection')
     expect(proposalActionLabel({ action: 'commit-transform' })).toBe('Commit transform')
     expect(proposalActionLabel({ action: 'add-reference' })).toBe('Add reference')
+    expect(proposalActionLabel({ action: 'chain' })).toBe('Change chain')
+  })
+
+  it('flattens legacy single proposals and chained proposals', () => {
+    const single = { action: 'add-node' as const, newNodeLabel: 'Solo' }
+    const chain = {
+      action: 'chain' as const,
+      steps: [
+        single,
+        { action: 'commit-transform' as const, transforms: [] },
+      ],
+    }
+    expect(proposalSteps(single)).toEqual([single])
+    expect(proposalSteps(chain)).toEqual(chain.steps)
+    expect(proposalContainsAction(chain, 'commit-transform')).toBe(true)
+    expect(proposalContainsAction(chain, 'add-edge')).toBe(false)
   })
 })

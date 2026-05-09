@@ -57,8 +57,16 @@ const MEDIA: MediaEntry[] = [
   { id: 'math', label: 'Math', icon: '∑' },
 ]
 
-export function LeftSidebar({ header }: { header?: React.ReactNode } = {}) {
-  const [collapsed, setCollapsed] = useState(false)
+export function LeftSidebar({
+  header,
+  initialCollapsed = false,
+  variant = 'default',
+}: {
+  header?: React.ReactNode
+  initialCollapsed?: boolean
+  variant?: 'default' | 'public' | 'creative'
+} = {}) {
+  const [collapsed, setCollapsed] = useState(initialCollapsed)
   // Open sections are tracked as a Set so toggling one section never closes
   // another (parity with legacy: each header is independently expandable).
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(['nodes']))
@@ -106,7 +114,7 @@ export function LeftSidebar({ header }: { header?: React.ReactNode } = {}) {
 
   // Single persistent shell so the collapse/expand width transition runs.
   return (
-    <div style={shellStyle('left', collapsed)}>
+    <div style={shellStyle('left', collapsed, variant)}>
       <div style={animatedContentStyle(collapsed)}>
         {header}
         <div style={titleStyle}>Components</div>
@@ -342,13 +350,15 @@ const scaled = (px: number) => `calc(${px}px * var(--ug-ui-scale))`
  * the inner edge: render order is content → toggle for both sides via the
  * `flex-direction` trick (left = row, right = row-reverse).
  */
-export function shellStyle(side: 'left' | 'right', collapsed = false): React.CSSProperties {
+export function shellStyle(side: 'left' | 'right', collapsed = false, variant: 'default' | 'public' | 'creative' = 'default'): React.CSSProperties {
   const expandedW = side === 'left' ? 176 : SIDEBAR_EXPANDED_W
+  const top = variant === 'public' ? '392px' : variant === 'creative' ? '304px' : 0
+  const bottom = variant === 'public' || variant === 'creative' ? '24px' : 0
   return {
     position: 'absolute',
     [side]: 0,
-    top: 0,
-    bottom: 0,
+    top,
+    bottom,
     width: collapsed ? scaled(19) : scaled(expandedW),
     background: 'var(--ug-glass-strong)',
     backdropFilter: 'blur(10px)',

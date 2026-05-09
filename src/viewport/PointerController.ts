@@ -18,8 +18,8 @@ import { Graphics } from 'pixi.js'
 import { clientToScene } from '../scene/sceneConstants'
 import type { ResizeHandleDir, SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
-import { getSocialEdgeDraftCount, registerSocialEdgeDraft } from '../social/graphDraft'
-import { getTransformDraftCount, markTransformDraftTouched } from '../social/transformDraft'
+import { registerSocialEdgeDraft } from '../social/graphDraft'
+import { markTransformDraftTouched } from '../social/transformDraft'
 
 interface ActiveDrag {
   kind: 'pan' | 'node' | 'connect' | 'box' | 'tip' | 'resize'
@@ -128,7 +128,6 @@ export class PointerController {
     if (resizeHit) {
       const node = useOmniStore.getState().model.nodes.get(resizeHit.id)
       if (!node || node.locked) return
-      if (this.socialDrafts && getSocialEdgeDraftCount() > 0) return
       this.active = {
         kind: 'resize',
         pointerId: e.pointerId,
@@ -222,7 +221,6 @@ export class PointerController {
       } else if (!store.selectedIds.has(hitId)) {
         store.select(hitId, false)
       }
-      if (this.socialDrafts && getSocialEdgeDraftCount() > 0) return
       // Build baselines for whatever is selected now (post-select). Locked
       // nodes are skipped (legacy parity: locked nodes refuse drag and
       // untangle).
@@ -447,12 +445,7 @@ export class PointerController {
       const nextNodes = a.additive && a.baseSelection ? new Set(a.baseSelection) : new Set<string>()
       const nextEdges = a.additive && a.baseEdgeSelection ? new Set(a.baseEdgeSelection) : new Set<string>()
       for (let i = 0; i < nodeHits.length; i++) nextNodes.add(nodeHits[i])
-      const model = useOmniStore.getState().model
-      for (let i = 0; i < edgeHits.length; i++) {
-        const edge = model.edges.get(edgeHits[i])
-        if (edge && nextNodes.has(edge.from) && nextNodes.has(edge.to)) continue
-        nextEdges.add(edgeHits[i])
-      }
+      for (let i = 0; i < edgeHits.length; i++) nextEdges.add(edgeHits[i])
       useOmniStore.getState().selectMany(nextNodes, nextEdges)
       return
     }
@@ -467,10 +460,6 @@ export class PointerController {
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
       if (targetId && targetId !== a.nodeId) {
-        if (
-          this.socialDrafts &&
-          (getSocialEdgeDraftCount() > 0 || getTransformDraftCount(useOmniStore.getState().model.id) > 0)
-        ) return
         const kind = useOmniStore.getState().defaultConnectionKind
         const edgeId = useOmniStore.getState().addEdge(
           a.nodeId,

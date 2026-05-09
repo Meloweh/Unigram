@@ -14,6 +14,7 @@ import {
   type DiagramSummary,
 } from './social/cloudClient'
 import { clearSocialEdgeDrafts } from './social/graphDraft'
+import { capturePublicGraphBaseline } from './social/publicGraphDraft'
 import { captureTransformBaseline } from './social/transformDraft'
 import './App.css'
 
@@ -29,6 +30,7 @@ function App() {
     const snapshot = await snapshotFromDetail(detail)
     useOmniStore.getState().loadProject(snapshot)
     clearSocialEdgeDrafts()
+    capturePublicGraphBaseline(snapshot)
     captureTransformBaseline(snapshot)
     centerCameraOnOldestNode(snapshot)
     setRoute({
@@ -75,7 +77,7 @@ function App() {
         creativeDiagramId={route.id}
         sourceDiagramTitle={route.sourceTitle}
         onHome={() => setRoute({ kind: 'home' })}
-        onViewGraph={() => void openPublicById(route.sourceDiagramId)}
+        onViewGraph={() => openPublicById(route.sourceDiagramId)}
         chrome={{ sidebars: true, devPanel: false, fps: true, toolbar: true }}
       />
     )

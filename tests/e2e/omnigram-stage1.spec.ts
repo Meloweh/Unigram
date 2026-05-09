@@ -45,9 +45,10 @@ test('forum curtain creates a pending graph proposal without React graph overlay
   const form = page.getByLabel('Create forum post')
   await form.getByLabel('Title').fill('Suggest a branch')
   await form.getByLabel('Description').fill('Add a new connected idea.')
-  await form.getByLabel('Suggest diagram change').check()
+  await form.getByRole('button', { name: 'Add suggested diagram change' }).click()
   await expect(form.getByLabel('Suggested action')).toHaveValue('add-node')
   await form.getByLabel('New name').fill('Alpha')
+  await form.getByRole('button', { name: 'Add change' }).click()
   await form.getByRole('button', { name: 'Post', exact: true }).click()
 
   await expect(page.getByRole('heading', { name: 'Suggest a branch' })).toBeVisible()

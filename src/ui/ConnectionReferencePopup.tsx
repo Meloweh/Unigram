@@ -1,8 +1,7 @@
 /**
  * ConnectionReferencePopup — floating panel that opens above a selected
  * connection and lets the user view / add / edit / remove citation rows.
- * Legacy parity: replaces the `unzipPopup` from
- * `src/old/ui/UnzipPopup.tsx` with a GPU-friendly edge split plus a
+ * Legacy parity: replaces the unzip popup with a GPU-friendly floating
  * three-level references panel.
  *
  * Mounted unconditionally by the app shell. Renders nothing unless exactly
@@ -10,7 +9,7 @@
  * camera + edge endpoints so it follows pan/zoom seamlessly.
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useOmniStore } from '../model/store'
 import type { ConnectionReference } from '../model/types'
 import { SCENE_H, SCENE_W } from '../scene/sceneConstants'
@@ -22,40 +21,61 @@ interface Props {
 
 const EMPTY_REF: ConnectionReference = { title: '', citation: '', url: '' }
 const UNZIP_OPEN_MS = 400
+const VOTE_BADGE_MS = 5000
+const MAX_POPUP_ZOOM_SCALE = 5
 
-function buildRevealClip(w: number, h: number, angle: number, progress: number): string {
-  const cx = w / 2
-  const cy = h / 2
-  const diag = Math.sqrt(w * w + h * h) / 2 + 24
-  const cosA = Math.cos(angle)
-  const sinA = Math.sin(angle)
-  const px = -sinA
-  const py = cosA
-  const halfAlong = diag
-  const halfPerp = diag * progress
-  const points = [
-    [cx + cosA * halfAlong + px * halfPerp, cy + sinA * halfAlong + py * halfPerp],
-    [cx + cosA * halfAlong - px * halfPerp, cy + sinA * halfAlong - py * halfPerp],
-    [cx - cosA * halfAlong - px * halfPerp, cy - sinA * halfAlong - py * halfPerp],
-    [cx - cosA * halfAlong + px * halfPerp, cy - sinA * halfAlong + py * halfPerp],
-  ]
-  return `polygon(${points.map(([x, y]) => `${x}px ${y}px`).join(', ')})`
-}
-
-function useUnzipProgress(): number {
+function useZipProgress(closing: boolean, onClosed: () => void): number {
   const [progress, setProgress] = useState(0)
+  const progressRef = useRef(0)
+  const onClosedRef = useRef(onClosed)
+
   useEffect(() => {
+    onClosedRef.current = onClosed
+  }, [onClosed])
+
+  useEffect(() => {
+    const from = progressRef.current
+    const to = closing ? 0 : 1
     const start = performance.now()
     let raf = 0
     const tick = () => {
       const t = Math.min(1, (performance.now() - start) / UNZIP_OPEN_MS)
-      setProgress(1 - (1 - t) ** 3)
+      const eased = 1 - (1 - t) ** 3
+      const next = from + (to - from) * eased
+      progressRef.current = next
+      setProgress(next)
       if (t < 1) raf = requestAnimationFrame(tick)
+      else if (closing) onClosedRef.current()
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [closing])
+  return progress
+}
+
+function useVoteBadgeAnimation(): { progress: number; alpha: number } {
+  const startedRef = useRef(0)
+  const [state, setState] = useState({ progress: 0, alpha: 0 })
+
+  useEffect(() => {
+    startedRef.current = performance.now()
+    let raf = 0
+    const tick = () => {
+      const now = performance.now()
+      const elapsed = now - startedRef.current
+      const remaining = VOTE_BADGE_MS - elapsed
+      const open = Math.min(1, Math.max(0, elapsed / 180))
+      const close = remaining < 360 ? Math.max(0, remaining / 360) : 1
+      const progress = easeOutCubic(open) * easeInOut(close)
+      const alpha = 0.94 * Math.min(1, open * 1.4) * close
+      setState({ progress, alpha })
+      if (remaining > 0) raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [])
-  return progress
+
+  return state
 }
 
 export function ConnectionReferencePopup({ renderer }: Props) {
@@ -106,6 +126,7 @@ export function ConnectionReferencePopup({ renderer }: Props) {
   const screenX = vp.width / 2 + (cam.panX + midX) * scale
   const screenY = vp.height / 2 + (cam.panY + midY) * scale
   const angle = Math.atan2(by - ay, bx - ax)
+  const popupScale = Math.max(0.9, Math.min(MAX_POPUP_ZOOM_SCALE, scale))
 
   const refs = edge.references ?? []
   const setRefs = (next: ConnectionReference[]) => {
@@ -121,6 +142,7 @@ export function ConnectionReferencePopup({ renderer }: Props) {
       x={screenX}
       y={screenY}
       angle={angle}
+      popupScale={popupScale}
       refs={refs}
       onChange={setRefs}
       onClose={close}
@@ -134,6 +156,7 @@ function ReferenceCard({
   x,
   y,
   angle,
+  popupScale,
   refs,
   onChange,
   onClose,
@@ -143,6 +166,7 @@ function ReferenceCard({
   x: number
   y: number
   angle: number
+  popupScale: number
   refs: ConnectionReference[]
   onChange: (next: ConnectionReference[]) => void
   onClose: () => void
@@ -153,12 +177,17 @@ function ReferenceCard({
   const [draft, setDraft] = useState<ConnectionReference>({ ...EMPTY_REF })
   const [level, setLevel] = useState<1 | 2 | 3>(1)
   const [size, setSize] = useState({ w: 300, h: 200 })
-  const progress = useUnzipProgress()
+  const [closing, setClosing] = useState(false)
+  const progress = useZipProgress(closing, onClose)
+  const voteBadge = useVoteBadgeAnimation()
+  const requestClose = useCallback(() => {
+    if (!closing) setClosing(true)
+  }, [closing])
   const zoomLevel = (deltaY: number) => {
     setLevel((cur) => {
       if (deltaY < 0) return cur < 3 ? ((cur + 1) as 1 | 2 | 3) : cur
       if (cur > 1) return (cur - 1) as 1 | 2 | 3
-      onClose()
+      requestClose()
       return cur
     })
   }
@@ -173,11 +202,11 @@ function ReferenceCard({
         setDraft({ ...EMPTY_REF })
         return
       }
-      onClose()
+      requestClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [adding, editingIdx, onClose])
+  }, [adding, editingIdx, requestClose])
 
   useEffect(() => {
     const el = cardRef.current
@@ -191,9 +220,9 @@ function ReferenceCard({
   }, [])
 
   useEffect(() => {
-    renderer.setConnectionPopupMetrics(edgeId, { w: size.w, h: size.h, progress })
+    renderer.setConnectionPopupMetrics(edgeId, { w: size.w * popupScale, h: size.h * popupScale, progress })
     return () => renderer.setConnectionPopupMetrics(edgeId, null)
-  }, [edgeId, progress, renderer, size.h, size.w])
+  }, [edgeId, popupScale, progress, renderer, size.h, size.w])
 
   const save = () => {
     if (!draft.title.trim()) return
@@ -206,30 +235,19 @@ function ReferenceCard({
     setAdding(false)
     setDraft({ ...EMPTY_REF })
   }
+  const settledOpen = !closing && progress >= 0.995
+  const votes = renderer.getSocialVoteBreakdown('edge', edgeId)
+  const voteOpacity = voteBadge.alpha * Math.max(0, Math.min(1, (progress - 0.82) / 0.18))
   return (
     <div
-      ref={cardRef}
-      role="dialog"
-      aria-label="Connection references"
       style={{
         position: 'absolute',
         left: x,
         top: y,
-        transform: 'translate(-50%, -50%)',
-        minWidth: 240,
-        maxWidth: 360,
-        padding: 10,
-        background: 'var(--ug-glass-strong)',
-        border: '1px solid var(--ug-border)',
-        borderRadius: 6,
-        boxShadow: '0 4px 16px var(--ug-shadow-heavy)',
-        backdropFilter: 'blur(8px)',
-        color: 'var(--ug-text)',
-        font: '12px system-ui, sans-serif',
-        zIndex: 11,
-        clipPath: buildRevealClip(size.w, size.h, angle, progress),
-        opacity: 0.2 + progress * 0.8,
+        transform: `translate(-50%, -50%) scale(${popupScale})`,
         transformOrigin: '50% 50%',
+        pointerEvents: progress < 0.08 ? 'none' : 'auto',
+        zIndex: 11,
       }}
       onWheel={(e) => {
         e.preventDefault()
@@ -238,13 +256,42 @@ function ReferenceCard({
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
+      <div
+        style={{
+          transform: settledOpen
+            ? 'none'
+            : `rotate(${angle}rad) scaleX(${Math.max(0.04, progress)})`,
+          transformOrigin: '50% 50%',
+          opacity: progress <= 0.01 ? 0 : 1,
+          willChange: settledOpen ? undefined : 'transform, opacity',
+        }}
+      >
+        <div
+          ref={cardRef}
+          role="dialog"
+          aria-label="Connection references"
+          style={{
+            transform: settledOpen ? 'none' : `rotate(${-angle}rad)`,
+            transformOrigin: '50% 50%',
+          overflow: 'hidden',
+          minWidth: 240,
+          maxWidth: 360,
+          padding: 10,
+            background: 'var(--ug-surface)',
+          border: '1px solid var(--ug-border)',
+          borderRadius: 6,
+          boxShadow: '0 4px 16px var(--ug-shadow-heavy)',
+          color: 'var(--ug-text)',
+          font: '12px system-ui, sans-serif',
+          }}
+        >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <span style={{ fontWeight: 600, color: 'var(--ug-text-heading)' }}>
           {refs.length} {refs.length === 1 ? 'reference' : 'references'}
         </span>
         <button
           type="button"
-          onClick={onClose}
+          onClick={requestClose}
           aria-label="Close"
           style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--ug-text-muted)', cursor: 'pointer', fontSize: 16 }}
         >
@@ -322,11 +369,91 @@ function ReferenceCard({
           </div>
         </div>
       ) : null}
+        </div>
+      </div>
+      {voteOpacity > 0 && (
+        <ReferenceVoteBadge
+          votes={votes}
+          progress={voteBadge.progress}
+          alpha={voteOpacity}
+          left={size.w / 2 + 7}
+        />
+      )}
     </div>
   )
 }
 
-const inputStyle: React.CSSProperties = {
+function ReferenceVoteBadge({
+  votes,
+  progress,
+  alpha,
+  left,
+}: {
+  votes: { positive: number; negative: number }
+  progress: number
+  alpha: number
+  left: number
+}) {
+  const fullW = 50
+  const rowH = 22
+  const w = Math.max(0, fullW * progress)
+  const showText = progress >= 0.72
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: 'absolute',
+        left: `calc(50% + ${left}px)`,
+        top: '50%',
+        transform: 'translateY(-50%)',
+        opacity: alpha,
+        width: w,
+        height: rowH * 2 + 2,
+        overflow: 'hidden',
+        pointerEvents: 'none',
+        border: '1px solid #b8cbe0',
+        borderRadius: 6,
+        background: '#f7fbff',
+        boxSizing: 'border-box',
+        boxShadow: '0 4px 10px var(--ug-shadow)',
+      }}
+    >
+      <div style={voteRowStyle('positive', rowH, fullW, showText)}>
+        + {votes.positive}
+      </div>
+      <div style={voteRowStyle('negative', rowH, fullW, showText)}>
+        - {votes.negative}
+      </div>
+    </div>
+  )
+}
+
+function voteRowStyle(kind: 'positive' | 'negative', rowH: number, fullW: number, showText: boolean): CSSProperties {
+  return {
+    position: 'absolute',
+    left: 3,
+    top: kind === 'positive' ? 3 : rowH + 3,
+    width: Math.max(0, fullW - 6),
+    height: rowH - 4,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 4,
+    background: kind === 'positive' ? '#e1f4e7' : '#f7dfdc',
+    color: showText ? kind === 'positive' ? '#247a3a' : '#9b2f2a' : 'transparent',
+    font: '800 12.5px/1 system-ui, sans-serif',
+    whiteSpace: 'nowrap',
+  }
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3
+}
+
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2
+}
+
+const inputStyle: CSSProperties = {
   padding: '4px 6px',
   border: '1px solid var(--ug-border)',
   borderRadius: 3,
@@ -334,7 +461,7 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--ug-text)',
   font: 'inherit',
 }
-const primaryBtn: React.CSSProperties = {
+const primaryBtn: CSSProperties = {
   padding: '4px 10px',
   background: 'var(--ug-primary)',
   color: 'var(--ug-text-on-primary)',
@@ -343,7 +470,7 @@ const primaryBtn: React.CSSProperties = {
   cursor: 'pointer',
   font: 'inherit',
 }
-const ghostBtn: React.CSSProperties = {
+const ghostBtn: CSSProperties = {
   padding: '4px 10px',
   background: 'transparent',
   color: 'var(--ug-text)',

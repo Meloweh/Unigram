@@ -259,6 +259,128 @@ export const LIGHT_DARK_PALETTE: ThemePalette = {
   shadowHeavy: 'rgba(16, 36, 58, 0.30)',
 }
 
+export const LIGHT_DARK_VARIED_PALETTE: ThemePalette = {
+  bg: LIGHT_DARK_PALETTE.bg,
+  viewportBg: LIGHT_DARK_PALETTE.viewportBg,
+  childBg: LIGHT_DARK_PALETTE.childBg,
+  surface: '#eef4f7',
+  surfaceRaised: '#dbe8ee',
+  surfaceHover: '#d3e3e9',
+  surfaceActive: '#d2dde9',
+  surfaceActiveHover: '#c4d4e2',
+  glass: 'rgba(236, 244, 247, 0.9)',
+  glassStrong: 'rgba(229, 240, 245, 0.94)',
+
+  text: '#193048',
+  textHeading: '#10243a',
+  textSecondary: '#486278',
+  textMuted: '#758894',
+  textOnPrimary: '#f8fbff',
+
+  primary: '#426a93',
+  primaryLight: '#75a2c4',
+  primaryDark: '#2f526f',
+  accent: '#2f8f9b',
+  accentBg: 'rgba(47, 143, 155, 0.10)',
+  accentBorder: 'rgba(47, 143, 155, 0.24)',
+  accentStrong: 'rgba(47, 143, 155, 0.72)',
+
+  border: '#adc0cc',
+  borderLight: '#ccd9e0',
+
+  hoverTint: 'rgba(47, 143, 155, 0.08)',
+  activeTint: 'rgba(66, 106, 147, 0.15)',
+
+  gridDot: 'rgba(45, 124, 158, 0.16)',
+
+  nodeCell: '#e7eef5',
+  nodeGradientEnd: '#d0dce6',
+  nodeMembrane: '#426a93',
+  nodeLabel: '#193048',
+  nodeFocusRing: 'rgba(47, 143, 155, 0.22)',
+  nodeShadow: 'rgba(20, 42, 61, 0.22)',
+
+  connection: 'rgba(66, 106, 147, 0.48)',
+  connectionEvidence: 'rgba(66, 106, 147, 0.68)',
+  connectionHover: 'rgba(47, 82, 111, 0.92)',
+  connectionDraft: 'rgba(47, 143, 155, 0.54)',
+
+  flow: '#dd9518',
+  flowAnim: '#efb23a',
+  flowHover: '#b97312',
+  flowGlow: 'rgba(221, 149, 24, 0.46)',
+
+  success: '#27815a',
+  danger: '#bc4c55',
+  dangerLight: '#d7656c',
+  dangerBg: 'rgba(188, 76, 85, 0.10)',
+  dangerBorder: 'rgba(188, 76, 85, 0.24)',
+
+  shadow: 'rgba(16, 36, 58, 0.13)',
+  shadowHeavy: 'rgba(16, 36, 58, 0.29)',
+}
+
+export const FORUM_CONTRAST_PALETTE: ThemePalette = {
+  bg: '#17202b',
+  viewportBg: 'radial-gradient(circle at 28% 18%, #253244, #151e29 72%)',
+  childBg: 'radial-gradient(circle at 38% 28%, #2a384a, #17212d 72%)',
+  surface: '#212d3a',
+  surfaceRaised: '#2a3948',
+  surfaceHover: '#334557',
+  surfaceActive: '#3b5064',
+  surfaceActiveHover: '#465d73',
+  glass: 'rgba(28, 39, 51, 0.9)',
+  glassStrong: 'rgba(31, 43, 56, 0.96)',
+
+  text: '#e7edf2',
+  textHeading: '#fbf2df',
+  textSecondary: '#b4c2cf',
+  textMuted: '#8799aa',
+  textOnPrimary: '#10202a',
+
+  primary: '#9bd0c7',
+  primaryLight: '#c4e8dd',
+  primaryDark: '#6faea9',
+  accent: '#e2ad62',
+  accentBg: 'rgba(226, 173, 98, 0.14)',
+  accentBorder: 'rgba(226, 173, 98, 0.32)',
+  accentStrong: 'rgba(226, 173, 98, 0.76)',
+
+  border: '#465a70',
+  borderLight: '#354759',
+
+  hoverTint: 'rgba(155, 208, 199, 0.11)',
+  activeTint: 'rgba(226, 173, 98, 0.16)',
+
+  gridDot: 'rgba(155, 208, 199, 0.13)',
+
+  nodeCell: '#253343',
+  nodeGradientEnd: '#1d2936',
+  nodeMembrane: '#9bd0c7',
+  nodeLabel: '#e7edf2',
+  nodeFocusRing: 'rgba(226, 173, 98, 0.24)',
+  nodeShadow: 'rgba(0, 0, 0, 0.36)',
+
+  connection: 'rgba(226, 173, 98, 0.48)',
+  connectionEvidence: 'rgba(226, 173, 98, 0.66)',
+  connectionHover: 'rgba(246, 202, 137, 0.92)',
+  connectionDraft: 'rgba(155, 208, 199, 0.54)',
+
+  flow: '#f1a13b',
+  flowAnim: '#ffd166',
+  flowHover: '#d98928',
+  flowGlow: 'rgba(241, 161, 59, 0.48)',
+
+  success: '#74d995',
+  danger: '#f07178',
+  dangerLight: '#ff8b91',
+  dangerBg: 'rgba(240, 113, 120, 0.13)',
+  dangerBorder: 'rgba(240, 113, 120, 0.3)',
+
+  shadow: 'rgba(0, 0, 0, 0.28)',
+  shadowHeavy: 'rgba(0, 0, 0, 0.52)',
+}
+
 export const GREY_PALETTE: ThemePalette = {
   bg: '#e8eaed',
   viewportBg: 'radial-gradient(circle at 30% 20%, #edeef1, #d5d8de)',
@@ -323,6 +445,8 @@ export const GREY_PALETTE: ThemePalette = {
 export const MODE_PALETTES: Record<string, ThemePalette> = {
   light: LIGHT_PALETTE,
   'light-dark': LIGHT_DARK_PALETTE,
+  'light-dark-varied': LIGHT_DARK_VARIED_PALETTE,
+  'forum-contrast': FORUM_CONTRAST_PALETTE,
   dark: DARK_PALETTE,
   grey: GREY_PALETTE,
 }
@@ -855,6 +979,8 @@ export function getTopicalPreset(mode: ThemeMode): TopicalThemePreset | undefine
 export const ALL_THEME_OPTIONS: { id: ThemeMode; name: string; group: 'base' | 'topical' }[] = [
   { id: 'light', name: 'Light', group: 'base' },
   { id: 'light-dark', name: 'Light-Dark', group: 'base' },
+  { id: 'light-dark-varied', name: 'Light-Dark Varied', group: 'base' },
+  { id: 'forum-contrast', name: 'Forum Contrast', group: 'base' },
   { id: 'dark', name: 'Dark', group: 'base' },
   { id: 'grey', name: 'Grey', group: 'base' },
   ...TOPICAL_THEMES.map((t) => ({ id: t.id, name: t.name, group: 'topical' as const })),

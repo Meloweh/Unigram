@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useOmniStore } from '../model/store'
 import type { GraphProposal, GraphProposalPayload } from './forumTypes'
-import { applyAcceptedProposal, proposalCreatedEdgeId, proposalCreatedNodeId } from './proposalApply'
+import { applyAcceptedProposal, previewProjectForProposal, proposalCreatedEdgeId, proposalCreatedNodeId } from './proposalApply'
 import {
   captureTransformBaseline,
   getTransformDraftEntries,
@@ -83,6 +83,51 @@ describe('applyAcceptedProposal', () => {
     expect(edge?.references).toEqual([{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }])
   })
 
+  it('applies chained proposal steps in order', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
+    const proposal = makeProposal('chain-ok', {
+      action: 'chain',
+      steps: [
+        {
+          action: 'add-node',
+          nodeId: 'b',
+          newNodeLabel: 'B',
+          geometry: { x: 12, y: 2, w: 6, h: 5 },
+          shape: 'rounded-rect',
+        },
+        {
+          action: 'add-edge',
+          edgeId: 'edge-ab',
+          sourceNodeId: a,
+          targetNodeId: 'b',
+          label: 'supports',
+        },
+      ],
+    })
+
+    expect(applyAcceptedProposal(proposal)).toEqual({ status: 'applied' })
+    const model = useOmniStore.getState().model
+    expect(model.nodes.get('b')).toMatchObject({ label: 'B', x: 12, y: 2, w: 6, h: 5 })
+    expect(model.edges.get('edge-ab')).toMatchObject({ from: a, to: 'b', label: 'supports' })
+  })
+
+  it('blocks invalid chains atomically without mutating the store', () => {
+    useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
+    const proposal = makeProposal('chain-bad', {
+      action: 'chain',
+      steps: [
+        { action: 'add-node', nodeId: 'b', newNodeLabel: 'B' },
+        { action: 'add-edge', edgeId: 'edge-bc', sourceNodeId: 'b', targetNodeId: 'missing' },
+      ],
+    })
+
+    const result = applyAcceptedProposal(proposal)
+    expect(result.status).toBe('blocked')
+    const model = useOmniStore.getState().model
+    expect(model.nodes.has('b')).toBe(false)
+    expect(model.edges.has('edge-bc')).toBe(false)
+  })
+
   it('adds named RMM and MPD dimensions from accepted proposals', () => {
     const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0, label: 'A' })
     expect(applyAcceptedProposal(makeProposal('rmm', {
@@ -102,6 +147,19 @@ describe('applyAcceptedProposal', () => {
     const dims = useOmniStore.getState().model.nodes.get(a)?.mpdDimensions ?? []
     expect(dims.length).toBe(2)
     expect(useOmniStore.getState().models.get(dims[1])?.name).toBe('A alternate')
+  })
+
+  it('previews a proposal against a project baseline including created child models', () => {
+    const nodeId = useOmniStore.getState().addNode({ id: 'a', label: 'A', x: 0, y: 0 })
+    const state = useOmniStore.getState()
+    const projected = previewProjectForProposal(
+      { rootModelId: state.model.id, models: new Map([[state.model.id, state.model]]) },
+      makeProposal('preview-rmm', { action: 'add-rmm', nodeId, name: 'Details' }),
+    )
+    const nextChildId = projected?.models.get('root')?.nodes.get(nodeId)?.childModelId
+    expect(nextChildId).toBeTruthy()
+    expect(projected?.models.get(nextChildId ?? '')?.name).toBe('Details')
+    expect(useOmniStore.getState().model.nodes.get(nodeId)?.childModelId).toBeUndefined()
   })
 
   it('renames and rewires existing entities', () => {

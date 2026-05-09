@@ -79,10 +79,11 @@ describe('SocialForumLayer', () => {
     const form = screen.getByLabelText('Create forum post')
     fireEvent.change(within(form).getByLabelText('Title'), { target: { value: 'Add beta path' } })
     fireEvent.change(within(form).getByLabelText('Description'), { target: { value: 'Try a new branch' } })
-    fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
     fireEvent.change(within(form).getByLabelText('Proposal source node'), { target: { value: 'Alpha' } })
     fireEvent.change(within(form).getByLabelText('Proposal target node'), { target: { value: 'Gamma' } })
     expect(within(form).queryByLabelText('New name')).not.toBeInTheDocument()
+    fireEvent.click(within(form).getByRole('button', { name: 'Append current diagram change' }))
     fireEvent.click(within(form).getByRole('button', { name: 'Post' }))
 
     await waitFor(() => {
@@ -105,7 +106,7 @@ describe('SocialForumLayer', () => {
     await screen.findByRole('button', { name: 'Ada' })
     fireEvent.click(await screen.findByRole('button', { name: 'Post' }))
     const form = screen.getByLabelText('Create forum post')
-    fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
     const action = within(form).getByLabelText('Suggested action')
     expect(within(action).getByRole('option', { name: 'Add Node' })).toBeInTheDocument()
     expect(within(action).getByRole('option', { name: 'Add node and connection' })).toBeInTheDocument()
@@ -119,7 +120,7 @@ describe('SocialForumLayer', () => {
     await screen.findByRole('button', { name: 'Ada' })
     fireEvent.click(await screen.findByRole('button', { name: 'Post' }))
     const form = screen.getByLabelText('Create forum post')
-    fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
     const action = within(form).getByLabelText('Suggested action')
     expect(action).toHaveValue('add-node')
     expect(within(action).getByRole('option', { name: 'Add Node' })).toBeInTheDocument()
@@ -170,12 +171,13 @@ describe('SocialForumLayer', () => {
     const form = screen.getByLabelText('Create forum post')
     fireEvent.change(within(form).getByLabelText('Title'), { target: { value: 'Label a path' } })
     fireEvent.change(within(form).getByLabelText('Description'), { target: { value: 'Add a referenced connection' } })
-    fireEvent.click(within(form).getByLabelText('Suggest diagram change'))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
     fireEvent.change(within(form).getByLabelText('Suggested action'), { target: { value: 'add-edge' } })
     fireEvent.change(within(form).getByLabelText('Proposal source node'), { target: { value: 'Alpha' } })
     fireEvent.change(within(form).getByLabelText('Proposal target node'), { target: { value: 'Beta' } })
     fireEvent.change(within(form).getByLabelText('Connection label'), { target: { value: 'Evidence' } })
     fireEvent.change(within(form).getByLabelText('Connection references'), { target: { value: 'Paper | A. Example | https://example.test' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Append current diagram change' }))
     fireEvent.click(within(form).getByRole('button', { name: 'Post' }))
 
     await waitFor(() => {
@@ -189,6 +191,78 @@ describe('SocialForumLayer', () => {
       expect(body.proposal?.label).toBe('Evidence')
       expect(body.proposal?.references).toEqual([{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }])
     })
+  })
+
+  it('lets chain steps reference queued nodes as preview selector items', async () => {
+    render(<SocialForumLayer diagramId="d1" renderer={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    await screen.findByRole('button', { name: 'Ada' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Post' }))
+    const form = screen.getByLabelText('Create forum post')
+    fireEvent.change(within(form).getByLabelText('Title'), { target: { value: 'Queue a small branch' } })
+    fireEvent.change(within(form).getByLabelText('Description'), { target: { value: 'Create two nodes and connect them' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
+    fireEvent.change(within(form).getByLabelText('Suggested action'), { target: { value: 'add-node' } })
+    fireEvent.change(within(form).getByLabelText('New name'), { target: { value: 'n1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Append current diagram change' }))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
+    fireEvent.change(within(form).getByLabelText('Suggested action'), { target: { value: 'add-node' } })
+    fireEvent.change(within(form).getByLabelText('New name'), { target: { value: 'n2' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Append current diagram change' }))
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Add suggested diagram change' }))
+    fireEvent.change(within(form).getByLabelText('Suggested action'), { target: { value: 'add-edge' } })
+    const source = within(form).getByLabelText('Proposal source node')
+    const target = within(form).getByLabelText('Proposal target node')
+    fireEvent.change(source, { target: { value: 'n1' } })
+    fireEvent.change(target, { target: { value: 'n2' } })
+    expect(source.closest('.social-node-suggest')).toHaveClass('is-preview')
+    expect(target.closest('.social-node-suggest')).toHaveClass('is-preview')
+    fireEvent.click(within(form).getByRole('button', { name: 'Append current diagram change' }))
+    fireEvent.click(within(form).getByRole('button', { name: 'Post' }))
+
+    await waitFor(() => {
+      const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      const post = calls.find(([url, init]) => url.toString().includes('/forums/topics') && init?.method === 'POST')
+      expect(post).toBeTruthy()
+      const body = JSON.parse(String(post?.[1]?.body)) as {
+        proposal?: {
+          action?: string
+          steps?: Array<{ action: string; nodeId?: string; sourceNodeId?: string; targetNodeId?: string }>
+        }
+      }
+      expect(body.proposal?.action).toBe('chain')
+      expect(body.proposal?.steps).toHaveLength(3)
+      expect(body.proposal?.steps?.[2]).toMatchObject({
+        action: 'add-edge',
+        sourceNodeId: body.proposal?.steps?.[0].nodeId,
+        targetNodeId: body.proposal?.steps?.[1].nodeId,
+      })
+    })
+  })
+
+  it('stashes post progress on outside click and discards it on Cancel', async () => {
+    render(<SocialForumLayer diagramId="d1" renderer={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open forum' }))
+    await screen.findByRole('button', { name: 'Ada' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Post' }))
+    let form = screen.getByLabelText('Create forum post')
+    fireEvent.change(within(form).getByLabelText('Title'), { target: { value: 'Draft title' } })
+    fireEvent.change(within(form).getByLabelText('Description'), { target: { value: 'Draft body' } })
+    fireEvent.pointerDown(form.parentElement as HTMLElement)
+    await waitFor(() => expect(screen.queryByLabelText('Create forum post')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post' }))
+    form = screen.getByLabelText('Create forum post')
+    expect(within(form).getByLabelText('Title')).toHaveValue('Draft title')
+    expect(within(form).getByLabelText('Description')).toHaveValue('Draft body')
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByLabelText('Create forum post')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post' }))
+    form = screen.getByLabelText('Create forum post')
+    expect(within(form).getByLabelText('Title')).toHaveValue('')
+    expect(within(form).getByLabelText('Description')).toHaveValue('')
   })
 
   it('restores the graph camera when the forum curtain closes', async () => {

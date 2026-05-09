@@ -3,10 +3,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import type { ConnectionReference } from '../src/model/types'
+import type { ConnectionReference, Connection, NodeShape } from '../src/model/types'
 import {
   computeAgreementRatio,
   parseForumRef,
+  proposalContainsAction,
+  proposalSteps,
   resolveExpiredProposalStatus,
   type ForumComment,
   type ForumCommentInput,
@@ -16,6 +18,7 @@ import {
   type ForumTopicInput,
   type GraphProposal,
   type GraphProposalPayload,
+  type GraphProposalStep,
   type GraphProposalStatus,
   type NodeGeometry,
   type SocialUserPreferences,
@@ -443,7 +446,7 @@ async function createForumTopic(
   const now = new Date().toISOString()
   const proposalPayload = body.proposal ? sanitizeProposalPayload(body.proposal) : null
   const statusChanged = refreshProposalStatuses(db, diagramId)
-  if (proposalPayload?.action === 'commit-transform' && hasActiveTransformProposal(db, diagramId)) {
+  if (proposalPayload && proposalContainsAction(proposalPayload, 'commit-transform') && hasActiveTransformProposal(db, diagramId)) {
     if (statusChanged) await writeDb(db)
     throw new BadRequestError('Only one active layout change proposal is allowed per diagram')
   }
@@ -482,7 +485,7 @@ async function createForumTopic(
 function hasActiveTransformProposal(db: DiagramDb, diagramId: string): boolean {
   return db.proposals.some((proposal) =>
     proposal.diagramId === diagramId &&
-    proposal.payload.action === 'commit-transform' &&
+    proposalContainsAction(proposal.payload, 'commit-transform') &&
     (proposal.status === 'pending' || proposal.status === 'accepted')
   )
 }
@@ -597,8 +600,8 @@ async function listSocialScores(diagramId: string): Promise<{
     if (!proposal) continue
     const support = Math.round(computeAgreementRatio(commentsForAgreement(topic, db.comments.filter((c) => c.topicId === topic.id))) * 4)
     const activity = score + support
-    const payload = proposal.payload
-    switch (payload.action) {
+    for (const payload of proposalSteps(proposal.payload)) {
+      switch (payload.action) {
       case 'add-node-edge':
         addScore(nodeScores, payload.sourceNodeId, activity)
         addVotes(nodeVotes, payload.sourceNodeId, votes)
@@ -632,6 +635,7 @@ async function listSocialScores(diagramId: string): Promise<{
         break
       case 'add-node':
         break
+      }
     }
   }
   return { nodeScores, edgeScores, nodeVotes, edgeVotes }
@@ -1111,30 +1115,53 @@ function sanitizeProposalPayload(value: unknown): GraphProposalPayload {
   if (!isRecord(value) || typeof value.action !== 'string') {
     throw new BadRequestError('Invalid proposal payload')
   }
+  if (value.action === 'chain') {
+    if (!Array.isArray(value.steps) || value.steps.length === 0) throw new BadRequestError('Change chain is required')
+    if (value.steps.length > 80) throw new BadRequestError('Change chain is too large')
+    return { action: 'chain', steps: value.steps.map((step) => sanitizeProposalStep(step)) }
+  }
+  return sanitizeProposalStep(value)
+}
+
+function sanitizeProposalStep(value: unknown): GraphProposalStep {
+  if (!isRecord(value) || typeof value.action !== 'string' || value.action === 'chain') {
+    throw new BadRequestError('Invalid proposal step')
+  }
   switch (value.action) {
     case 'add-node':
       return {
         action: value.action,
         newNodeLabel: cleanRequired(value.newNodeLabel, 'New node label'),
+        ...optionalIdField('nodeId', value.nodeId),
+        ...optionalGeometryField(value.geometry),
+        ...optionalShapeField(value.shape),
       }
     case 'add-node-edge':
       return {
         action: value.action,
         sourceNodeId: cleanRequired(value.sourceNodeId, 'Source node'),
         newNodeLabel: cleanRequired(value.newNodeLabel, 'New node label'),
+        ...optionalIdField('nodeId', value.nodeId),
+        ...optionalIdField('edgeId', value.edgeId),
+        ...optionalGeometryField(value.geometry),
+        ...optionalShapeField(value.shape),
       }
-    case 'add-edge':
+    case 'add-edge': {
+      const style = sanitizeEdgeStyle(value.style)
       return {
         action: value.action,
         sourceNodeId: cleanRequired(value.sourceNodeId, 'Source node'),
         targetNodeId: cleanRequired(value.targetNodeId, 'Target node'),
+        ...optionalIdField('edgeId', value.edgeId),
         ...(typeof value.label === 'string' && value.label.trim()
           ? { label: value.label.trim().slice(0, 160) }
           : {}),
         ...(Array.isArray(value.references) && value.references.length > 0
           ? { references: value.references.slice(0, 50).map((item) => sanitizeReference(item)) }
           : {}),
+        ...(style ? { style } : {}),
       }
+    }
     case 'add-rmm':
       return {
         action: value.action,
@@ -1203,6 +1230,56 @@ function sanitizeProposalPayload(value: unknown): GraphProposalPayload {
     default:
       throw new BadRequestError('Unsupported proposal action')
   }
+}
+
+function optionalIdField<K extends 'nodeId' | 'edgeId'>(key: K, value: unknown): Partial<Record<K, string>> {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  return { [key]: value.trim().slice(0, 160) } as Partial<Record<K, string>>
+}
+
+function optionalGeometryField(value: unknown): { geometry?: NodeGeometry } {
+  return isRecord(value) ? { geometry: sanitizeGeometry(value, 'Node geometry') } : {}
+}
+
+function optionalShapeField(value: unknown): { shape?: NodeShape } {
+  if (typeof value !== 'string') return {}
+  if (
+    value === 'rectangle' ||
+    value === 'rounded-rect' ||
+    value === 'circle' ||
+    value === 'oval' ||
+    value === 'diamond' ||
+    value === 'hexagon' ||
+    value === 'parallelogram' ||
+    value === 'triangle' ||
+    value === 'chat-bubble' ||
+    value === 'thinking-cloud'
+  ) {
+    return { shape: value }
+  }
+  return {}
+}
+
+function sanitizeEdgeStyle(value: unknown): Partial<Pick<Connection, 'kind' | 'dash' | 'arrowStyle' | 'color' | 'width' | 'labelFontSize' | 'cameraTracked'>> | undefined {
+  if (!isRecord(value)) return undefined
+  const style: Partial<Pick<Connection, 'kind' | 'dash' | 'arrowStyle' | 'color' | 'width' | 'labelFontSize' | 'cameraTracked'>> = {}
+  if (value.kind === 'default' || value.kind === 'flow') style.kind = value.kind
+  if (value.dash === 'solid' || value.dash === 'dashed' || value.dash === 'dotted' || value.dash === 'dash-dot') style.dash = value.dash
+  if (
+    value.arrowStyle === 'none' ||
+    value.arrowStyle === 'standard' ||
+    value.arrowStyle === 'triangle' ||
+    value.arrowStyle === 'filled-triangle' ||
+    value.arrowStyle === 'line-arrow' ||
+    value.arrowStyle === 'stealth' ||
+    value.arrowStyle === 'diamond' ||
+    value.arrowStyle === 'circle'
+  ) style.arrowStyle = value.arrowStyle
+  if (typeof value.color === 'string' && value.color.trim()) style.color = value.color.trim().slice(0, 64)
+  if (value.width !== undefined) style.width = cleanFinite(value.width, 'Connection width')
+  if (value.labelFontSize !== undefined) style.labelFontSize = cleanFinite(value.labelFontSize, 'Connection label size')
+  if (typeof value.cameraTracked === 'boolean') style.cameraTracked = value.cameraTracked
+  return Object.keys(style).length > 0 ? style : undefined
 }
 
 function sanitizeReference(value: unknown): ConnectionReference {

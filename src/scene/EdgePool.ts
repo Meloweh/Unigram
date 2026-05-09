@@ -229,122 +229,30 @@ function drawEdge(
       g.stroke({ color, width: strokePx, alignment: 0.5 })
     }
   }
-  const drawTrack = (points: Array<{ x: number; y: number }>) => {
-    if (points.length < 2) return
-    const radius = Math.min(28, Math.max(6, Math.min(revealGap?.wPx ?? 0, revealGap?.hPx ?? 0) * 0.12))
-    g.moveTo(points[0].x, points[0].y)
-    for (let i = 1; i < points.length; i++) {
-      const curr = points[i]
-      if (i < points.length - 1) {
-        const prev = points[i - 1]
-        const next = points[i + 1]
-        let dx1 = curr.x - prev.x
-        let dy1 = curr.y - prev.y
-        const len1 = Math.hypot(dx1, dy1)
-        let dx2 = next.x - curr.x
-        let dy2 = next.y - curr.y
-        const len2 = Math.hypot(dx2, dy2)
-        if (len1 < 0.5 || len2 < 0.5) {
-          g.lineTo(curr.x, curr.y)
-          continue
-        }
-        dx1 /= len1
-        dy1 /= len1
-        dx2 /= len2
-        dy2 /= len2
-        const r = Math.min(radius, len1 / 2, len2 / 2)
-        g.lineTo(curr.x - dx1 * r, curr.y - dy1 * r)
-        g.quadraticCurveTo(curr.x, curr.y, curr.x + dx2 * r, curr.y + dy2 * r)
-      } else {
-        g.lineTo(curr.x, curr.y)
-      }
-    }
-    g.stroke({ color, width: strokePx, alignment: 0.5 })
-  }
-  const buildTrackAroundPopup = (sign: 1 | -1): Array<{ x: number; y: number }> | null => {
+  const buildPopupGap = (): { entry: { x: number; y: number }; exit: { x: number; y: number } } | null => {
     if (!revealGap || revealGap.progress < 0.001) return null
+    const lineLen = Math.hypot(lineEndX - fx, lineEndY - fy)
+    if (lineLen < 2) return null
     const midX = (fx + lineEndX) / 2
     const midY = (fy + lineEndY) / 2
-    const hw = (revealGap.wPx / 2 + 16) * revealGap.progress
-    const hh = (revealGap.hPx / 2 + 16) * revealGap.progress
+    const hw = (revealGap.wPx / 2 + 20) * revealGap.progress
+    const hh = (revealGap.hPx / 2 + 20) * revealGap.progress
     let t = Infinity
     if (Math.abs(ux) > 1e-9) t = Math.min(t, hw / Math.abs(ux))
     if (Math.abs(uy) > 1e-9) t = Math.min(t, hh / Math.abs(uy))
-    t = Math.min(t, segLen / 2 - 1)
+    t = Math.min(t, lineLen / 2 - 1)
     if (t <= 0 || !Number.isFinite(t)) return null
-
-    const entry = { x: midX - ux * t, y: midY - uy * t }
-    const exit = { x: midX + ux * t, y: midY + uy * t }
-    const exitRx = ux * t
-    const exitRy = uy * t
-    const eps = 0.5
-    let exitEdge: number
-    if (Math.abs(exitRx - hw) < eps) exitEdge = 1
-    else if (Math.abs(exitRx + hw) < eps) exitEdge = 3
-    else if (Math.abs(exitRy - hh) < eps) exitEdge = 2
-    else exitEdge = 0
-    const entryEdge = (exitEdge + 2) % 4
-    const corners: Array<{ x: number; y: number }> = [
-      { x: midX - hw, y: midY - hh },
-      { x: midX + hw, y: midY - hh },
-      { x: midX + hw, y: midY + hh },
-      { x: midX - hw, y: midY + hh },
-    ]
-    const cw: number[] = []
-    let edgeIdx = entryEdge
-    while (true) {
-      cw.push((edgeIdx + 1) % 4)
-      edgeIdx = (edgeIdx + 1) % 4
-      if (edgeIdx === exitEdge) break
+    return {
+      entry: { x: midX - ux * t, y: midY - uy * t },
+      exit: { x: midX + ux * t, y: midY + uy * t },
     }
-    const ccw: number[] = []
-    edgeIdx = entryEdge
-    while (true) {
-      ccw.push(edgeIdx)
-      edgeIdx = (edgeIdx - 1 + 4) % 4
-      if (edgeIdx === exitEdge) break
-    }
-    const perpX = -uy
-    const perpY = ux
-    const cwPerp = cw.reduce((sum, cornerIdx) => {
-      const c = corners[cornerIdx]
-      return sum + (c.x - midX) * perpX + (c.y - midY) * perpY
-    }, 0)
-    const cornerPath = (cwPerp * sign > 0 ? cw : ccw).map((cornerIdx) => corners[cornerIdx])
-    return [
-      { x: fx, y: fy },
-      entry,
-      ...cornerPath,
-      exit,
-      { x: lineEndX, y: lineEndY },
-    ]
   }
-  if (dash) {
-    if (revealGap) {
-      const a = buildTrackAroundPopup(1)
-      const b = buildTrackAroundPopup(-1)
-      if (a && b) {
-        drawTrack(a)
-        drawTrack(b)
-      } else {
-        drawStroke(fx, fy, lineEndX, lineEndY)
-      }
-    } else {
-      drawStroke(fx, fy, lineEndX, lineEndY)
-    }
+  const gap = buildPopupGap()
+  if (gap) {
+    drawStroke(fx, fy, gap.entry.x, gap.entry.y)
+    drawStroke(gap.exit.x, gap.exit.y, lineEndX, lineEndY)
   } else {
-    if (revealGap) {
-      const a = buildTrackAroundPopup(1)
-      const b = buildTrackAroundPopup(-1)
-      if (a && b) {
-        drawTrack(a)
-        drawTrack(b)
-      } else {
-        drawStroke(fx, fy, lineEndX, lineEndY)
-      }
-    } else {
-      drawStroke(fx, fy, lineEndX, lineEndY)
-    }
+    drawStroke(fx, fy, lineEndX, lineEndY)
   }
 
   if (!partialEmerge) drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)

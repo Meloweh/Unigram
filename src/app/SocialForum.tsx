@@ -10,7 +10,7 @@ import {
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
 import { useOmniStore } from '../model/store'
-import type { ConnectionReference, Model, ModelNode } from '../model/types'
+import { DEFAULT_EDGE, DEFAULT_NODE, type ConnectionReference, type Model, type ModelNode } from '../model/types'
 import { resolvePalette, type ThemeMode } from '../theme/themes'
 import {
   addForumComment,
@@ -34,6 +34,8 @@ import {
   forumRefLabel,
   nodeForumRef,
   proposalActionLabel,
+  proposalContainsAction,
+  proposalSteps,
   type ForumComment,
   type ForumRef,
   type ForumThread,
@@ -42,25 +44,22 @@ import {
   type GraphProposal,
   type GraphProposalAction,
   type GraphProposalPayload,
+  type GraphProposalStep,
   type TransformProposalEntry,
   type TopicVoteValue,
   type VoteStance,
 } from '../social/forumTypes'
 import {
   applyAcceptedProposal,
+  previewModelForProposal,
+  previewProjectForProposal,
 } from '../social/proposalApply'
 import {
-  getTransformDraftEntries,
-  getTransformDraftCount,
-  recomputeTransformDraft,
-  subscribeTransformDraft,
-} from '../social/transformDraft'
-import {
-  getSocialEdgeDraftCount,
-  getSocialEdgeDrafts,
-  subscribeSocialEdgeDrafts,
-  type SocialEdgeDraft,
-} from '../social/graphDraft'
+  capturePublicGraphBaseline,
+  getPublicGraphDraftCount,
+  getPublicGraphDraftSteps,
+  restorePublicGraphBaseline,
+} from '../social/publicGraphDraft'
 
 interface SocialForumLayerProps {
   diagramId?: string
@@ -90,9 +89,9 @@ export function SocialForumLayer({
   const [thread, setThread] = useState<ForumThread | null>(null)
   const [postOpen, setPostOpen] = useState(false)
   const [postInitialAction, setPostInitialAction] = useState<GraphProposalAction | null>(null)
-  const [postEdgeDraft, setPostEdgeDraft] = useState<SocialEdgeDraft | null>(null)
-  const [transformPreview, setTransformPreview] = useState<TransformProposalEntry[] | null>(null)
-  const [referencePreview, setReferencePreview] = useState<GraphProposal | null>(null)
+  const [postInitialSteps, setPostInitialSteps] = useState<GraphProposalStep[]>([])
+  const [postFromGraphDraft, setPostFromGraphDraft] = useState(false)
+  const [proposalPreview, setProposalPreview] = useState<GraphProposal | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
@@ -117,32 +116,15 @@ export function SocialForumLayer({
     () => 0,
   )
   const model = useOmniStore.getState().model
-  const transformDraftCount = useSyncExternalStore(
-    subscribeTransformDraft,
-    () => getTransformDraftCount(useOmniStore.getState().model.id),
-    () => 0,
-  )
-  const edgeDraftCount = useSyncExternalStore(
-    subscribeSocialEdgeDrafts,
-    getSocialEdgeDraftCount,
-    () => 0,
-  )
-  const transformDraft = getTransformDraftEntries(model.id)
-  const edgeDrafts = getSocialEdgeDrafts()
+  const draftSnapshot = currentProjectSnapshot()
+  const publicDraftSteps = getPublicGraphDraftSteps(draftSnapshot)
+  const transformDraft = publicDraftSteps.flatMap((step) => step.action === 'commit-transform' ? step.transforms : [])
   const hasActiveTransformProposal = proposals.some(isActiveTransformProposal)
-  void transformDraftCount
-  void edgeDraftCount
 
   useEffect(() => {
     void getCurrentAccount().then(setCurrentUser).catch(() => setCurrentUser(null))
   }, [])
-
-  useEffect(() => {
-    const state = useOmniStore.getState()
-    const models = new Map(state.models)
-    models.set(state.model.id, state.model)
-    recomputeTransformDraft({ rootModelId: state.model.id, models })
-  }, [revision])
+  void revision
 
   useEffect(() => {
     if (!currentUser) setAccountMenuOpen(false)
@@ -231,9 +213,9 @@ export function SocialForumLayer({
 
   useEffect(() => {
     if (!renderer) return
-    renderer.setGraphProposals(proposals)
+    renderer.setGraphProposals([])
     return () => renderer.setGraphProposals([])
-  }, [renderer, proposals])
+  }, [renderer])
 
   useEffect(() => {
     void refreshSocialScores()
@@ -250,7 +232,17 @@ export function SocialForumLayer({
       if (proposal.status !== 'accepted' || applyingRef.current.has(proposal.id)) continue
       applyingRef.current.add(proposal.id)
       void (async () => {
+        const hadPublicDrafts = getPublicGraphDraftCount(currentProjectSnapshot()) > 0
+        const baselineBeforeApply = hadPublicDrafts ? restorePublicGraphBaseline() : null
         const result = applyAcceptedProposal(proposal)
+        if (result.status === 'applied') {
+          if (hadPublicDrafts && baselineBeforeApply) {
+            const nextBaseline = previewProjectForProposal(baselineBeforeApply, proposal)
+            if (nextBaseline) capturePublicGraphBaseline(nextBaseline)
+          } else {
+            capturePublicGraphBaseline(currentProjectSnapshot())
+          }
+        }
         try {
           await markProposalStatus(
             diagramId,
@@ -304,7 +296,8 @@ export function SocialForumLayer({
 
   const openPost = () => {
     setPostInitialAction(null)
-    setPostEdgeDraft(null)
+    setPostInitialSteps([])
+    setPostFromGraphDraft(false)
     if (!currentUser) {
       postAfterAuthRef.current = true
       setAuthOpen(true)
@@ -314,13 +307,18 @@ export function SocialForumLayer({
   }
 
   const openTransformPost = () => {
-    const edgeDraft = edgeDrafts[0] ?? null
-    if (!edgeDraft && hasActiveTransformProposal) {
+    const steps = getPublicGraphDraftSteps(currentProjectSnapshot())
+    if (steps.length === 0) {
+      setError('No graph changes are ready to submit.')
+      return
+    }
+    if (steps.some((step) => step.action === 'commit-transform') && hasActiveTransformProposal) {
       setError('A layout change proposal is already active for this graph.')
       return
     }
-    setPostEdgeDraft(edgeDraft)
-    setPostInitialAction(edgeDraft ? 'add-edge' : 'commit-transform')
+    setPostInitialAction(null)
+    setPostInitialSteps(steps)
+    setPostFromGraphDraft(true)
     if (!currentUser) {
       postAfterAuthRef.current = true
       setAuthOpen(true)
@@ -365,7 +363,7 @@ export function SocialForumLayer({
           >
             Forum
           </button>
-          {(edgeDrafts.length > 0 || (transformDraft.length > 0 && !hasActiveTransformProposal)) && (
+          {publicDraftSteps.length > 0 && (
             <button
               type="button"
               className="social-transform-submit-button"
@@ -416,10 +414,7 @@ export function SocialForumLayer({
                     await refreshTopics()
                     await refreshSocialScores()
                   }}
-                  onPreview={(transforms) => {
-                    setTransformPreview(transforms)
-                  }}
-                  onReferencePreview={(proposal) => setReferencePreview(proposal)}
+                  onPreview={(proposal) => setProposalPreview(proposal)}
                 />
               </>
             ) : (
@@ -507,7 +502,7 @@ export function SocialForumLayer({
                   <p className="social-forum-description">
                     {projectDescription?.trim() || `${projectTopic?.trim() || 'Diagram'} discussion for ${model.name || 'this graph'}.`}
                   </p>
-                  <MiniDiagramPreview model={model} forumRef={forumRef} proposals={proposals} themeMode={themeMode} />
+                  <MiniDiagramPreview model={model} forumRef={forumRef} proposals={[]} themeMode={themeMode} />
                 </div>
                 <main className="social-forum-body">
                   <div className="social-body-head">
@@ -543,14 +538,16 @@ export function SocialForumLayer({
           model={model}
           currentUser={currentUser}
           initialAction={postInitialAction}
+          initialSteps={postInitialSteps}
           transformDraft={transformDraft}
-          edgeDraft={postEdgeDraft}
           hasActiveTransformProposal={hasActiveTransformProposal}
           onClose={() => setPostOpen(false)}
           onCreated={(topic) => {
+            if (postFromGraphDraft) restoreGraphDraftBaseline()
             setPostOpen(false)
             setPostInitialAction(null)
-            setPostEdgeDraft(null)
+            setPostInitialSteps([])
+            setPostFromGraphDraft(false)
             selectForum(topic.forumRef)
             setThreadId(topic.id)
             setThread({ topic, comments: [] })
@@ -582,19 +579,12 @@ export function SocialForumLayer({
           onClose={() => setProfileSettingsOpen(false)}
         />
       )}
-      {transformPreview && (
-        <TransformPreviewOverlay
+      {proposalPreview && (
+        <ProposalPreviewOverlay
           model={model}
-          transforms={transformPreview}
+          proposal={proposalPreview}
           themeMode={themeMode}
-          onClose={() => setTransformPreview(null)}
-        />
-      )}
-      {referencePreview && (
-        <ReferencePreviewOverlay
-          model={model}
-          proposal={referencePreview}
-          onClose={() => setReferencePreview(null)}
+          onClose={() => setProposalPreview(null)}
         />
       )}
     </>
@@ -621,6 +611,8 @@ function ForumSelector({
   const edges = source && target
     ? [...model.edges.values()].filter((edge) => edge.from === source.id && edge.to === target.id)
     : []
+  const sourceSuggestions = target ? connectedSourcesForTarget(model, nodes, target.id) : nodes
+  const targetSuggestions = source ? connectedTargetsForSource(model, nodes, source.id) : nodes
   const selectedEdge = mode === 'arrow' ? edges.find((edge) => edge.id === edgeId) ?? edges[0] : null
   const sourceText = sourceValue.trim()
   const targetText = targetValue.trim()
@@ -658,7 +650,7 @@ function ForumSelector({
     <div className="social-ref-selector" aria-label="Forum reference selector">
       <NodeSuggestInput
         aria-label="Source"
-        nodes={nodes}
+        nodes={sourceSuggestions}
         value={sourceValue}
         onChange={(value) => {
           setSourceValue(value)
@@ -676,7 +668,7 @@ function ForumSelector({
       </span>
       <NodeSuggestInput
         aria-label="Target"
-        nodes={nodes}
+        nodes={targetSuggestions}
         value={targetValue}
         onChange={(value) => {
           setTargetValue(value)
@@ -769,6 +761,7 @@ function MiniDiagramPreview({
 
 function NodeSuggestInput({
   nodes,
+  previewIds,
   value,
   onChange,
   placeholder,
@@ -776,6 +769,7 @@ function NodeSuggestInput({
   'aria-label': ariaLabel,
 }: {
   nodes: ModelNode[]
+  previewIds?: ReadonlySet<string>
   value: string
   onChange: (value: string) => void
   placeholder: string
@@ -784,15 +778,21 @@ function NodeSuggestInput({
 }) {
   const [open, setOpen] = useState(false)
   const query = value.trim().toLowerCase()
+  const recognized = useMemo(() => resolveNodeInput(value, nodes), [nodes, value])
   const suggestions = useMemo(() => {
     const ranked = query
       ? nodes.filter((node) => nodeLabel(node).toLowerCase().includes(query) || node.id.toLowerCase().includes(query))
       : nodes
     return ranked.slice(0, 8)
   }, [nodes, query])
+  const inputClass = [
+    recognized ? 'is-known' : '',
+    recognized && previewIds?.has(recognized.id) ? 'is-preview' : '',
+  ].filter(Boolean).join(' ')
+  const recognizedLabel = recognized ? nodeLabel(recognized) : ''
 
   return (
-    <span className="social-node-suggest">
+    <span className={`social-node-suggest ${inputClass}`}>
       <input
         aria-label={ariaLabel}
         value={value}
@@ -806,6 +806,11 @@ function NodeSuggestInput({
         disabled={disabled}
         autoComplete="off"
       />
+      {recognized && (
+        <span className="social-node-recognition-pill" aria-hidden>
+          {recognizedLabel}
+        </span>
+      )}
       {open && !disabled && suggestions.length > 0 && (
         <span className="social-node-suggest-menu" role="listbox">
           {suggestions.map((node) => (
@@ -813,6 +818,7 @@ function NodeSuggestInput({
               key={node.id}
               type="button"
               role="option"
+              className={previewIds?.has(node.id) ? 'is-preview' : undefined}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 onChange(nodeLabel(node))
@@ -820,7 +826,7 @@ function NodeSuggestInput({
               }}
             >
               <strong>{nodeLabel(node)}</strong>
-              <small>{node.id}</small>
+              <small>{previewIds?.has(node.id) ? 'Queued preview item' : node.id}</small>
             </button>
           ))}
         </span>
@@ -939,7 +945,6 @@ function ThreadView({
   onChanged,
   onVote,
   onPreview,
-  onReferencePreview,
 }: {
   diagramId: string
   thread: ForumThread
@@ -948,8 +953,7 @@ function ThreadView({
   onBack: () => void
   onChanged: () => Promise<void>
   onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
-  onPreview: (transforms: TransformProposalEntry[]) => void
-  onReferencePreview: (proposal: GraphProposal) => void
+  onPreview: (proposal: GraphProposal) => void
 }) {
   const [replyTo, setReplyTo] = useState<ForumComment | null>(null)
   const commentsByParent = useMemo(() => {
@@ -1000,16 +1004,6 @@ function ThreadView({
       </div>
     )
   }
-  const transformProposalPayload = thread.topic.proposal?.payload.action === 'commit-transform'
-    ? thread.topic.proposal.payload
-    : null
-  const referenceProposal = thread.topic.proposal && (
-    thread.topic.proposal.payload.action === 'add-reference' ||
-    thread.topic.proposal.payload.action === 'modify-references'
-  )
-    ? thread.topic.proposal
-    : null
-
   return (
     <article className="social-thread">
       <button type="button" className="social-thread-back" onClick={onBack}>
@@ -1023,20 +1017,11 @@ function ThreadView({
             onLoginRequired={onLoginRequired}
             onVote={onVote}
           />
-          {transformProposalPayload && (
+          {thread.topic.proposal && (
             <button
               type="button"
               className="social-preview-button"
-              onClick={() => onPreview(transformProposalPayload.transforms)}
-            >
-              Preview
-            </button>
-          )}
-          {referenceProposal && (
-            <button
-              type="button"
-              className="social-preview-button"
-              onClick={() => onReferencePreview(referenceProposal)}
+              onClick={() => onPreview(thread.topic.proposal!)}
             >
               Preview
             </button>
@@ -1141,14 +1126,43 @@ function CommentForm({
   )
 }
 
+interface PostModalSessionDraft {
+  title: string
+  description: string
+  action: GraphProposalAction
+  changeEditorOpen: boolean
+  sourceValue: string
+  targetValue: string
+  newTargetValue: string
+  newLabel: string
+  referenceTitle: string
+  referenceCitation: string
+  referenceUrl: string
+  referencesText: string
+  chainSteps: GraphProposalStep[]
+}
+
+let postModalSessionStash: { key: string; draft: PostModalSessionDraft } | null = null
+
+function postModalStashKey(
+  diagramId: string,
+  initialAction?: GraphProposalAction | null,
+  initialSteps?: GraphProposalStep[],
+): string {
+  const stepsKey = initialSteps?.length
+    ? initialSteps.map((step) => `${step.action}:${'nodeId' in step ? step.nodeId ?? '' : ''}:${'edgeId' in step ? step.edgeId ?? '' : ''}`).join(',')
+    : ''
+  return `${diagramId}|${initialAction ?? ''}|${stepsKey}`
+}
+
 function PostModal({
   diagramId,
   forumRef,
   model,
   currentUser,
   initialAction,
+  initialSteps,
   transformDraft,
-  edgeDraft,
   hasActiveTransformProposal,
   onClose,
   onCreated,
@@ -1158,38 +1172,118 @@ function PostModal({
   model: Model
   currentUser: AuthUser | null
   initialAction?: GraphProposalAction | null
+  initialSteps?: GraphProposalStep[]
   transformDraft?: TransformProposalEntry[]
-  edgeDraft?: SocialEdgeDraft | null
   hasActiveTransformProposal?: boolean
   onClose: () => void
   onCreated: (topic: ForumTopic) => void
 }) {
+  const stashKey = postModalStashKey(diagramId, initialAction, initialSteps)
+  const stashedDraft = postModalSessionStash?.key === stashKey ? postModalSessionStash.draft : null
   const nodes = useMemo(() => sortedNodes(model), [model])
   const isGraphEmpty = nodes.length === 0
   const initialProposal = proposalDraftFromForumRef(model, forumRefFromGraphSelection(model) ?? forumRef)
-  const edgeDraftSource = edgeDraft ? model.nodes.get(edgeDraft.from) : null
-  const edgeDraftTarget = edgeDraft ? model.nodes.get(edgeDraft.to) : null
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [proposalEnabled, setProposalEnabled] = useState(initialAction === 'commit-transform' || Boolean(edgeDraft))
-  const [action, setAction] = useState<GraphProposalAction>(initialAction ?? (isGraphEmpty ? 'add-node' : initialProposal.action))
-  const [sourceValue, setSourceValue] = useState(edgeDraftSource ? nodeLabel(edgeDraftSource) : initialProposal.sourceValue)
-  const [targetValue, setTargetValue] = useState(edgeDraftTarget ? nodeLabel(edgeDraftTarget) : initialProposal.targetValue)
-  const [newTargetValue, setNewTargetValue] = useState('')
-  const [newLabel, setNewLabel] = useState('')
-  const [referenceTitle, setReferenceTitle] = useState('')
-  const [referenceCitation, setReferenceCitation] = useState('')
-  const [referenceUrl, setReferenceUrl] = useState('')
-  const [referencesText, setReferencesText] = useState('')
+  const [title, setTitle] = useState(stashedDraft?.title ?? '')
+  const [description, setDescription] = useState(stashedDraft?.description ?? '')
+  const [action, setAction] = useState<GraphProposalAction>(stashedDraft?.action ?? initialAction ?? (isGraphEmpty ? 'add-node' : initialProposal.action))
+  const [changeEditorOpen, setChangeEditorOpen] = useState(stashedDraft?.changeEditorOpen ?? false)
+  const [sourceValue, setSourceValue] = useState(stashedDraft?.sourceValue ?? initialProposal.sourceValue)
+  const [targetValue, setTargetValue] = useState(stashedDraft?.targetValue ?? initialProposal.targetValue)
+  const [newTargetValue, setNewTargetValue] = useState(stashedDraft?.newTargetValue ?? '')
+  const [newLabel, setNewLabel] = useState(stashedDraft?.newLabel ?? '')
+  const [referenceTitle, setReferenceTitle] = useState(stashedDraft?.referenceTitle ?? '')
+  const [referenceCitation, setReferenceCitation] = useState(stashedDraft?.referenceCitation ?? '')
+  const [referenceUrl, setReferenceUrl] = useState(stashedDraft?.referenceUrl ?? '')
+  const [referencesText, setReferencesText] = useState(stashedDraft?.referencesText ?? '')
+  const [chainSteps, setChainSteps] = useState<GraphProposalStep[]>(() => stashedDraft?.chainSteps ?? initialSteps ?? [])
   const [error, setError] = useState<string | null>(null)
   const activeAction: GraphProposalAction = action
   const draftTransforms = transformDraft ?? []
   const sourceOnlyAction = activeAction === 'add-rmm' || activeAction === 'add-mpd'
+  const workingModel = useMemo(() => projectModelForChain(model, chainSteps), [model, chainSteps])
+  const workingNodes = useMemo(() => sortedNodes(workingModel), [workingModel])
+  const queuedNodeIds = useMemo(() => queuedNodeIdSet(chainSteps), [chainSteps])
 
   useEffect(() => {
     if (activeAction !== 'modify-references') return
-    setReferencesText(referenceLinesForSelection(model, nodes, sourceValue, targetValue))
-  }, [activeAction, model, nodes, sourceValue, targetValue])
+    setReferencesText(referenceLinesForSelection(workingModel, workingNodes, sourceValue, targetValue))
+  }, [activeAction, workingModel, workingNodes, sourceValue, targetValue])
+
+  const buildCurrentStep = (): GraphProposalStep => {
+    const proposal = buildProposalPayload({
+      action: activeAction,
+      model: workingModel,
+      nodes: workingNodes,
+      sourceValue,
+      targetValue,
+      newTargetValue,
+      newLabel,
+      transformDraft: draftTransforms,
+      referenceTitle,
+      referenceCitation,
+      referenceUrl,
+      referencesText,
+    })
+    if (proposal.action === 'chain') throw new Error('Nested chains are not supported')
+    return proposal
+  }
+
+  const appendCurrentStep = () => {
+    setError(null)
+    try {
+      const step = withQueuedIds(buildCurrentStep(), chainSteps, model)
+      setChainSteps((current) => [...current, step])
+      clearStepFormForNext(step)
+      setChangeEditorOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add change')
+    }
+  }
+
+  const clearStepFormForNext = (step: GraphProposalStep) => {
+    if (step.action === 'add-node' || step.action === 'add-node-edge' || step.action === 'add-rmm' || step.action === 'add-mpd') {
+      setNewLabel('')
+      if (step.action === 'add-node-edge') setTargetValue('')
+    }
+    if (step.action === 'add-reference') {
+      setReferenceTitle('')
+      setReferenceCitation('')
+      setReferenceUrl('')
+    }
+  }
+
+  const editStep = (step: GraphProposalStep, index: number) => {
+    setAction(step.action)
+    setChangeEditorOpen(true)
+    hydrateStepForm(step, workingModel, workingNodes, setSourceValue, setTargetValue, setNewTargetValue, setNewLabel, setReferenceTitle, setReferenceCitation, setReferenceUrl, setReferencesText)
+    setChainSteps((current) => current.filter((_, i) => i !== index))
+  }
+
+  const draftSnapshot = (): PostModalSessionDraft => ({
+    title,
+    description,
+    action: activeAction,
+    changeEditorOpen,
+    sourceValue,
+    targetValue,
+    newTargetValue,
+    newLabel,
+    referenceTitle,
+    referenceCitation,
+    referenceUrl,
+    referencesText,
+    chainSteps,
+  })
+
+  const stashAndClose = () => {
+    postModalSessionStash = { key: stashKey, draft: draftSnapshot() }
+    onClose()
+  }
+
+  const cancelAndClose = () => {
+    if (postModalSessionStash?.key === stashKey) postModalSessionStash = null
+    onClose()
+  }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -1199,24 +1293,12 @@ function PostModal({
       return
     }
     try {
-      if (activeAction === 'commit-transform' && hasActiveTransformProposal) {
+      const plannedSteps = chainSteps.length > 0 ? chainSteps : []
+      if ((activeAction === 'commit-transform' || plannedSteps.some((step) => step.action === 'commit-transform')) && hasActiveTransformProposal) {
         throw new Error('A layout change proposal is already active for this graph.')
       }
-      const proposal = proposalEnabled
-        ? buildProposalPayload({
-          action: activeAction,
-          model,
-          nodes,
-          sourceValue,
-          targetValue,
-          newTargetValue,
-          newLabel,
-          transformDraft: draftTransforms,
-          referenceTitle,
-          referenceCitation,
-          referenceUrl,
-          referencesText,
-        })
+      const proposal = chainSteps.length > 0
+        ? chainSteps.length === 1 ? chainSteps[0] : { action: 'chain' as const, steps: chainSteps }
         : undefined
       const topic = await createForumTopic(diagramId, {
         forumRef,
@@ -1224,6 +1306,7 @@ function PostModal({
         description,
         ...(proposal ? { proposal } : {}),
       })
+      if (postModalSessionStash?.key === stashKey) postModalSessionStash = null
       onCreated(topic)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Post failed')
@@ -1231,11 +1314,16 @@ function PostModal({
   }
 
   return (
-    <div className="social-modal-backdrop" role="presentation">
+    <div
+      className="social-modal-backdrop"
+      role="presentation"
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) stashAndClose()
+      }}
+    >
       <form className="social-post-modal" onSubmit={(e) => void submit(e)} aria-label="Create forum post">
         <header>
           <h3>New post</h3>
-          <button type="button" onClick={onClose} aria-label="Close post dialog">Close</button>
         </header>
         <p className="social-post-author">Posting as {currentUser?.username ?? 'not logged in'}</p>
         <label>
@@ -1246,24 +1334,17 @@ function PostModal({
           Description
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
-        <label className="social-check-row">
-          <input
-            type="checkbox"
-            checked={proposalEnabled}
-            onChange={(e) => setProposalEnabled(e.target.checked)}
-          />
-          Suggest diagram change
-        </label>
-        {proposalEnabled && (
+        {changeEditorOpen && (
           <div className="social-proposal-fields">
             <select
+              className="social-action-select-badge"
               aria-label="Suggested action"
               value={activeAction}
               onChange={(e) => {
                 const next = e.target.value as GraphProposalAction
                 setAction(next)
                 if (next === 'modify-references') {
-                  setReferencesText(referenceLinesForSelection(model, nodes, sourceValue, targetValue))
+                  setReferencesText(referenceLinesForSelection(workingModel, workingNodes, sourceValue, targetValue))
                 }
               }}
             >
@@ -1297,7 +1378,8 @@ function PostModal({
             {activeAction !== 'add-node' && activeAction !== 'commit-transform' && (
               <div className="social-ref-selector compact">
                 <NodeSuggestInput
-                  nodes={nodes}
+                  nodes={workingNodes}
+                  previewIds={queuedNodeIds}
                   value={sourceValue}
                   onChange={setSourceValue}
                   placeholder="source"
@@ -1323,7 +1405,8 @@ function PostModal({
                   />
                 ) : (
                   <NodeSuggestInput
-                    nodes={nodes}
+                    nodes={workingNodes}
+                    previewIds={queuedNodeIds}
                     value={targetValue}
                     onChange={setTargetValue}
                     placeholder="target"
@@ -1374,7 +1457,8 @@ function PostModal({
             )}
             {activeAction === 'rewire-edge' && (
               <NodeSuggestInput
-                nodes={nodes}
+                nodes={workingNodes}
+                previewIds={queuedNodeIds}
                 value={newTargetValue}
                 onChange={setNewTargetValue}
                 placeholder="new target"
@@ -1383,9 +1467,46 @@ function PostModal({
             )}
           </div>
         )}
+        <div className="social-chain-builder">
+          {chainSteps.length > 0 && (
+            <ol aria-label="Suggested change chain">
+              {chainSteps.map((step, index) => (
+                <li key={`${step.action}-${index}`}>
+                  <span>{index + 1}. {proposalStepSummary(step, workingModel)}</span>
+                  <button type="button" onClick={() => editStep(step, index)}>Edit</button>
+                  <button
+                    type="button"
+                    onClick={() => setChainSteps((current) => moveChainStep(current, index, index - 1))}
+                    disabled={index === 0}
+                    aria-label="Move change up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChainSteps((current) => moveChainStep(current, index, index + 1))}
+                    disabled={index === chainSteps.length - 1}
+                    aria-label="Move change down"
+                  >
+                    ↓
+                  </button>
+                  <button type="button" onClick={() => setChainSteps((current) => current.filter((_, i) => i !== index))}>Remove</button>
+                </li>
+              ))}
+            </ol>
+          )}
+          <button
+            type="button"
+            className="social-chain-append"
+            onClick={changeEditorOpen ? appendCurrentStep : () => setChangeEditorOpen(true)}
+            aria-label={changeEditorOpen ? 'Append current diagram change' : 'Add suggested diagram change'}
+          >
+            <span aria-hidden>+</span>
+          </button>
+        </div>
         {error && <div className="social-forum-error">{error}</div>}
         <footer>
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={cancelAndClose}>Cancel</button>
           <button type="submit">Post</button>
         </footer>
       </form>
@@ -1513,25 +1634,27 @@ function ProfileSettingsModal({
   )
 }
 
-function TransformPreviewOverlay({
+function ProposalPreviewOverlay({
   model,
-  transforms,
+  proposal,
   themeMode,
   onClose,
 }: {
   model: Model
-  transforms: TransformProposalEntry[]
+  proposal: GraphProposal
   themeMode: ThemeMode
   onClose: () => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const steps = proposalSteps(proposal.payload)
+  const transforms = steps.flatMap((step) => step.action === 'commit-transform' ? step.transforms : [])
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     let disposed = false
     const renderer = new SceneRenderer({ preview: true, forceFullLod: true, socialDecorations: false })
-    const previewModel = modelWithTransforms(model, transforms)
+    const previewModel = previewModelForProposal(model, useOmniStore.getState().models, proposal) ?? model
     void renderer.init(host).then(() => {
       if (disposed) {
         renderer.destroy()
@@ -1544,91 +1667,28 @@ function TransformPreviewOverlay({
         grid: previewModel.grid,
         crossLinks: previewModel.crossLinks,
       })
+      renderer.setGraphProposals([proposal])
       renderer.setTransformPreview(transforms)
       renderer.setCamera(miniCameraForBounds(sceneBounds([...previewModel.nodes.values()]), renderer.getViewport()))
     }).catch((err: unknown) => {
-      console.warn('Transform preview failed:', err)
+      console.warn('Proposal preview failed:', err)
     })
     return () => {
       disposed = true
       renderer.destroy()
     }
-  }, [model, transforms, themeMode])
+  }, [model, proposal, themeMode, transforms])
 
   return (
-    <div className="social-transform-preview" role="dialog" aria-label="Transform proposal preview">
+    <div className="social-transform-preview" role="dialog" aria-label="Proposal preview">
       <header>
         <button type="button" className="social-thread-back" onClick={onClose}>Back</button>
         <div>
-          <h3>Layout preview</h3>
-          <p>{transforms.length} changed {transforms.length === 1 ? 'node' : 'nodes'}</p>
+          <h3>Change preview</h3>
+          <p>{steps.length} proposed {steps.length === 1 ? 'change' : 'changes'}</p>
         </div>
       </header>
       <div ref={hostRef} className="social-transform-preview-render" />
-    </div>
-  )
-}
-
-function modelWithTransforms(model: Model, transforms: TransformProposalEntry[]): Model {
-  const nodes = new Map(model.nodes)
-  for (const transform of transforms) {
-    const node = nodes.get(transform.nodeId)
-    if (node) nodes.set(node.id, { ...node, ...transform.to })
-  }
-  return { ...model, nodes }
-}
-
-function ReferencePreviewOverlay({
-  model,
-  proposal,
-  onClose,
-}: {
-  model: Model
-  proposal: GraphProposal
-  onClose: () => void
-}) {
-  const payload = proposal.payload
-  if (payload.action !== 'add-reference' && payload.action !== 'modify-references') return null
-  const edge = model.edges.get(payload.edgeId)
-  const current = edge?.references ?? []
-  const proposed = payload.action === 'add-reference'
-    ? [...current, payload.reference]
-    : payload.references
-  return (
-    <div className="social-modal-backdrop" role="presentation">
-      <section className="social-reference-preview-modal" role="dialog" aria-label="Reference proposal preview">
-        <header>
-          <h3>Reference preview</h3>
-          <button type="button" onClick={onClose} aria-label="Close reference preview">Close</button>
-        </header>
-        <div className="social-reference-preview-grid">
-          <ReferenceListPreview title="Current" references={current} />
-          <ReferenceListPreview title="Proposed" references={proposed} />
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function ReferenceListPreview({
-  title,
-  references,
-}: {
-  title: string
-  references: ConnectionReference[]
-}) {
-  return (
-    <div className="social-reference-preview-list">
-      <h4>{title}</h4>
-      {references.length === 0 ? (
-        <p>No references</p>
-      ) : references.map((ref, index) => (
-        <article key={`${ref.title}-${index}`}>
-          <strong>{ref.title}</strong>
-          {ref.citation && <span>{ref.citation}</span>}
-          {ref.url && <small>{ref.url}</small>}
-        </article>
-      ))}
     </div>
   )
 }
@@ -1728,7 +1788,287 @@ function buildProposalPayload(input: {
     case 'modify-references':
       if (!edge) throw new Error('Choose an existing connection')
       return { action: input.action, edgeId: edge.id, references: parseReferenceLines(input.referencesText) }
+    case 'chain':
+      throw new Error('Add chain entries before posting')
   }
+}
+
+function proposalStepSummary(step: GraphProposalStep, model: Model): string {
+  const nodeName = (id: string) => model.nodes.get(id)?.label || id
+  const edgeName = (id: string) => {
+    const edge = model.edges.get(id)
+    if (!edge) return id
+    return `${nodeName(edge.from)} → ${nodeName(edge.to)}`
+  }
+  switch (step.action) {
+    case 'add-node': return `Add node "${step.newNodeLabel}"`
+    case 'add-node-edge': return `Add "${step.newNodeLabel}" from ${nodeName(step.sourceNodeId)}`
+    case 'add-edge': return `Connect ${nodeName(step.sourceNodeId)} → ${nodeName(step.targetNodeId)}`
+    case 'add-rmm': return `Add RMM "${step.name}" to ${nodeName(step.nodeId)}`
+    case 'add-mpd': return `Add MPD "${step.name}" to ${nodeName(step.nodeId)}`
+    case 'remove-edge': return `Remove ${edgeName(step.edgeId)}`
+    case 'remove-node': return `Remove ${nodeName(step.nodeId)}`
+    case 'rename-node': return `Rename ${nodeName(step.nodeId)} to "${step.nextLabel}"`
+    case 'rename-edge': return `Rename ${edgeName(step.edgeId)} to "${step.nextLabel}"`
+    case 'rewire-edge': return `Rewire ${edgeName(step.edgeId)} to ${nodeName(step.nextTargetNodeId)}`
+    case 'commit-transform': return `Commit ${step.transforms.length} layout ${step.transforms.length === 1 ? 'change' : 'changes'}`
+    case 'add-reference': return `Add reference to ${edgeName(step.edgeId)}`
+    case 'modify-references': return `Modify references on ${edgeName(step.edgeId)}`
+  }
+}
+
+function restoreGraphDraftBaseline(): void {
+  const baseline = restorePublicGraphBaseline()
+  if (baseline) useOmniStore.getState().loadProject(baseline)
+}
+
+function currentProjectSnapshot() {
+  const state = useOmniStore.getState()
+  const models = new Map(state.models)
+  models.set(state.model.id, state.model)
+  return { rootModelId: state.model.id, models }
+}
+
+function moveChainStep(steps: GraphProposalStep[], from: number, to: number): GraphProposalStep[] {
+  if (to < 0 || to >= steps.length) return steps
+  const next = [...steps]
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  return next
+}
+
+function hydrateStepForm(
+  step: GraphProposalStep,
+  model: Model,
+  nodes: ModelNode[],
+  setSourceValue: (value: string) => void,
+  setTargetValue: (value: string) => void,
+  setNewTargetValue: (value: string) => void,
+  setNewLabel: (value: string) => void,
+  setReferenceTitle: (value: string) => void,
+  setReferenceCitation: (value: string) => void,
+  setReferenceUrl: (value: string) => void,
+  setReferencesText: (value: string) => void,
+): void {
+  const nodeName = (id: string) => {
+    const node = model.nodes.get(id)
+    return node ? nodeLabel(node) : id
+  }
+  const edge = 'edgeId' in step && step.edgeId ? model.edges.get(step.edgeId) : null
+  switch (step.action) {
+    case 'add-node':
+      setSourceValue('')
+      setTargetValue('')
+      setNewLabel(step.newNodeLabel)
+      break
+    case 'add-node-edge':
+      setSourceValue(nodeName(step.sourceNodeId))
+      setTargetValue(step.newNodeLabel)
+      setNewLabel('')
+      break
+    case 'add-edge':
+      setSourceValue(nodeName(step.sourceNodeId))
+      setTargetValue(nodeName(step.targetNodeId))
+      setNewLabel(step.label ?? '')
+      setReferencesText(step.references ? referenceLines(step.references) : '')
+      break
+    case 'add-rmm':
+    case 'add-mpd':
+      setSourceValue(nodeName(step.nodeId))
+      setTargetValue('')
+      setNewLabel(step.name)
+      break
+    case 'remove-node':
+    case 'rename-node':
+      setSourceValue(nodeName(step.nodeId))
+      setTargetValue('')
+      setNewLabel(step.action === 'rename-node' ? step.nextLabel : '')
+      break
+    case 'remove-edge':
+    case 'rename-edge':
+    case 'add-reference':
+    case 'modify-references':
+    case 'rewire-edge':
+      if (edge) {
+        setSourceValue(nodeName(edge.from))
+        setTargetValue(nodeName(edge.to))
+      }
+      if (step.action === 'rename-edge') setNewLabel(step.nextLabel)
+      if (step.action === 'add-reference') {
+        setReferenceTitle(step.reference.title)
+        setReferenceCitation(step.reference.citation)
+        setReferenceUrl(step.reference.url)
+      }
+      if (step.action === 'modify-references') setReferencesText(referenceLines(step.references))
+      if (step.action === 'rewire-edge') setNewTargetValue(nodeName(step.nextTargetNodeId))
+      break
+    case 'commit-transform':
+      void nodes
+      break
+  }
+}
+
+function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
+  const projected: Model = {
+    ...model,
+    nodes: new Map(model.nodes),
+    edges: new Map(model.edges),
+  }
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index]
+    switch (step.action) {
+      case 'add-node': {
+        const nodeId = step.nodeId ?? `queued_node_${index + 1}`
+        if (!projected.nodes.has(nodeId)) {
+          projected.nodes.set(nodeId, {
+            ...DEFAULT_NODE,
+            id: nodeId,
+            label: step.newNodeLabel,
+            x: step.geometry?.x ?? 50 + index * 3,
+            y: step.geometry?.y ?? 50,
+            w: step.geometry?.w ?? DEFAULT_NODE.w,
+            h: step.geometry?.h ?? DEFAULT_NODE.h,
+            shape: step.shape ?? DEFAULT_NODE.shape,
+            extra: { queuedPreview: true },
+          })
+        }
+        break
+      }
+      case 'add-node-edge': {
+        const source = projected.nodes.get(step.sourceNodeId)
+        const nodeId = step.nodeId ?? `queued_node_${index + 1}`
+        if (!projected.nodes.has(nodeId)) {
+          projected.nodes.set(nodeId, {
+            ...DEFAULT_NODE,
+            id: nodeId,
+            label: step.newNodeLabel,
+            x: step.geometry?.x ?? (source ? source.x + Math.max(8, source.w + 3) : 50 + index * 3),
+            y: step.geometry?.y ?? source?.y ?? 50,
+            w: step.geometry?.w ?? DEFAULT_NODE.w,
+            h: step.geometry?.h ?? DEFAULT_NODE.h,
+            shape: step.shape ?? DEFAULT_NODE.shape,
+            extra: { queuedPreview: true },
+          })
+        }
+        const target = projected.nodes.get(nodeId)
+        const edgeId = step.edgeId ?? `queued_edge_${index + 1}`
+        if (source && target && !projected.edges.has(edgeId)) {
+          projected.edges.set(edgeId, { ...DEFAULT_EDGE, id: edgeId, from: source.id, to: target.id, extra: { queuedPreview: true } })
+        }
+        break
+      }
+      case 'add-edge': {
+        const source = projected.nodes.get(step.sourceNodeId)
+        const target = projected.nodes.get(step.targetNodeId)
+        const edgeId = step.edgeId ?? `queued_edge_${index + 1}`
+        if (source && target && !projected.edges.has(edgeId)) {
+          projected.edges.set(edgeId, {
+            ...DEFAULT_EDGE,
+            ...(step.style ?? {}),
+            id: edgeId,
+            from: source.id,
+            to: target.id,
+            ...(step.label ? { label: step.label } : {}),
+            ...(step.references ? { references: step.references } : {}),
+            extra: { queuedPreview: true },
+          })
+        }
+        break
+      }
+      case 'remove-node': {
+        projected.nodes.delete(step.nodeId)
+        for (const edge of [...projected.edges.values()]) {
+          if (edge.from === step.nodeId || edge.to === step.nodeId) projected.edges.delete(edge.id)
+        }
+        break
+      }
+      case 'remove-edge':
+        projected.edges.delete(step.edgeId)
+        break
+      case 'rename-node': {
+        const node = projected.nodes.get(step.nodeId)
+        if (node) projected.nodes.set(node.id, { ...node, label: step.nextLabel })
+        break
+      }
+      case 'rename-edge': {
+        const edge = projected.edges.get(step.edgeId)
+        if (edge) projected.edges.set(edge.id, { ...edge, label: step.nextLabel })
+        break
+      }
+      case 'rewire-edge': {
+        const edge = projected.edges.get(step.edgeId)
+        if (edge && projected.nodes.has(step.nextTargetNodeId)) projected.edges.set(edge.id, { ...edge, to: step.nextTargetNodeId })
+        break
+      }
+      case 'add-reference': {
+        const edge = projected.edges.get(step.edgeId)
+        if (edge) projected.edges.set(edge.id, { ...edge, references: [...(edge.references ?? []), step.reference] })
+        break
+      }
+      case 'modify-references': {
+        const edge = projected.edges.get(step.edgeId)
+        if (edge) projected.edges.set(edge.id, { ...edge, references: step.references.length > 0 ? step.references : undefined })
+        break
+      }
+      case 'commit-transform':
+        for (const transform of step.transforms) {
+          const node = projected.nodes.get(transform.nodeId)
+          if (node) projected.nodes.set(node.id, { ...node, ...transform.to })
+        }
+        break
+      case 'add-rmm':
+      case 'add-mpd':
+        break
+    }
+  }
+  return projected
+}
+
+function withQueuedIds(step: GraphProposalStep, currentSteps: GraphProposalStep[], model: Model): GraphProposalStep {
+  const nodeIds = new Set(model.nodes.keys())
+  const edgeIds = new Set(model.edges.keys())
+  collectQueuedIds(currentSteps, nodeIds, edgeIds)
+  switch (step.action) {
+    case 'add-node':
+      return step.nodeId ? step : { ...step, nodeId: uniqueQueuedId('queued_node', step.newNodeLabel, nodeIds) }
+    case 'add-node-edge':
+      return {
+        ...step,
+        nodeId: step.nodeId ?? uniqueQueuedId('queued_node', step.newNodeLabel, nodeIds),
+        edgeId: step.edgeId ?? uniqueQueuedId('queued_edge', `${step.sourceNodeId}_${step.newNodeLabel}`, edgeIds),
+      }
+    case 'add-edge':
+      return step.edgeId ? step : { ...step, edgeId: uniqueQueuedId('queued_edge', `${step.sourceNodeId}_${step.targetNodeId}`, edgeIds) }
+    default:
+      return step
+  }
+}
+
+function collectQueuedIds(steps: GraphProposalStep[], nodeIds: Set<string>, edgeIds: Set<string>): void {
+  for (const step of steps) {
+    if ((step.action === 'add-node' || step.action === 'add-node-edge') && step.nodeId) nodeIds.add(step.nodeId)
+    if ((step.action === 'add-node-edge' || step.action === 'add-edge') && step.edgeId) edgeIds.add(step.edgeId)
+  }
+}
+
+function queuedNodeIdSet(steps: GraphProposalStep[]): Set<string> {
+  const ids = new Set<string>()
+  for (const step of steps) {
+    if ((step.action === 'add-node' || step.action === 'add-node-edge') && step.nodeId) ids.add(step.nodeId)
+  }
+  return ids
+}
+
+function uniqueQueuedId(prefix: 'queued_node' | 'queued_edge', label: string, used: Set<string>): string {
+  const slug = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'item'
+  let id = `${prefix}_${slug}`
+  let suffix = 2
+  while (used.has(id)) {
+    id = `${prefix}_${slug}_${suffix}`
+    suffix++
+  }
+  used.add(id)
+  return id
 }
 
 function selectedNodesForForum(model: Model, ref: ForumRef): Set<string> {
@@ -1830,6 +2170,22 @@ function sortedNodes(model: Model): ModelNode[] {
   return [...model.nodes.values()].sort((a, b) => nodeLabel(a).localeCompare(nodeLabel(b)))
 }
 
+function connectedTargetsForSource(model: Model, nodes: ModelNode[], sourceId: string): ModelNode[] {
+  const targetIds = new Set<string>()
+  for (const edge of model.edges.values()) {
+    if (edge.from === sourceId) targetIds.add(edge.to)
+  }
+  return nodes.filter((node) => targetIds.has(node.id))
+}
+
+function connectedSourcesForTarget(model: Model, nodes: ModelNode[], targetId: string): ModelNode[] {
+  const sourceIds = new Set<string>()
+  for (const edge of model.edges.values()) {
+    if (edge.to === targetId) sourceIds.add(edge.from)
+  }
+  return nodes.filter((node) => sourceIds.has(node.id))
+}
+
 function nodeLabel(node: ModelNode): string {
   return node.label.trim() || node.id
 }
@@ -1852,6 +2208,10 @@ function nodeLabelExists(model: Model, label: string, exceptId?: string): boolea
 
 function formatReferenceLine(ref: ConnectionReference): string {
   return [ref.title, ref.citation, ref.url].map((part) => part.replace(/\|/g, '/')).join(' | ')
+}
+
+function referenceLines(references: ConnectionReference[]): string {
+  return references.map(formatReferenceLine).join('\n')
 }
 
 function parseReferenceLines(value: string): ConnectionReference[] {
@@ -1953,6 +2313,7 @@ function proposalActionIcon(action: GraphProposalAction): string {
     case 'modify-references': return 'R'
     case 'rewire-edge': return '↪'
     case 'commit-transform': return '⇧'
+    case 'chain': return '⛓'
   }
 }
 
@@ -1961,7 +2322,7 @@ function isConcludedProposal(proposal: GraphProposal): boolean {
 }
 
 function isActiveTransformProposal(proposal: GraphProposal): boolean {
-  return proposal.payload.action === 'commit-transform' && (proposal.status === 'pending' || proposal.status === 'accepted')
+  return proposalContainsAction(proposal.payload, 'commit-transform') && (proposal.status === 'pending' || proposal.status === 'accepted')
 }
 
 function mergeSocialScores(base: EntitySocialScores, debug: EntitySocialScores): EntitySocialScores {

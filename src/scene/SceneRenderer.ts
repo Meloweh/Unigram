@@ -35,9 +35,9 @@ import { TEXT_GEN_SOUND_PRESETS } from '../audio/textGenSounds'
 import { TextFormatRunner } from '../flow/TextFormatRunner'
 import type { FlowEffect, SpawnItem } from '../flow/types'
 import type { CrossEffectLink } from '../model/types'
-import type { EntitySocialScores, GraphProposal, GraphProposalAction, TransformProposalEntry } from '../social/forumTypes'
+import { proposalSteps, type EntitySocialScores, type GraphProposal, type GraphProposalAction, type TransformProposalEntry } from '../social/forumTypes'
 import { cosmeticAabbPadPercent, cosmeticTip, cosmeticTipFromLocalPoint, cosmeticTipHandleLocalPx, cosmeticTypeOf } from './cosmeticGeometry'
-import { NODE_FONT_FAMILY, NODE_FONT_SIZE, NODE_LABEL_FILL } from './nodeStyle'
+import { NODE_FONT_FAMILY, NODE_FONT_SIZE, NODE_LABEL_FILL, NODE_STROKE_WIDTH, nodeFillGradient } from './nodeStyle'
 
 export interface ModelView {
   nodes: ReadonlyMap<string, ModelNode>
@@ -79,6 +79,9 @@ const CULL_PADDING = 5 // scene percent
 const DETAILED_SELECTION_LIMIT = 80
 const FLOW_CINEMATIC_EFFECTIVE_SCALE = 1.18
 const EDGE_ARROW_LEN = 16
+const SOCIAL_SPECIAL_POSITIVE_THRESHOLD = 80
+const SOCIAL_NEGATIVE_PENALTY_WEIGHT = 2
+const MAX_SCREEN_CHROME_ZOOM_SCALE = 5
 
 export class SceneRenderer {
   private app: Application | null = null
@@ -95,6 +98,8 @@ export class SceneRenderer {
   private proposalGfx!: Graphics
   private importanceLayer!: Container
   private importanceGfx!: Graphics
+  private voteBadgeLayer!: Container
+  private voteBadgeGfx!: Graphics
   private voteBadgeLabels: Text[] = []
   private voteBadgeUntilMs = 0
   private voteBadgeStartedMs = 0
@@ -278,7 +283,11 @@ export class SceneRenderer {
     if (this.app) throw new Error('SceneRenderer already initialised')
     const app = new Application()
     await app.init({
-      preference: 'webgpu',
+      // Prefer the stable WebGL path in dev until we have an explicit WebGPU
+      // adapter probe. Pixi's WebGPU init logs noisy "No available adapters"
+      // messages on browsers that expose navigator.gpu but cannot actually
+      // provide an adapter, and can leave route remounts blank.
+      preference: 'webgl',
       resizeTo: host,
       antialias: true,
       // Transparent canvas — diagram background is rendered by a DOM layer
@@ -312,6 +321,11 @@ export class SceneRenderer {
     this.importanceGfx = new Graphics()
     this.importanceGfx.eventMode = 'none'
     this.importanceLayer.addChild(this.importanceGfx)
+    this.voteBadgeLayer = new Container()
+    this.voteBadgeLayer.eventMode = 'none'
+    this.voteBadgeGfx = new Graphics()
+    this.voteBadgeGfx.eventMode = 'none'
+    this.voteBadgeLayer.addChild(this.voteBadgeGfx)
     this.proposalLayer = new Container()
     this.proposalLayer.eventMode = 'none'
     this.proposalGfx = new Graphics()
@@ -400,7 +414,6 @@ export class SceneRenderer {
     this.world.addChildAt(this.particleLayer.container, 1)
     // RMM stage + connection ghost live in screen coords ABOVE the world.
     this.rmmStage = new Container()
-    this.rmmStage = new Container()
     this.rmmStage.eventMode = 'none'
     this.rmmStage.visible = false
     this.rmmFrame = new Graphics()
@@ -410,6 +423,7 @@ export class SceneRenderer {
     this.rmmStage.addChild(this.rmmFrame)
     this.rmmStage.addChild(this.rmmContent)
     app.stage.addChild(this.rmmStage)
+    app.stage.addChild(this.voteBadgeLayer)
     this.connectGhost = new Graphics()
     this.connectGhost.eventMode = 'none'
     this.connectGhost.visible = false
@@ -792,6 +806,10 @@ export class SceneRenderer {
     this.dirty = true
   }
 
+  getSocialVoteBreakdown(kind: 'node' | 'edge', id: string): { positive: number; negative: number } {
+    return this.voteBreakdownFor(kind, id)
+  }
+
   private startSelectionVoteBadge(): void {
     if (this.options.preview || this.options.socialDecorations === false) return
     const now = performance.now()
@@ -1104,11 +1122,7 @@ export class SceneRenderer {
     this.playActiveNodes.clear()
     this.activatedPreviewNodes.clear()
     this.activePreviewGroups.clear()
-    this.flowOverlayGfx?.clear()
-    this.flowWireGlowGfx?.clear()
-    for (const ring of this.flowRingPool) ring.visible = false
-    for (const aura of this.flowAuraPool) aura.visible = false
-    this.setFlowGlowFilter(false)
+    this.clearFlowOverlay()
     this.dirty = true
   }
 
@@ -1129,7 +1143,9 @@ export class SceneRenderer {
     for (const [id, h] of this.playActiveNodes) {
       if (now > h.startMs + h.durMs) this.playActiveNodes.delete(id)
     }
-    return this.playRuns.size > 0 || this.playWires.size > 0 || this.playActiveNodes.size > 0
+    const active = this.playRuns.size > 0 || this.playWires.size > 0 || this.playActiveNodes.size > 0
+    if (!active) this.clearFlowOverlay()
+    return active
   }
 
   /** Begin a text-generator on `nodeId`. Restores original label on stop. */
@@ -1206,14 +1222,22 @@ export class SceneRenderer {
   /** Query connection ids whose segment intersects `aabb`. Reuses caller-supplied buffer. */
   queryEdgesAabb(aabb: SceneAabb, out: string[] = []): string[] {
     out.length = 0
-    this.edgeQuadtree.query(aabb, this.queryEdgeIds)
+    const queryAabb = expandAabb(aabb, 0.35)
+    this.edgeQuadtree.query(queryAabb, this.queryEdgeIds)
     for (let i = 0; i < this.queryEdgeIds.length; i++) {
       const e = this.model.edges.get(this.queryEdgeIds[i])
       if (!e) continue
       const from = this.model.nodes.get(e.from)
       const to = this.model.nodes.get(e.to)
       if (!from || !to) continue
-      if (lineSegmentIntersectsAabb(from.x, from.y, to.x, to.y, aabb)) out.push(e.id)
+      if (lineSegmentIntersectsAabb(from.x, from.y, to.x, to.y, queryAabb)) {
+        out.push(e.id)
+        continue
+      }
+      const endpoints = this.edgeEndpointScenePercents(from, to)
+      if (endpoints && lineSegmentIntersectsAabb(endpoints.sx, endpoints.sy, endpoints.tx, endpoints.ty, queryAabb)) {
+        out.push(e.id)
+      }
     }
     return out
   }
@@ -1244,6 +1268,7 @@ export class SceneRenderer {
   }
 
   getViewport(): ViewportSize {
+    this.syncViewportFromRenderer()
     return this.viewport
   }
 
@@ -1438,16 +1463,10 @@ export class SceneRenderer {
   private onTick = (ticker: { deltaMS: number }): void => {
     if (this.disposed) return
     if (!this.app) return
-    // Resize tracking: Pixi's resizeTo handles canvas; we mirror viewport size.
-    if (
-      this.viewport.width !== this.app.screen.width ||
-      this.viewport.height !== this.app.screen.height
-    ) {
-      this.viewport = { width: this.app.screen.width, height: this.app.screen.height }
-      // Particle wrap region stays anchored to the virtual scene; do not
-      // resync to the screen viewport on resize.
-      this.dirty = true
-    }
+    // Resize tracking: Pixi's resizeTo handles canvas; we mirror viewport size
+    // and re-apply the camera so DOM overlays and the Pixi world share the
+    // same viewport centre after browser resizes.
+    this.syncViewportFromRenderer()
     if (this.dirty) {
       this.cullAndDraw()
       this.dirty = false
@@ -1467,13 +1486,9 @@ export class SceneRenderer {
     // BFS schedule baked into `playWires` / `playActiveNodes`.
     if (this.playWires.size > 0 || this.playActiveNodes.size > 0) {
       this.drawFlowOverlay(performance.now())
-    } else if (this.flowOverlayGfx && (this.flowOverlayGfx as { geometry?: unknown }).geometry) {
+    } else {
       // Ensure the overlay is cleared once the cascade ends.
-      this.flowOverlayGfx.clear()
-      this.flowWireGlowGfx?.clear()
-      for (const ring of this.flowRingPool) ring.visible = false
-      for (const aura of this.flowAuraPool) aura.visible = false
-      this.setFlowGlowFilter(false)
+      this.clearFlowOverlay()
     }
     // Camera-tracking lerp: keep ticking while either an active cameraTracked
     // halo / wire reveal exists or the offset hasn't fully eased back to zero.
@@ -1506,7 +1521,12 @@ export class SceneRenderer {
       // remains accurate at any refresh rate.
       this.particleLayer.tick(ticker.deltaMS / 16.667)
     }
-    if (this.hasActiveVoteBadge() || this.hasMedalSocialScore()) this.drawSocialImportance()
+    if (this.hasActiveVoteBadge() || this.hasAmbientSocialEffect()) {
+      this.drawSocialImportance()
+    } else if (this.voteBadgeLabels.some((label) => label.visible)) {
+      this.voteBadgeGfx.clear()
+      this.hideUnusedVoteBadgeLabels(0)
+    }
     // Selection breathing animation: the amber aura waves softly below the
     // node while the blue membrane frame stays sharp above it.
     if (this.selectedIds.size > 0) {
@@ -1586,6 +1606,22 @@ export class SceneRenderer {
     this.world.scale.set(this.effectiveScale)
     this.world.x = this.viewport.width / 2 + (this.camera.panX + dPanX + this.cameraTrackOffsetX) * this.effectiveScale + screenShakeX
     this.world.y = this.viewport.height / 2 + (this.camera.panY + dPanY + this.cameraTrackOffsetY) * this.effectiveScale + screenShakeY
+  }
+
+  private syncViewportFromRenderer(): boolean {
+    if (!this.app) return false
+    if (
+      this.viewport.width === this.app.screen.width &&
+      this.viewport.height === this.app.screen.height
+    ) {
+      return false
+    }
+    this.viewport = { width: this.app.screen.width, height: this.app.screen.height }
+    // Particle wrap region stays anchored to the virtual scene; do not resync
+    // it to the screen viewport on resize.
+    this.applyCameraTransform()
+    this.dirty = true
+    return true
   }
 
   /**
@@ -1849,7 +1885,7 @@ export class SceneRenderer {
         e,
         this.visualNode(from),
         emergeProgress != null && emergeProgress < 0.999 ? to : this.visualNode(to),
-        this.edgeRevealFor(e.id),
+        null,
         emergeProgress,
       )
       visibleEdges.add(e.id)
@@ -1891,7 +1927,7 @@ export class SceneRenderer {
     return this.isNodeHiddenBySpawnState(from, true) || this.isNodeHiddenBySpawnState(to, true)
   }
 
-  private edgeRevealFor(edgeId: string): EdgeRevealGap | null {
+  private edgePopupMetricsFor(edgeId: string): EdgeRevealGap | null {
     const metrics = this.connectionPopupMetrics
     if (!metrics || metrics.edgeId !== edgeId || !this.selectedEdgeIds.has(edgeId)) return null
     const scale = Math.max(0.001, this.effectiveScale)
@@ -1922,60 +1958,66 @@ export class SceneRenderer {
     for (const proposal of this.graphProposals) {
       if (proposal.status !== 'pending' && proposal.status !== 'accepted') continue
       const accepted = proposal.status === 'accepted'
-      switch (proposal.payload.action) {
+      const steps = proposalSteps(proposal.payload)
+      for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+        const step = steps[stepIndex]
+        const stepSuffix = steps.length === 1 ? proposal.id : `${proposal.id}_${stepIndex + 1}`
+        switch (step.action) {
         case 'add-node': {
-          const existing = this.model.nodes.get(proposalCreatedNodeId(proposal.id))
+          const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
+          const existing = this.model.nodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
-            id: proposalCreatedNodeId(proposal.id),
-            label: proposal.payload.newNodeLabel,
-            x: 50,
-            y: 50,
-            w: DEFAULT_NODE.w,
-            h: DEFAULT_NODE.h,
-            shape: DEFAULT_NODE.shape,
+            id: nodeId,
+            label: step.newNodeLabel,
+            x: step.geometry?.x ?? 50,
+            y: step.geometry?.y ?? 50,
+            w: step.geometry?.w ?? DEFAULT_NODE.w,
+            h: step.geometry?.h ?? DEFAULT_NODE.h,
+            shape: step.shape ?? DEFAULT_NODE.shape,
             cellColor: DEFAULT_NODE.cellColor,
             membraneColor: DEFAULT_NODE.membraneColor,
           }
-          this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          this.drawProposalNodeGhost(g, ghost, accepted, step.action)
           labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-node-edge': {
-          const source = this.model.nodes.get(proposal.payload.sourceNodeId)
+          const source = this.model.nodes.get(step.sourceNodeId)
           if (!source) break
-          const existing = this.model.nodes.get(proposalCreatedNodeId(proposal.id))
+          const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
+          const existing = this.model.nodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
-            id: proposalCreatedNodeId(proposal.id),
-            label: proposal.payload.newNodeLabel,
-            x: source.x + Math.max(8, source.w + 3),
-            y: source.y,
-            w: DEFAULT_NODE.w,
-            h: DEFAULT_NODE.h,
-            shape: DEFAULT_NODE.shape,
+            id: nodeId,
+            label: step.newNodeLabel,
+            x: step.geometry?.x ?? source.x + Math.max(8, source.w + 3),
+            y: step.geometry?.y ?? source.y,
+            w: step.geometry?.w ?? DEFAULT_NODE.w,
+            h: step.geometry?.h ?? DEFAULT_NODE.h,
+            shape: step.shape ?? DEFAULT_NODE.shape,
             cellColor: DEFAULT_NODE.cellColor,
             membraneColor: DEFAULT_NODE.membraneColor,
           }
-          this.drawProposalConnectionGhost(g, source, ghost, accepted, proposal.payload.action)
-          this.drawProposalNodeGhost(g, ghost, accepted, proposal.payload.action)
+          this.drawProposalConnectionGhost(g, source, ghost, accepted, step.action)
+          this.drawProposalNodeGhost(g, ghost, accepted, step.action)
           labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-edge': {
-          const source = this.model.nodes.get(proposal.payload.sourceNodeId)
-          const target = this.model.nodes.get(proposal.payload.targetNodeId)
-          if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, proposal.payload.action)
+          const source = this.model.nodes.get(step.sourceNodeId)
+          const target = this.model.nodes.get(step.targetNodeId)
+          if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, step.action)
           break
         }
         case 'add-rmm':
         case 'add-mpd': {
-          const node = this.model.nodes.get(proposal.payload.nodeId)
-          if (node) this.drawProposalNodeConstruction(g, node, accepted, proposal.payload.action)
+          const node = this.model.nodes.get(step.nodeId)
+          if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
           break
         }
         case 'remove-node':
         case 'rename-node': {
-          const node = this.model.nodes.get(proposal.payload.nodeId)
-          if (node) this.drawProposalNodeConstruction(g, node, accepted, proposal.payload.action)
+          const node = this.model.nodes.get(step.nodeId)
+          if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
           break
         }
         case 'remove-edge':
@@ -1983,19 +2025,20 @@ export class SceneRenderer {
         case 'add-reference':
         case 'modify-references':
         case 'rewire-edge': {
-          const edge = this.model.edges.get(proposal.payload.edgeId)
+          const edge = this.model.edges.get(step.edgeId)
           if (!edge) break
-          this.drawProposalEdgeConstruction(g, edge, accepted, proposal.payload.action)
-          if (proposal.payload.action === 'rewire-edge') {
+          this.drawProposalEdgeConstruction(g, edge, accepted, step.action)
+          if (step.action === 'rewire-edge') {
             const source = this.model.nodes.get(edge.from)
-            const target = this.model.nodes.get(proposal.payload.nextTargetNodeId)
-            if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, proposal.payload.action)
+            const target = this.model.nodes.get(step.nextTargetNodeId)
+            if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, step.action)
           }
           break
         }
         case 'commit-transform':
-          this.drawTransformPreview(g, proposal.payload.transforms)
+          this.drawTransformPreview(g, step.transforms)
           break
+        }
       }
     }
     this.hideUnusedProposalLabels(labelIndex)
@@ -2010,11 +2053,11 @@ export class SceneRenderer {
       return
     }
     const now = performance.now()
-    const nodeScores = this.socialScores.nodeScores
-    const edgeScores = this.socialScores.edgeScores
     for (const id of this.prevVisibleEdges) {
-      const score = edgeScores[id] ?? 0
-      if (score === 0) continue
+      const votes = this.voteBreakdownFor('edge', id)
+      const highSupport = isSpecialSocialVote(votes)
+      const netNegative = isNegativeSocialVote(votes)
+      if (!highSupport && !netNegative) continue
       const edge = this.model.edges.get(id)
       if (!edge) continue
       const source = this.model.nodes.get(edge.from)
@@ -2022,54 +2065,122 @@ export class SceneRenderer {
       if (!source || !target) continue
       const endpoints = this.edgeEndpointPixels(source, target)
       if (!endpoints) continue
-      const power = socialPower(Math.abs(score))
-      const color = socialMembraneColor(score, colorStringToNumber(edge.color, 0xf59e0b))
-      if (color == null) continue
-      const base = Math.max(1, (edge.width / 100) * SCENE_W)
-      g.moveTo(endpoints.sx, endpoints.sy).lineTo(endpoints.tx, endpoints.ty)
-      g.stroke({ color, width: base + 2.5 + power * 4, alpha: 0.18 + power * 0.16, alignment: 0.5 })
+      if (highSupport) this.drawEdgeGlitters(g, id, endpoints, now)
+      if (netNegative) this.drawEdgeSkulls(g, id, endpoints, now)
     }
     for (const id of this.prevVisibleNodes) {
-      const score = nodeScores[id] ?? 0
+      const votes = this.voteBreakdownFor('node', id)
+      const highSupport = isSpecialSocialVote(votes)
+      const netNegative = isNegativeSocialVote(votes)
+      if (!highSupport && !netNegative) continue
       const node = this.model.nodes.get(id)
       if (!node) continue
-      const color = socialMembraneColor(score, this.effectiveMembraneColor(node))
-      if (color == null) continue
       const visual = this.visualNode(node)
       const cx = (visual.x / 100) * SCENE_W
       const cy = (visual.y / 100) * SCENE_H
       const w = (visual.w / 100) * SCENE_W
       const h = (visual.h / 100) * SCENE_H
-      drawSceneNodeShapePath(g, visual.shape, cx, cy, w, h)
-      g.stroke({
-        color,
-        width: score >= 45 ? 4.2 : score >= 30 ? 3.6 : 3,
-        alpha: score >= 80 ? 0.9 : 0.72,
-        alignment: 0.5,
-      })
-      if (score >= 80) this.drawMedalSparkles(g, id, cx, cy, w, h, now)
+      if (highSupport) this.drawMedalSparkles(g, id, cx, cy, w, h, now)
+      if (netNegative) this.drawNodeSkulls(g, id, cx, cy, w, h, now)
     }
-    this.drawSelectionVoteBadges(g, now)
+    this.drawSelectionVoteBadges(now)
   }
 
   private drawMedalSparkles(g: Graphics, id: string, cx: number, cy: number, w: number, h: number, now: number): void {
     const seed = hashString(id)
-    const pulse = Math.sin(now / 950 + seed * 0.017)
-    if (pulse < 0.72) return
-    const alpha = (pulse - 0.72) / 0.28
+    const alpha = ambientSocialPulse(seed, now)
+    if (alpha <= 0) return
     const radius = Math.max(w, h) / 2 + 12
     for (let i = 0; i < 3; i++) {
       const angle = seed * 0.013 + i * 2.1 + now / 1800
       const x = cx + Math.cos(angle) * radius * (0.82 + i * 0.08)
       const y = cy + Math.sin(angle) * radius * (0.7 + i * 0.05)
       const s = 3.4 + i * 0.8
-      g.moveTo(x - s, y).lineTo(x + s, y)
-      g.moveTo(x, y - s).lineTo(x, y + s)
-      g.stroke({ color: 0xffd76a, width: 1.5, alpha: 0.16 + alpha * 0.44, alignment: 0.5 })
+      this.drawGlitter(g, x, y, s, 0xffd76a, 0.16 + alpha * 0.44)
     }
   }
 
-  private drawSelectionVoteBadges(g: Graphics, now: number): void {
+  private drawNodeSkulls(g: Graphics, id: string, cx: number, cy: number, w: number, h: number, now: number): void {
+    const seed = hashString(`${id}:skull`)
+    const alpha = ambientSocialPulse(seed, now, 1.2)
+    if (alpha <= 0) return
+    const radius = Math.max(w, h) / 2 + 10
+    for (let i = 0; i < 2; i++) {
+      const angle = seed * 0.011 + i * 2.7 + now / 2300
+      const x = cx + Math.cos(angle) * radius
+      const y = cy + Math.sin(angle) * radius * 0.78
+      this.drawTinySkull(g, x, y, 6 + i * 0.8, 0.12 + alpha * 0.32)
+    }
+  }
+
+  private drawEdgeGlitters(
+    g: Graphics,
+    id: string,
+    endpoints: { sx: number; sy: number; tx: number; ty: number },
+    now: number,
+  ): void {
+    const seed = hashString(`${id}:edge-glitter`)
+    const alpha = ambientSocialPulse(seed, now)
+    if (alpha <= 0) return
+    const dx = endpoints.tx - endpoints.sx
+    const dy = endpoints.ty - endpoints.sy
+    const len = Math.hypot(dx, dy)
+    if (len < 1) return
+    const nx = -dy / len
+    const ny = dx / len
+    for (let i = 0; i < 3; i++) {
+      const t = 0.18 + (((seed >>> (i * 5)) % 64) / 100)
+      const lift = 8 + i * 2.8 + Math.sin(now / 1350 + seed * 0.009 + i) * 2
+      const x = endpoints.sx + dx * t + nx * lift
+      const y = endpoints.sy + dy * t + ny * lift
+      this.drawGlitter(g, x, y, 2.8 + i * 0.55, 0xffd76a, 0.14 + alpha * 0.34)
+    }
+  }
+
+  private drawEdgeSkulls(
+    g: Graphics,
+    id: string,
+    endpoints: { sx: number; sy: number; tx: number; ty: number },
+    now: number,
+  ): void {
+    const seed = hashString(`${id}:edge-skull`)
+    const alpha = ambientSocialPulse(seed, now, 1.35)
+    if (alpha <= 0) return
+    const dx = endpoints.tx - endpoints.sx
+    const dy = endpoints.ty - endpoints.sy
+    const len = Math.hypot(dx, dy)
+    if (len < 1) return
+    const nx = -dy / len
+    const ny = dx / len
+    const t = 0.28 + ((seed % 42) / 100)
+    const lift = 10 + Math.sin(now / 1500 + seed * 0.01) * 2
+    this.drawTinySkull(g, endpoints.sx + dx * t + nx * lift, endpoints.sy + dy * t + ny * lift, 5.2, 0.1 + alpha * 0.3)
+  }
+
+  private drawGlitter(g: Graphics, x: number, y: number, size: number, color: number, alpha: number): void {
+    g.moveTo(x - size, y).lineTo(x + size, y)
+    g.moveTo(x, y - size).lineTo(x, y + size)
+    g.stroke({ color, width: 1.35, alpha, alignment: 0.5 })
+  }
+
+  private drawTinySkull(g: Graphics, x: number, y: number, size: number, alpha: number): void {
+    const color = 0xa83a42
+    g.circle(x, y - size * 0.14, size * 0.58)
+    g.fill({ color, alpha })
+    g.roundRect(x - size * 0.38, y + size * 0.28, size * 0.76, size * 0.46, size * 0.12)
+    g.fill({ color, alpha })
+    g.circle(x - size * 0.2, y - size * 0.18, size * 0.11)
+    g.circle(x + size * 0.2, y - size * 0.18, size * 0.11)
+    g.fill({ color: 0x5f1720, alpha: alpha * 0.55 })
+    g.moveTo(x - size * 0.2, y + size * 0.38).lineTo(x - size * 0.2, y + size * 0.62)
+    g.moveTo(x, y + size * 0.36).lineTo(x, y + size * 0.62)
+    g.moveTo(x + size * 0.2, y + size * 0.38).lineTo(x + size * 0.2, y + size * 0.62)
+    g.stroke({ color: 0x5f1720, width: 0.8, alpha: alpha * 0.48, alignment: 0.5 })
+  }
+
+  private drawSelectionVoteBadges(now: number): void {
+    const g = this.voteBadgeGfx
+    g.clear()
     let labelIndex = 0
     if (!this.hasActiveVoteBadge(now)) {
       this.hideUnusedVoteBadgeLabels(labelIndex)
@@ -2086,15 +2197,15 @@ export class SceneRenderer {
       return
     }
 
-    const inv = 1 / Math.max(0.35, this.effectiveScale)
+    const inv = Math.max(0.9, Math.min(MAX_SCREEN_CHROME_ZOOM_SCALE, this.effectiveScale))
     for (const id of this.selectedIds) {
       const node = this.model.nodes.get(id)
       if (!node) continue
       const votes = this.voteBreakdownFor('node', id)
       const visual = this.visualNode(node)
-      const cx = (visual.x / 100) * SCENE_W
-      const cy = (visual.y / 100) * SCENE_H
-      const w = (visual.w / 100) * SCENE_W
+      const cx = this.world.x + ((visual.x / 100) * SCENE_W) * this.effectiveScale
+      const cy = this.world.y + ((visual.y / 100) * SCENE_H) * this.effectiveScale
+      const w = (visual.w / 100) * SCENE_W * this.effectiveScale
       labelIndex = this.drawVoteBadge(
         g,
         cx + w / 2 + 7 * inv,
@@ -2115,25 +2226,34 @@ export class SceneRenderer {
       if (!source || !target) continue
       const endpoints = this.edgeEndpointPixels(source, target)
       if (!endpoints) continue
-      const dx = endpoints.tx - endpoints.sx
-      const dy = endpoints.ty - endpoints.sy
+      const sx = this.world.x + endpoints.sx * this.effectiveScale
+      const sy = this.world.y + endpoints.sy * this.effectiveScale
+      const tx = this.world.x + endpoints.tx * this.effectiveScale
+      const ty = this.world.y + endpoints.ty * this.effectiveScale
+      const dx = tx - sx
+      const dy = ty - sy
       const len = Math.hypot(dx, dy)
       if (len < 1) continue
       const nx = -dy / len
       const ny = dx / len
-      const midX = (endpoints.sx + endpoints.tx) / 2
-      const midY = (endpoints.sy + endpoints.ty) / 2
-      labelIndex = this.drawVoteBadge(
-        g,
-        midX + nx * 16 * inv,
-        midY + ny * 16 * inv,
-        this.voteBreakdownFor('edge', id),
-        labelIndex,
-        progress,
-        alpha,
-        inv,
-        { x: midX, y: midY },
-      )
+      const midX = (sx + tx) / 2
+      const midY = (sy + ty) / 2
+      const popup = this.edgePopupMetricsFor(id)
+      if (popup && popup.progress > 0.001) {
+        continue
+      } else {
+        const offset = 36 * inv
+        labelIndex = this.drawVoteBadge(
+          g,
+          midX + nx * offset,
+          midY + ny * offset,
+          this.voteBreakdownFor('edge', id),
+          labelIndex,
+          progress,
+          alpha,
+          inv,
+        )
+      }
     }
     this.hideUnusedVoteBadgeLabels(labelIndex)
   }
@@ -2196,7 +2316,7 @@ export class SceneRenderer {
       })
       label.anchor.set(0.5)
       label.eventMode = 'none'
-      this.importanceLayer.addChild(label)
+      this.voteBadgeLayer.addChild(label)
       this.voteBadgeLabels.push(label)
     }
     label.visible = true
@@ -2225,10 +2345,21 @@ export class SceneRenderer {
     }
   }
 
-  private hasMedalSocialScore(): boolean {
+  private hasAmbientSocialEffect(): boolean {
     if (this.options.socialDecorations === false) return false
-    for (const score of Object.values(this.socialScores.nodeScores)) {
-      if (score >= 80) return true
+    const nodeIds = new Set([
+      ...Object.keys(this.socialScores.nodeScores),
+      ...Object.keys(this.socialScores.nodeVotes ?? {}),
+    ])
+    for (const id of nodeIds) {
+      if (hasAmbientSocialVotes(this.voteBreakdownFor('node', id))) return true
+    }
+    const edgeIds = new Set([
+      ...Object.keys(this.socialScores.edgeScores),
+      ...Object.keys(this.socialScores.edgeVotes ?? {}),
+    ])
+    for (const id of edgeIds) {
+      if (hasAmbientSocialVotes(this.voteBreakdownFor('edge', id))) return true
     }
     return false
   }
@@ -2413,6 +2544,22 @@ export class SceneRenderer {
     tx: number
     ty: number
   } | null {
+    const endpoints = this.edgeEndpointScenePercents(from, to)
+    if (!endpoints) return null
+    return {
+      sx: (endpoints.sx / 100) * SCENE_W,
+      sy: (endpoints.sy / 100) * SCENE_H,
+      tx: (endpoints.tx / 100) * SCENE_W,
+      ty: (endpoints.ty / 100) * SCENE_H,
+    }
+  }
+
+  private edgeEndpointScenePercents(from: ModelNode, to: ModelNode): {
+    sx: number
+    sy: number
+    tx: number
+    ty: number
+  } | null {
     const av = this.visualNode(from)
     const bv = this.visualNode(to)
     const ax = (av.x / 100) * SCENE_W
@@ -2430,10 +2577,10 @@ export class SceneRenderer {
     const aEdge = shapeEdgeIntersect(av.shape, aHw, aHh, dx, dy)
     const bEdge = shapeEdgeIntersect(bv.shape, bHw, bHh, -dx, -dy)
     return {
-      sx: ax + aEdge.x,
-      sy: ay + aEdge.y,
-      tx: bx + bEdge.x,
-      ty: by + bEdge.y,
+      sx: ((ax + aEdge.x) / SCENE_W) * 100,
+      sy: ((ay + aEdge.y) / SCENE_H) * 100,
+      tx: ((bx + bEdge.x) / SCENE_W) * 100,
+      ty: ((by + bEdge.y) / SCENE_H) * 100,
     }
   }
 
@@ -2806,6 +2953,8 @@ export class SceneRenderer {
   private drawFlowOverlay(now: number): void {
     const g = this.flowOverlayGfx
     const glow = this.flowWireGlowGfx
+    g.visible = true
+    glow.visible = true
     g.clear()
     glow.clear()
     let glowUsed = false
@@ -2961,6 +3110,27 @@ export class SceneRenderer {
       this.flowRingPool[i].visible = false
     }
     this.setFlowGlowFilter(glowUsed)
+    if (this.playWires.size === 0 && this.playActiveNodes.size === 0 && !glowUsed) {
+      this.clearFlowOverlay()
+    }
+  }
+
+  private clearFlowOverlay(): void {
+    const visible = Boolean(this.flowOverlayGfx?.visible || this.flowWireGlowGfx?.visible)
+    const pooledVisible = this.flowRingPool.some((ring) => ring.visible) || this.flowAuraPool.some((aura) => aura.visible)
+    const filterEnabled = this.flowAuraGlowFilters.length > 0 && this.flowAuraGlow?.filters === this.flowAuraGlowFilters
+    if (!visible && !pooledVisible && !filterEnabled) return
+    if (this.flowOverlayGfx) {
+      this.flowOverlayGfx.clear()
+      this.flowOverlayGfx.visible = false
+    }
+    if (this.flowWireGlowGfx) {
+      this.flowWireGlowGfx.clear()
+      this.flowWireGlowGfx.visible = false
+    }
+    for (const ring of this.flowRingPool) ring.visible = false
+    for (const aura of this.flowAuraPool) aura.visible = false
+    this.setFlowGlowFilter(false)
   }
 
   private setFlowGlowFilter(enabled: boolean): void {
@@ -3101,8 +3271,9 @@ export class SceneRenderer {
       const strokePx = Math.max(1, (e.width / 100) * SCENE_W)
       const color = e.kind === 'flow' ? '#f59e0b' : e.color
       g.moveTo(fx, fy).lineTo(lineEndX, lineEndY)
-      g.stroke({ color, width: strokePx, alignment: 0.5 })
-      drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, strokePx)
+      const flowStrokePx = e.kind === 'flow' ? Math.max(2, strokePx * 1.4) : strokePx
+      g.stroke({ color, width: flowStrokePx, alignment: 0.5 })
+      drawArrowHead(g, arrowStyle, tx, ty, ux, uy, color, flowStrokePx)
     }
     // Nodes (shape only here; labels are pooled Text below).
     for (const n of child.nodes.values()) {
@@ -3115,9 +3286,9 @@ export class SceneRenderer {
       drawNodeShape(g, n.shape, {
         w: nw,
         h: nh,
-        fill: this.effectiveNodeCellColor(n),
+        fill: nodeFillGradient(this.effectiveNodeCellColor(n)),
         stroke: this.effectiveNodeMembraneColor(n),
-        strokeWidth: 2,
+        strokeWidth: n.membraneVisible === false ? 0 : NODE_STROKE_WIDTH,
         tip: n.tip,
         tipAngle: cosmeticTip(n).angle,
         tipLength: cosmeticTip(n).length,
@@ -3131,7 +3302,7 @@ export class SceneRenderer {
       if (!label) {
         label = new Text({
           text: '',
-          style: { fontFamily: NODE_FONT_FAMILY, fontSize: 36, fill: NODE_LABEL_FILL, align: 'center' },
+          style: { fontFamily: NODE_FONT_FAMILY, fontSize: NODE_FONT_SIZE, fill: NODE_LABEL_FILL, align: 'center' },
         })
         label.anchor.set(0.5)
         c.addChild(label)
@@ -3140,7 +3311,7 @@ export class SceneRenderer {
       label.visible = true
       if (label.text !== n.label) label.text = n.label
       label.style.fontFamily = NODE_FONT_FAMILY
-      label.style.fontSize = Math.max(16, Math.min(36, NODE_FONT_SIZE * 1.28, ((n.h / 100) * SCENE_H) * 0.42))
+      label.style.fontSize = NODE_FONT_SIZE
       label.style.fill = this.themePalette?.label ?? NODE_LABEL_FILL
       label.x = (n.x / 100) * SCENE_W
       label.y = (n.y / 100) * SCENE_H
@@ -3491,22 +3662,9 @@ function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' |
       return 'rename'
     case 'rewire-edge':
     case 'commit-transform':
+    case 'chain':
       return 'rewire'
   }
-}
-
-function socialPower(score: number): number {
-  return Math.max(0, Math.min(1, Math.log1p(score) / Math.log(12)))
-}
-
-function socialMembraneColor(score: number, defaultColor: string | number): number | null {
-  void defaultColor
-  if (score <= -15) return 0xc93f3f
-  if (score < 0) return 0xe7bf45
-  if (score >= 45) return 0xf4c542
-  if (score >= 30) return 0xb8c0ca
-  if (score >= 15) return 0xb7792f
-  return null
 }
 
 function easeOutCubic(t: number): number {
@@ -3517,6 +3675,23 @@ function easeOutCubic(t: number): number {
 function easeInOut(t: number): number {
   const x = Math.max(0, Math.min(1, t))
   return x * x * (3 - 2 * x)
+}
+
+function isSpecialSocialVote(votes: { positive: number; negative: number }): boolean {
+  return votes.positive >= SOCIAL_SPECIAL_POSITIVE_THRESHOLD + votes.negative * SOCIAL_NEGATIVE_PENALTY_WEIGHT
+}
+
+function isNegativeSocialVote(votes: { positive: number; negative: number }): boolean {
+  return votes.positive - votes.negative < 0
+}
+
+function hasAmbientSocialVotes(votes: { positive: number; negative: number }): boolean {
+  return isSpecialSocialVote(votes) || isNegativeSocialVote(votes)
+}
+
+function ambientSocialPulse(seed: number, now: number, phase = 0): number {
+  const pulse = Math.sin(now / 950 + seed * 0.017 + phase)
+  return pulse < 0.72 ? 0 : (pulse - 0.72) / 0.28
 }
 
 function sameIdSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -3777,6 +3952,15 @@ function lineSegmentIntersectsAabb(
     clip(-dy, ay - aabb.minY) &&
     clip(dy, aabb.maxY - ay)
   )
+}
+
+function expandAabb(aabb: SceneAabb, pad: number): SceneAabb {
+  return {
+    minX: aabb.minX - pad,
+    minY: aabb.minY - pad,
+    maxX: aabb.maxX + pad,
+    maxY: aabb.maxY + pad,
+  }
 }
 
 /**

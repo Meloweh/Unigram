@@ -48,9 +48,9 @@ import {
   type CreativeDiagramSummary,
 } from '../social/cloudClient'
 import { SocialForumLayer } from './SocialForum'
-import { projectWithServerGeometry, recomputeTransformDraft } from '../social/transformDraft'
+import { recomputeTransformDraft } from '../social/transformDraft'
 import type { SocialUserPreferences } from '../social/forumTypes'
-import { projectWithoutSocialEdgeDrafts } from '../social/graphDraft'
+import { projectWithoutPublicGraphDrafts } from '../social/publicGraphDraft'
 
 interface OmnigramAppProps {
   cloudDiagramId?: string
@@ -60,7 +60,7 @@ interface OmnigramAppProps {
   sourceDiagramTitle?: string
   mode?: 'public' | 'creative'
   onHome?: () => void
-  onViewGraph?: () => void
+  onViewGraph?: () => void | Promise<void>
   onOpenCreativeDiagram?: (diagram: CreativeDiagramSummary) => Promise<void>
   chrome?: {
     sidebars?: boolean
@@ -89,7 +89,9 @@ export function OmnigramApp({
   const [creativeLeaving, setCreativeLeaving] = useState(false)
   const isCreative = mode === 'creative'
   const [preferences, setPreferences] = useState<SocialUserPreferences>(() => loadLocalPreferences())
-  const showSidebars = isCreative ? true : (chrome?.sidebars ?? true)
+  const graphMounted = isCreative || !forumOpen
+  const showSidebars = isCreative ? true : (chrome?.sidebars ?? false)
+  const showPublicSidebars = !isCreative && graphMounted
   const showDevPanel = isCreative ? (chrome?.devPanel ?? false) : (chrome?.devPanel ?? true)
   const showFps = chrome?.fps ?? true
   const showToolbar = isCreative ? true : (chrome?.toolbar ?? true)
@@ -100,15 +102,19 @@ export function OmnigramApp({
   )
   const themeMode: ThemeMode = preferences.themeMode ?? 'light-dark'
   const background = preferences.background
-  const graphMounted = isCreative || !forumOpen
   const handleReturnToGraph = () => {
     if (!onViewGraph || creativeLeaving) return
     setCreativeLeaving(true)
-    window.setTimeout(() => onViewGraph(), 240)
+    window.setTimeout(() => {
+      Promise.resolve(onViewGraph()).catch((err: unknown) => {
+        console.warn('Return to public graph failed:', err)
+        setCreativeLeaving(false)
+      })
+    }, 240)
   }
 
   useEffect(() => {
-    if (isCreative) setCreativeLeaving(false)
+    setCreativeLeaving(false)
   }, [creativeDiagramId, isCreative])
 
   useEffect(() => {
@@ -184,7 +190,7 @@ export function OmnigramApp({
       }
       unsubBridge = bindStoreToRenderer(r)
       wheel = new WheelController(host, r)
-      keyboard = new KeyboardController({ allowNodeDelete: isCreative, editorHotkeys: isCreative })
+      keyboard = new KeyboardController({ allowNodeDelete: true, editorHotkeys: true })
       pointer = new PointerController(host, r, { socialDrafts: !isCreative })
       setRenderer(r)
     }).catch((err: unknown) => {
@@ -210,7 +216,7 @@ export function OmnigramApp({
       className={[
         'omnigram-shell',
         isCreative ? 'creative-enter' : '',
-        creativeLeaving ? 'creative-leave' : '',
+        isCreative && creativeLeaving ? 'creative-leave' : '',
       ].filter(Boolean).join(' ')}
       style={{
         position: 'fixed',
@@ -362,20 +368,26 @@ export function OmnigramApp({
       {showFps && <FpsOverlay renderer={renderer} />}
       {graphMounted && showToolbar && <EditorToolbar renderer={renderer} onHome={isCreative ? undefined : onHome} />}
       {graphMounted && showDevPanel && <DevPanel renderer={renderer} />}
-      {graphMounted && showSidebars && (
-        <LeftSidebar
-          header={isCreative
-            ? (
-              <CreativeModeControls
-                onHome={onHome}
-                onViewGraph={handleReturnToGraph}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
-            )
-            : undefined}
+      {graphMounted && isCreative && (
+        <CreativeModeControls
+          onHome={onHome}
+          onViewGraph={handleReturnToGraph}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       )}
-      {graphMounted && showSidebars && <RightSidebar renderer={renderer} />}
+      {graphMounted && showSidebars && (
+        <LeftSidebar
+          variant={isCreative ? 'creative' : 'public'}
+          initialCollapsed={!isCreative}
+        />
+      )}
+      {graphMounted && showSidebars && <RightSidebar renderer={renderer} variant={isCreative ? 'default' : 'public'} initialCollapsed={!isCreative} />}
+      {showPublicSidebars && !showSidebars && (
+        <>
+          <LeftSidebar variant="public" initialCollapsed />
+          <RightSidebar renderer={renderer} variant="public" initialCollapsed />
+        </>
+      )}
       {graphMounted && <ConnectionReferencePopup renderer={renderer} />}
       {graphMounted && <RichNodeOverlay renderer={renderer} />}
       {graphMounted && <MpdDialOverlay renderer={renderer} />}
@@ -486,7 +498,7 @@ function useCloudAutosave(diagramId: string | undefined): void {
         models.set(state.model.id, state.model)
         const snapshot = { rootModelId: state.model.id, models }
         recomputeTransformDraft(snapshot)
-        const blob = await exportBundle(projectWithoutSocialEdgeDrafts(projectWithServerGeometry(snapshot)))
+        const blob = await exportBundle(projectWithoutPublicGraphDrafts(snapshot))
         await saveCloudDiagram(diagramId, {
           title: state.model.name || 'Untitled diagram',
           bundleBase64: await blobToBase64(blob),
@@ -625,7 +637,7 @@ function CreativeModeRail({
     try {
       const snapshot = currentProjectSnapshot()
       recomputeTransformDraft(snapshot)
-      const publicSnapshot = projectWithoutSocialEdgeDrafts(projectWithServerGeometry(snapshot))
+      const publicSnapshot = projectWithoutPublicGraphDrafts(snapshot)
       const bundleBase64 = await blobToBase64(await exportBundle(publicSnapshot))
       const copy = await createCreativeCopy(sourceDiagramId, { title, bundleBase64 })
       await onOpenCreativeDiagram(copy)
@@ -790,9 +802,31 @@ function CreativeModeControls({
 }) {
   return (
     <div className="creative-mode-controls" aria-label="Creative Mode navigation">
-      {onViewGraph && <button type="button" onClick={onViewGraph}>Return</button>}
-      {onHome && <button type="button" onClick={onHome}>Home</button>}
-      <button type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings">⚙</button>
+      {onHome && (
+        <button
+          type="button"
+          className="creative-home-button"
+          onClick={onHome}
+          aria-label="Back to diagram search"
+          title="Back to diagram search"
+        >
+          <span className="social-home-icon" aria-hidden />
+        </button>
+      )}
+      <button
+        type="button"
+        className="creative-settings-button"
+        onClick={onOpenSettings}
+        aria-label="Settings"
+        title="Settings"
+      >
+        <span className="social-settings-icon" aria-hidden />
+      </button>
+      {onViewGraph && (
+        <button type="button" className="creative-return-rail" onClick={onViewGraph}>
+          Return
+        </button>
+      )}
     </div>
   )
 }
@@ -1175,7 +1209,7 @@ function MpdDialOverlay({ renderer }: { renderer: SceneRenderer | null }) {
     <div
       style={{
         position: 'absolute',
-        bottom: 16,
+        top: 16,
         left: '50%',
         transform: 'translateX(-50%)',
         zIndex: 12,

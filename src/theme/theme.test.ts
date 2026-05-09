@@ -4,9 +4,9 @@ import { getParticlePreset, PARTICLE_PRESETS } from './particles'
 import { GRADIENT_PRESETS, PATTERN_PRESETS, resolveBackground } from './backgrounds'
 
 describe('theme system', () => {
-  it('exposes 11 theme options (4 base + 7 topical)', () => {
-    expect(ALL_THEME_OPTIONS).toHaveLength(11)
-    expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'base')).toHaveLength(4)
+  it('exposes 13 theme options (6 base + 7 topical)', () => {
+    expect(ALL_THEME_OPTIONS).toHaveLength(13)
+    expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'base')).toHaveLength(6)
     expect(ALL_THEME_OPTIONS.filter((t) => t.group === 'topical')).toHaveLength(7)
   })
 
@@ -15,6 +15,10 @@ describe('theme system', () => {
     expect(lightDark.bg).not.toBe(resolvePalette('light').bg)
     expect(lightDark.bg).not.toBe(resolvePalette('dark').bg)
     expect(ALL_THEME_OPTIONS.find((t) => t.id === 'light-dark')?.name).toBe('Light-Dark')
+    expect(ALL_THEME_OPTIONS.find((t) => t.id === 'light-dark-varied')?.name).toBe('Light-Dark Varied')
+    expect(ALL_THEME_OPTIONS.find((t) => t.id === 'forum-contrast')?.name).toBe('Forum Contrast')
+    expect(resolvePalette('light-dark-varied').accent).not.toBe(lightDark.accent)
+    expect(resolvePalette('forum-contrast').surface).not.toBe(lightDark.surface)
   })
 
   it('applyThemeToDOM writes --ug-* CSS variables to documentElement', () => {

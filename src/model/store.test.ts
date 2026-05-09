@@ -10,7 +10,7 @@ beforeEach(() => {
     selectedIds: new Set(),
     rev: 0,
     selRev: 0,
-    defaultConnectionKind: 'flow',
+    defaultConnectionKind: 'default',
     clipboard: null,
     lastPasteAt: 0,
     pickMode: null,
@@ -161,12 +161,12 @@ describe('store', () => {
     expect(useOmniStore.getState().rev).toBe(r0 + 2)
   })
 
-  it('defaultConnectionKind starts at "flow" and round-trips through setter', () => {
-    expect(useOmniStore.getState().defaultConnectionKind).toBe('flow')
-    useOmniStore.getState().setDefaultConnectionKind('default')
+  it('defaultConnectionKind starts at "default" and round-trips through setter', () => {
     expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
     useOmniStore.getState().setDefaultConnectionKind('flow')
     expect(useOmniStore.getState().defaultConnectionKind).toBe('flow')
+    useOmniStore.getState().setDefaultConnectionKind('default')
+    expect(useOmniStore.getState().defaultConnectionKind).toBe('default')
   })
 
   it('addEdge respects partial.kind so callers can author flow edges', () => {

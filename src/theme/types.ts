@@ -8,6 +8,8 @@
 export type ThemeMode =
   | 'light'
   | 'light-dark'
+  | 'light-dark-varied'
+  | 'forum-contrast'
   | 'dark'
   | 'grey'
   | 'woody'

@@ -58,9 +58,17 @@ function useStoreVersion(): number {
   )
 }
 
-export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRenderer').SceneRenderer | null } = {}) {
+export function RightSidebar({
+  renderer,
+  initialCollapsed = false,
+  variant = 'default',
+}: {
+  renderer?: import('../scene/SceneRenderer').SceneRenderer | null
+  initialCollapsed?: boolean
+  variant?: 'default' | 'public'
+} = {}) {
   useStoreVersion()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(initialCollapsed)
   const state = useOmniStore.getState()
   const selectedIds = state.selectedIds
   const nodes: ModelNode[] = []
@@ -75,7 +83,7 @@ export function RightSidebar({ renderer }: { renderer?: import('../scene/SceneRe
   const inner = collapsed ? null : renderInner(nodes, state, renderer ?? null)
 
   return (
-    <div style={shellStyle('right', collapsed)}>
+    <div style={shellStyle('right', collapsed, variant)}>
       <div style={rightInspectorContentStyle(collapsed)}>{inner}</div>
       <button
         onClick={() => setCollapsed((c) => !c)}
