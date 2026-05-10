@@ -1968,15 +1968,16 @@ export class SceneRenderer {
           const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
           const existing = this.model.nodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
+            ...(step.node ?? {}),
             id: nodeId,
-            label: step.newNodeLabel,
+            label: step.node ? step.node.label : step.newNodeLabel,
             x: step.geometry?.x ?? 50,
             y: step.geometry?.y ?? 50,
             w: step.geometry?.w ?? DEFAULT_NODE.w,
             h: step.geometry?.h ?? DEFAULT_NODE.h,
             shape: step.shape ?? DEFAULT_NODE.shape,
-            cellColor: DEFAULT_NODE.cellColor,
-            membraneColor: DEFAULT_NODE.membraneColor,
+            cellColor: step.node?.cellColor ?? DEFAULT_NODE.cellColor,
+            membraneColor: step.node?.membraneColor ?? DEFAULT_NODE.membraneColor,
           }
           this.drawProposalNodeGhost(g, ghost, accepted, step.action)
           labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
@@ -1988,15 +1989,16 @@ export class SceneRenderer {
           const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
           const existing = this.model.nodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
+            ...(step.node ?? {}),
             id: nodeId,
-            label: step.newNodeLabel,
+            label: step.node ? step.node.label : step.newNodeLabel,
             x: step.geometry?.x ?? source.x + Math.max(8, source.w + 3),
             y: step.geometry?.y ?? source.y,
             w: step.geometry?.w ?? DEFAULT_NODE.w,
             h: step.geometry?.h ?? DEFAULT_NODE.h,
             shape: step.shape ?? DEFAULT_NODE.shape,
-            cellColor: DEFAULT_NODE.cellColor,
-            membraneColor: DEFAULT_NODE.membraneColor,
+            cellColor: step.node?.cellColor ?? DEFAULT_NODE.cellColor,
+            membraneColor: step.node?.membraneColor ?? DEFAULT_NODE.membraneColor,
           }
           this.drawProposalConnectionGhost(g, source, ghost, accepted, step.action)
           this.drawProposalNodeGhost(g, ghost, accepted, step.action)
@@ -2428,7 +2430,8 @@ export class SceneRenderer {
     const cy = (visual.y / 100) * SCENE_H
     const w = (visual.w / 100) * SCENE_W
     const h = (visual.h / 100) * SCENE_H
-    const raw = (node.label || 'New node').trim() || 'New node'
+    const raw = node.label.trim()
+    if (!raw) return index
     const text = raw.length > 42 ? `${raw.slice(0, 39)}...` : raw
     let label = this.proposalLabelPool[index]
     if (!label) {

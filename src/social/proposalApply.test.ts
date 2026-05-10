@@ -121,10 +121,10 @@ describe('applyAcceptedProposal', () => {
         {
           action: 'add-node',
           nodeId: 'media-node',
-          newNodeLabel: 'Clip',
+          newNodeLabel: 'Video node',
           node: {
             id: 'media-node',
-            label: 'Clip',
+            label: '',
             x: 20,
             y: 20,
             w: 14,
@@ -135,6 +135,7 @@ describe('applyAcceptedProposal', () => {
             mediaType: 'video',
             mediaSrc: 'media/clip.mp4',
             mediaFileName: 'clip.mp4',
+            cameraTracked: true,
           },
         },
         {
@@ -158,7 +159,13 @@ describe('applyAcceptedProposal', () => {
 
     expect(applyAcceptedProposal(proposal)).toEqual({ status: 'applied' })
     const model = useOmniStore.getState().model
-    expect(model.nodes.get('media-node')).toMatchObject({ mediaType: 'video', mediaSrc: 'media/clip.mp4', cellColor: '#101010' })
+    expect(model.nodes.get('media-node')).toMatchObject({
+      label: '',
+      mediaType: 'video',
+      mediaSrc: 'media/clip.mp4',
+      cellColor: '#101010',
+      cameraTracked: true,
+    })
     expect(model.nodes.get(a)).toMatchObject({ shape: 'diamond', cellColor: '#ffeeaa', linkedNodeIds: [b] })
     expect(model.nodes.get(a)?.flowEffects?.[0]?.label).toBe('FX')
     expect(model.crossLinks).toHaveLength(1)

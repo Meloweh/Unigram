@@ -6,9 +6,10 @@ import {
   useState,
   useSyncExternalStore,
   type FormEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { SceneRenderer } from '../scene/SceneRenderer'
-import { SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
+import { clientToScene, SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
 import { useOmniStore } from '../model/store'
 import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type ConnectionReference, type Model, type ModelNode } from '../model/types'
 import { resolvePalette, type ThemeMode } from '../theme/themes'
@@ -61,6 +62,8 @@ import {
   getPublicGraphDraftSteps,
   restorePublicGraphBaseline,
 } from '../social/publicGraphDraft'
+import { EffectGraphDiffPreview } from '../social/EffectGraphDiffPreview'
+import { changeGroupsForSteps, type ChangeDetail, type ChangeGroup, type FlowPreviewData } from '../social/proposalDisplay'
 
 interface SocialForumLayerProps {
   diagramId?: string
@@ -1163,7 +1166,7 @@ function PostModal({
   const [title, setTitle] = useState(stashedDraft?.title ?? '')
   const [description, setDescription] = useState(stashedDraft?.description ?? '')
   const [action, setAction] = useState<GraphProposalAction>(stashedDraft?.action ?? initialAction ?? (isGraphEmpty ? 'add-node' : initialProposal.action))
-  const [changeEditorOpen, setChangeEditorOpen] = useState(stashedDraft?.changeEditorOpen ?? false)
+  const [changeEditorOpen, setChangeEditorOpen] = useState(stashedDraft?.changeEditorOpen ?? ((initialSteps?.length ?? 0) === 0))
   const [sourceValue, setSourceValue] = useState(stashedDraft?.sourceValue ?? initialProposal.sourceValue)
   const [targetValue, setTargetValue] = useState(stashedDraft?.targetValue ?? initialProposal.targetValue)
   const [newTargetValue, setNewTargetValue] = useState(stashedDraft?.newTargetValue ?? '')
@@ -1174,6 +1177,7 @@ function PostModal({
   const [referencesText, setReferencesText] = useState(stashedDraft?.referencesText ?? '')
   const [chainSteps, setChainSteps] = useState<GraphProposalStep[]>(() => stashedDraft?.chainSteps ?? initialSteps ?? [])
   const [error, setError] = useState<string | null>(null)
+  const [flowPreview, setFlowPreview] = useState<FlowPreviewData | null>(null)
   const activeAction: GraphProposalAction = action
   const draftTransforms = transformDraft ?? []
   const dimensionAction = activeAction === 'add-rmm' || activeAction === 'add-mpd'
@@ -1184,6 +1188,10 @@ function PostModal({
   const workingModel = useMemo(() => projectModelForChain(model, chainSteps), [model, chainSteps])
   const workingNodes = useMemo(() => sortedNodes(workingModel), [workingModel])
   const queuedNodeIds = useMemo(() => queuedNodeIdSet(chainSteps), [chainSteps])
+  const chainGroups = useMemo(
+    () => changeGroupsForSteps(chainSteps, workingModel, useOmniStore.getState().models),
+    [chainSteps, workingModel],
+  )
 
   useEffect(() => {
     if (activeAction !== 'modify-references') return
@@ -1215,7 +1223,6 @@ function PostModal({
       const step = withQueuedIds(buildCurrentStep(), chainSteps, model)
       setChainSteps((current) => [...current, step])
       clearStepFormForNext(step)
-      setChangeEditorOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add change')
     }
@@ -1319,27 +1326,18 @@ function PostModal({
           {chainSteps.length > 0 && (
             <ol aria-label="Suggested change chain">
               {chainSteps.map((step, index) => (
-                <li key={`${step.action}-${index}`}>
-                  <span>{index + 1}. {proposalStepSummary(step, workingModel)}</span>
-                  <button type="button" onClick={() => editStep(step, index)}>Edit</button>
-                  <button
-                    type="button"
-                    onClick={() => setChainSteps((current) => moveChainStep(current, index, index - 1))}
-                    disabled={index === 0}
-                    aria-label="Move change up"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setChainSteps((current) => moveChainStep(current, index, index + 1))}
-                    disabled={index === chainSteps.length - 1}
-                    aria-label="Move change down"
-                  >
-                    ↓
-                  </button>
-                  <button type="button" onClick={() => setChainSteps((current) => current.filter((_, i) => i !== index))}>Remove</button>
-                </li>
+                <PostChangeRow
+                  key={`${step.action}-${index}`}
+                  index={index}
+                  group={chainGroups[index]}
+                  onPreviewFlow={setFlowPreview}
+                  onEdit={() => editStep(step, index)}
+                  onMoveUp={() => setChainSteps((current) => moveChainStep(current, index, index - 1))}
+                  onMoveDown={() => setChainSteps((current) => moveChainStep(current, index, index + 1))}
+                  onRemove={() => setChainSteps((current) => current.filter((_, i) => i !== index))}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < chainSteps.length - 1}
+                />
               ))}
             </ol>
           )}
@@ -1370,6 +1368,9 @@ function PostModal({
                     <option value="update-node-media">Update node media</option>
                     <option value="update-flow-effects">Update flow effects</option>
                     <option value="update-edge-settings">Update connection settings</option>
+                    {!hasActiveTransformProposal && (draftTransforms.length > 0 || activeAction === 'commit-transform') && (
+                      <option value="commit-transform">Commit transform</option>
+                    )}
                     <option value="remove-edge">Remove connection</option>
                     <option value="remove-node">Remove node</option>
                     <option value="rename-node">Rename node</option>
@@ -1377,17 +1378,9 @@ function PostModal({
                     <option value="add-reference">Add reference</option>
                     <option value="modify-references">Modify references</option>
                     <option value="rewire-edge">Rewire connection</option>
-                    {!hasActiveTransformProposal && (draftTransforms.length > 0 || activeAction === 'commit-transform') && (
-                      <option value="commit-transform">Commit transform</option>
-                    )}
                   </>
                 )}
               </select>
-              {activeAction === 'commit-transform' && (
-                <p className="social-transform-summary">
-                  {draftTransforms.length} layout {draftTransforms.length === 1 ? 'change is' : 'changes are'} ready for preview and voting.
-                </p>
-              )}
               {activeAction !== 'add-node' && activeAction !== 'commit-transform' && (
                 <div className="social-ref-selector compact">
                   <NodeSuggestInput
@@ -1478,16 +1471,17 @@ function PostModal({
                   aria-label="New target node"
                 />
               )}
+              {activeAction === 'commit-transform' && (
+                <p className="social-transform-summary">
+                  {draftTransforms.length} layout {draftTransforms.length === 1 ? 'change is' : 'changes are'} ready for preview and voting.
+                </p>
+              )}
+              <div className="social-proposal-field-actions">
+                <button type="button" onClick={appendCurrentStep}>Apply change</button>
+                <button type="button" onClick={() => setChangeEditorOpen(false)}>Cancel edit</button>
+              </div>
             </div>
           )}
-          <button
-            type="button"
-            className="social-chain-append"
-            onClick={changeEditorOpen ? appendCurrentStep : () => setChangeEditorOpen(true)}
-            aria-label={changeEditorOpen ? 'Append current diagram change' : 'Add suggested diagram change'}
-          >
-            <span aria-hidden>+</span>
-          </button>
         </div>
         {error && <div className="social-forum-error">{error}</div>}
         <footer>
@@ -1495,6 +1489,13 @@ function PostModal({
           <button type="submit">Post</button>
         </footer>
       </form>
+      {flowPreview && (
+        <EffectGraphDiffPreview
+          preview={flowPreview}
+          model={workingModel}
+          onClose={() => setFlowPreview(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1595,6 +1596,86 @@ function AuthModal({
   )
 }
 
+function PostChangeRow({
+  index,
+  group,
+  onPreviewFlow,
+  onEdit,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  canMoveUp,
+  canMoveDown,
+}: {
+  index: number
+  group: ChangeGroup
+  onPreviewFlow?: (preview: FlowPreviewData) => void
+  onEdit: () => void
+  onMoveUp: () => void
+  onMoveDown: () => void
+  onRemove: () => void
+  canMoveUp: boolean
+  canMoveDown: boolean
+}) {
+  return (
+    <li className="social-chain-change">
+      <details open={group.defaultExpanded}>
+        <summary>
+          <span>{index + 1}. {group.title}</span>
+          <div className="social-chain-actions" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={onEdit}>Edit</button>
+            <button type="button" onClick={onMoveUp} disabled={!canMoveUp} aria-label="Move change up">↑</button>
+            <button type="button" onClick={onMoveDown} disabled={!canMoveDown} aria-label="Move change down">↓</button>
+            <button type="button" onClick={onRemove}>Remove</button>
+          </div>
+        </summary>
+        {group.details.length > 0 && <ChangeDetailList details={group.details} onPreviewFlow={onPreviewFlow} />}
+      </details>
+    </li>
+  )
+}
+
+function ChangeDetailList({
+  details,
+  onPreviewFlow,
+}: {
+  details: readonly ChangeDetail[]
+  onPreviewFlow?: (preview: FlowPreviewData) => void
+}) {
+  return (
+    <dl className="social-change-details">
+      {details.map((detail) => (
+        <div key={detail.id} className="social-change-detail">
+          <dt>{detail.label}</dt>
+          <dd>
+            {detail.before != null && detail.after != null ? (
+              <span><del>{detail.before || 'none'}</del> <b>→</b> <ins>{detail.after || 'none'}</ins></span>
+            ) : (
+              <span>{detail.after ?? detail.before ?? ''}</span>
+            )}
+            {detail.lines && detail.lines.length > 0 && (
+              <ul>
+                {detail.lines.map((line, index) => <li key={`${detail.id}-${index}`}>{line}</li>)}
+              </ul>
+            )}
+            {detail.flowPreview && onPreviewFlow && (
+              <button
+                type="button"
+                className="social-change-flow-preview"
+                onClick={() => {
+                  if (detail.flowPreview) onPreviewFlow(detail.flowPreview)
+                }}
+              >
+                Effect Graph Preview
+              </button>
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 function ProfileSettingsModal({
   user,
   onClose,
@@ -1631,15 +1712,27 @@ function ProposalPreviewOverlay({
   onClose: () => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
-  const steps = proposalSteps(proposal.payload)
-  const transforms = steps.flatMap((step) => step.action === 'commit-transform' ? step.transforms : [])
+  const rendererRef = useRef<SceneRenderer | null>(null)
+  const steps = useMemo(() => proposalSteps(proposal.payload), [proposal.payload])
+  const transforms = useMemo(() => steps.flatMap((step) => step.action === 'commit-transform' ? step.transforms : []), [steps])
+  const previewModel = useMemo(
+    () => previewModelForProposal(model, useOmniStore.getState().models, proposal) ?? model,
+    [model, proposal],
+  )
+  const changeGroups = useMemo(
+    () => changeGroupsForSteps(steps, previewModel, useOmniStore.getState().models),
+    [previewModel, steps],
+  )
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(() => changeGroups[0]?.id ?? '')
+  const [flowPreview, setFlowPreview] = useState<FlowPreviewData | null>(null)
+  const selectedGroup = changeGroups.find((group) => group.id === selectedGroupId) ?? changeGroups[0]
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     let disposed = false
     const renderer = new SceneRenderer({ preview: true, forceFullLod: true, socialDecorations: false })
-    const previewModel = previewModelForProposal(model, useOmniStore.getState().models, proposal) ?? model
+    rendererRef.current = renderer
     void renderer.init(host).then(() => {
       if (disposed) {
         renderer.destroy()
@@ -1652,7 +1745,7 @@ function ProposalPreviewOverlay({
         grid: previewModel.grid,
         crossLinks: previewModel.crossLinks,
       })
-      renderer.setGraphProposals([proposal])
+      renderer.setGraphProposals([])
       renderer.setTransformPreview(transforms)
       renderer.setCamera(miniCameraForBounds(sceneBounds([...previewModel.nodes.values()]), renderer.getViewport()))
     }).catch((err: unknown) => {
@@ -1660,9 +1753,34 @@ function ProposalPreviewOverlay({
     })
     return () => {
       disposed = true
+      rendererRef.current = null
       renderer.destroy()
     }
-  }, [model, proposal, themeMode, transforms])
+  }, [previewModel, proposal, themeMode, transforms])
+
+  useEffect(() => {
+    const renderer = rendererRef.current
+    if (!renderer) return
+    applyPreviewSelection(renderer, selectedGroup)
+  }, [selectedGroup])
+
+  const handlePreviewPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const renderer = rendererRef.current
+    const host = hostRef.current
+    if (!renderer || !host) return
+    const rect = host.getBoundingClientRect()
+    const camera = renderer.getCamera()
+    const viewport = renderer.getViewport()
+    const scene = clientToScene(event.clientX - rect.left, event.clientY - rect.top, camera, viewport)
+    const nodeId = renderer.pickNode(scene.x, scene.y)
+    const edgeId = nodeId ? null : renderer.pickEdge(scene.x, scene.y)
+    const picked = nodeId
+      ? changeGroups.find((group) => groupTargetsId(group, 'node', nodeId))
+      : edgeId
+        ? changeGroups.find((group) => groupTargetsId(group, 'edge', edgeId))
+        : null
+    if (picked) setSelectedGroupId(picked.id)
+  }
 
   return (
     <div className="social-transform-preview" role="dialog" aria-label="Proposal preview">
@@ -1673,9 +1791,65 @@ function ProposalPreviewOverlay({
           <p>{steps.length} proposed {steps.length === 1 ? 'change' : 'changes'}</p>
         </div>
       </header>
-      <div ref={hostRef} className="social-transform-preview-render" />
+      <div className="social-transform-preview-body">
+        <div ref={hostRef} className="social-transform-preview-render" onPointerDown={handlePreviewPointerDown} />
+        <aside className="social-transform-preview-inspector" aria-label="Change inspector">
+          <h4>Changes</h4>
+          <ol>
+            {changeGroups.map((group, index) => (
+              <li key={group.id}>
+                <button
+                  type="button"
+                  className={group.id === selectedGroup?.id ? 'active' : ''}
+                  onClick={() => setSelectedGroupId(group.id)}
+                >
+                  {index + 1}. {group.title}
+                </button>
+              </li>
+            ))}
+          </ol>
+          {selectedGroup && (
+            <section className="social-transform-preview-detail">
+              <h5>{selectedGroup.title}</h5>
+              {selectedGroup.details.length > 0 ? (
+                <ChangeDetailList details={selectedGroup.details} onPreviewFlow={setFlowPreview} />
+              ) : (
+                <p>No extra details for this change.</p>
+              )}
+            </section>
+          )}
+        </aside>
+      </div>
+      {flowPreview && (
+        <EffectGraphDiffPreview
+          preview={flowPreview}
+          model={previewModel}
+          onClose={() => setFlowPreview(null)}
+        />
+      )}
     </div>
   )
+}
+
+function applyPreviewSelection(renderer: SceneRenderer, group: ChangeGroup | undefined): void {
+  const target = group?.target
+  if (!target) {
+    renderer.setSelection(new Set())
+    renderer.setEdgeSelection(new Set())
+    return
+  }
+  if (target.kind === 'edge') {
+    renderer.setSelection(new Set())
+    renderer.setEdgeSelection(new Set([target.id]))
+    return
+  }
+  renderer.setSelection(new Set([target.id]))
+  renderer.setEdgeSelection(new Set())
+}
+
+function groupTargetsId(group: ChangeGroup, kind: 'node' | 'edge', id: string): boolean {
+  if (group.target?.kind === kind && group.target.id === id) return true
+  return group.details.some((detail) => detail.target?.kind === kind && detail.target.id === id)
 }
 
 function validateAuthInput(mode: 'login' | 'register', username: string, password: string): string | null {
@@ -1852,34 +2026,6 @@ function pickEntityPatch<T extends object>(entity: T, keys: readonly (keyof T)[]
   return patch as EntityPatch<T>
 }
 
-function proposalStepSummary(step: GraphProposalStep, model: Model): string {
-  const nodeName = (id: string) => model.nodes.get(id)?.label || id
-  const edgeName = (id: string) => {
-    const edge = model.edges.get(id)
-    if (!edge) return id
-    return `${nodeName(edge.from)} → ${nodeName(edge.to)}`
-  }
-  switch (step.action) {
-    case 'add-node': return `Add node "${step.newNodeLabel}"`
-    case 'add-node-edge': return `Add "${step.newNodeLabel}" from ${nodeName(step.sourceNodeId)}`
-    case 'add-edge': return `Connect ${nodeName(step.sourceNodeId)} → ${nodeName(step.targetNodeId)}`
-    case 'add-rmm': return `Add RMM "${step.name}" to ${nodeName(step.nodeId)}`
-    case 'add-mpd': return `Add MPD "${step.name}" to ${nodeName(step.nodeId)}`
-    case 'remove-edge': return `Remove ${edgeName(step.edgeId)}`
-    case 'remove-node': return `Remove ${nodeName(step.nodeId)}`
-    case 'rename-node': return `Rename ${nodeName(step.nodeId)} to "${step.nextLabel}"`
-    case 'rename-edge': return `Rename ${edgeName(step.edgeId)} to "${step.nextLabel}"`
-    case 'rewire-edge': return `Rewire ${edgeName(step.edgeId)} to ${nodeName(step.nextTargetNodeId)}`
-    case 'commit-transform': return `Commit ${step.transforms.length} layout ${step.transforms.length === 1 ? 'change' : 'changes'}`
-    case 'add-reference': return `Add reference to ${edgeName(step.edgeId)}`
-    case 'modify-references': return `Modify references on ${edgeName(step.edgeId)}`
-    case 'update-node-settings': return `Update settings on ${nodeName(step.nodeId)}`
-    case 'update-node-media': return `Update media on ${nodeName(step.nodeId)}`
-    case 'update-flow-effects': return `Update flow effects on ${nodeName(step.nodeId)}`
-    case 'update-edge-settings': return `Update settings on ${edgeName(step.edgeId)}`
-  }
-}
-
 function restoreGraphDraftBaseline(): void {
   const baseline = restorePublicGraphBaseline()
   if (baseline) useOmniStore.getState().loadProject(baseline)
@@ -1995,7 +2141,7 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
             ...DEFAULT_NODE,
             ...(step.node ?? {}),
             id: nodeId,
-            label: step.newNodeLabel,
+            label: step.node ? step.node.label : step.newNodeLabel,
             x: step.geometry?.x ?? 50 + index * 3,
             y: step.geometry?.y ?? 50,
             w: step.geometry?.w ?? DEFAULT_NODE.w,
@@ -2014,7 +2160,7 @@ function projectModelForChain(model: Model, steps: GraphProposalStep[]): Model {
             ...DEFAULT_NODE,
             ...(step.node ?? {}),
             id: nodeId,
-            label: step.newNodeLabel,
+            label: step.node ? step.node.label : step.newNodeLabel,
             x: step.geometry?.x ?? (source ? source.x + Math.max(8, source.w + 3) : 50 + index * 3),
             y: step.geometry?.y ?? source?.y ?? 50,
             w: step.geometry?.w ?? DEFAULT_NODE.w,

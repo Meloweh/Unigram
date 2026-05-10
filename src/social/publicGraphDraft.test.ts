@@ -24,9 +24,24 @@ describe('public graph draft diff', () => {
       references: [{ title: 'Paper', citation: 'A. Example', url: 'https://example.test' }],
     })
     currentModel.edges.set('edge-ac', { ...DEFAULT_EDGE, id: 'edge-ac', from: 'a', to: 'c', label: 'new path' })
+    currentModel.nodes.set('cloud', {
+      ...DEFAULT_NODE,
+      id: 'cloud',
+      label: '',
+      x: 60,
+      y: 45,
+      w: 14,
+      h: 9,
+      shape: 'thinking-cloud',
+      cosmeticType: 'thinking-cloud',
+      cellColor: '#eaf3ff',
+      membraneColor: '#365f8f',
+      cameraTracked: true,
+    })
 
     const steps = getPublicGraphDraftSteps(projectWith(currentModel))
     expect(steps.map((step) => step.action)).toEqual([
+      'add-node',
       'add-node',
       'add-edge',
       'rename-node',
@@ -35,8 +50,14 @@ describe('public graph draft diff', () => {
       'commit-transform',
     ])
     expect(steps[0]).toMatchObject({ action: 'add-node', nodeId: 'c', newNodeLabel: 'Gamma' })
-    expect(steps[1]).toMatchObject({ action: 'add-edge', edgeId: 'edge-ac', sourceNodeId: 'a', targetNodeId: 'c' })
-    expect(steps[5]).toMatchObject({ action: 'commit-transform', transforms: [{ nodeId: 'a' }] })
+    expect(steps[1]).toMatchObject({
+      action: 'add-node',
+      nodeId: 'cloud',
+      newNodeLabel: 'Thinking cloud',
+      node: { label: '', shape: 'thinking-cloud', cosmeticType: 'thinking-cloud', cameraTracked: true },
+    })
+    expect(steps[2]).toMatchObject({ action: 'add-edge', edgeId: 'edge-ac', sourceNodeId: 'a', targetNodeId: 'c' })
+    expect(steps[6]).toMatchObject({ action: 'commit-transform', transforms: [{ nodeId: 'a' }] })
   })
 
   it('projects autosave back to the server baseline', () => {
@@ -167,6 +188,41 @@ describe('public graph draft diff', () => {
       nodeId: 'a',
       crossLinksAfter: currentModel.crossLinks,
     })
+  })
+
+  it('captures effect graph cross-link-only changes', () => {
+    const baselineModel = modelWithBaseGraph()
+    baselineModel.nodes.set('a', {
+      ...baselineModel.nodes.get('a')!,
+      flowEffects: [{ id: 'fx-a', label: 'A effect', graph: { nodes: [], edges: [] } }],
+    })
+    baselineModel.nodes.set('b', {
+      ...baselineModel.nodes.get('b')!,
+      flowEffects: [{ id: 'fx-b', label: 'B effect', graph: { nodes: [], edges: [] } }],
+    })
+    capturePublicGraphBaseline(projectWith(baselineModel))
+    const currentModel = cloneModel(baselineModel)
+    currentModel.crossLinks = [
+      { id: 'xl', from: { nodeId: 'a', effectId: 'fx-a' }, to: { nodeId: 'b', effectId: 'fx-b' } },
+    ]
+
+    const steps = getPublicGraphDraftSteps(projectWith(currentModel))
+    expect(steps).toEqual([
+      {
+        action: 'update-flow-effects',
+        nodeId: 'a',
+        before: {
+          flowEffects: baselineModel.nodes.get('a')?.flowEffects,
+          linkedNodeIds: null,
+        },
+        after: {
+          flowEffects: currentModel.nodes.get('a')?.flowEffects,
+          linkedNodeIds: null,
+        },
+        crossLinksBefore: [],
+        crossLinksAfter: currentModel.crossLinks,
+      },
+    ])
   })
 })
 

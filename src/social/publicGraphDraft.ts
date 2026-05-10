@@ -110,7 +110,7 @@ function diffModelToSteps(
     steps.push({
       action: 'add-node',
       nodeId: id,
-      newNodeLabel: node.label.trim() || id,
+      newNodeLabel: draftNodeDisplayLabel(node),
       geometry: geometryOf(node),
       shape: node.shape,
       node: cloneNode(node),
@@ -190,7 +190,7 @@ function diffModelToSteps(
       steps.push({
         action: 'update-flow-effects',
         nodeId: id,
-        ...(flow ?? { after: {} }),
+        ...(flow ?? { before: stableFlowPatch(previous), after: stableFlowPatch(node) }),
         ...(crossLinks ?? {}),
       })
     }
@@ -252,6 +252,14 @@ function edgeToAddStep(edge: Connection): GraphProposalStep {
   }
 }
 
+function draftNodeDisplayLabel(node: ModelNode): string {
+  const label = node.label.trim()
+  if (label) return label
+  const kind = node.cosmeticType || node.shape
+  if (kind) return kind.replace(/-/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase())
+  return node.id
+}
+
 function changedPatch<T extends object>(
   before: T,
   after: T,
@@ -278,6 +286,13 @@ function previousFlowCrossLinks(model: Model, nodeId: string): CrossEffectLink[]
   return (model.crossLinks ?? [])
     .filter((link) => link.from.nodeId === nodeId || link.to.nodeId === nodeId)
     .map(cloneCrossLink)
+}
+
+function stableFlowPatch(node: ModelNode): Partial<{ [K in keyof ModelNode]: ModelNode[K] | null }> {
+  return {
+    flowEffects: node.flowEffects ? cloneJson(node.flowEffects) : null,
+    linkedNodeIds: node.linkedNodeIds ? [...node.linkedNodeIds] : null,
+  }
 }
 
 function patchValue(value: unknown): unknown {
