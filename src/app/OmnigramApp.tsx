@@ -45,12 +45,17 @@ import {
   getUserPreferences,
   getCurrentAccount,
   listCreativeCopies,
+  listDevVerificationMessages,
   loginAccount,
   registerAccount,
+  resendVerificationEmail,
+  AuthRequiredError,
   saveCloudDiagram,
   saveCreativeDiagram,
   saveUserPreferences,
+  verifyEmail,
   type CreativeDiagramSummary,
+  type DevVerificationMessage,
 } from '../social/cloudClient'
 import { SocialForumLayer } from './SocialForum'
 import { recomputeTransformDraft } from '../social/transformDraft'
@@ -161,9 +166,11 @@ export function OmnigramApp({
           : 'Create a main graph proposal from this creative copy.'
   const pullMergeTitle = !isCreative
     ? undefined
-    : creativeSourceIsCurrent
-      ? 'Check the public graph for newer changes.'
-      : 'Pull public graph changes into this creative copy.'
+    : !creativeHasSyncMetadata
+      ? 'This creative copy is missing source sync metadata.'
+      : creativeSourceIsCurrent
+        ? 'No public graph changes to pull.'
+        : 'Pull public graph changes into this creative copy.'
   useEffect(() => {
     setCreativeSync({
       sourceContentHash: creativeSourceContentHash,
@@ -545,7 +552,7 @@ export function OmnigramApp({
           applyToMainDisabled={!creativeSourceIsCurrent || !creativeSync.sourceBaseBundleBase64 || !creativeHasChanges}
           applyToMainTitle={applyToMainTitle}
           onPullMerge={isCreative ? () => void pullAndMergeCreative() : undefined}
-          pullMergeDisabled={!sourceDiagramId}
+          pullMergeDisabled={!sourceDiagramId || !creativeSourceIsStale || !creativeSync.sourceBaseBundleBase64}
           pullMergeTitle={pullMergeTitle}
         />
       )}
@@ -883,6 +890,10 @@ function useCloudAutosave(diagramId: string | undefined): void {
         })
         lastSavedRev = rev
       } catch (err) {
+        if (isAutosaveAuthPause(err)) {
+          lastSavedRev = rev
+          return
+        }
         console.error('Autosave failed:', err)
       } finally {
         saving = false
@@ -906,6 +917,12 @@ function useCloudAutosave(diagramId: string | undefined): void {
       unsubscribe()
     }
   }, [diagramId])
+}
+
+function isAutosaveAuthPause(err: unknown): boolean {
+  if (err instanceof AuthRequiredError) return true
+  if (!(err instanceof Error)) return false
+  return err.message === 'Login required' || err.message === 'Verify your email to continue'
 }
 
 function useCreativeAutosave(diagramId: string | undefined): void {
@@ -989,7 +1006,7 @@ function CreativeModeRail({
     setLoading(true)
     try {
       const account = await getCurrentAccount()
-      if (!account) {
+      if (!account || !account.emailVerified) {
         setAuthOpen(true)
         return
       }
@@ -1137,20 +1154,40 @@ function CreativeAuthDialog({
   onClose: () => void
   onAuthenticated: () => Promise<void>
 }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [mode, setMode] = useState<'login' | 'register' | 'verify'>('login')
+  const [login, setLogin] = useState('')
   const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [devMessages, setDevMessages] = useState<DevVerificationMessage[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  const loadDevInbox = async () => {
+    setDevMessages(await listDevVerificationMessages())
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setLoading(true)
     setError(null)
     try {
-      if (mode === 'login') await loginAccount(username, password)
-      else await registerAccount(username, password)
-      await onAuthenticated()
+      if (mode === 'verify') {
+        const user = await verifyEmail(verificationCode)
+        if (!user.emailVerified) throw new Error('Email is still unverified')
+        await onAuthenticated()
+      } else {
+        const result = mode === 'login'
+          ? await loginAccount(login, password)
+          : await registerAccount(username, email, password)
+        if (!result.user.emailVerified) {
+          setMode('verify')
+          await loadDevInbox()
+          return
+        }
+        await onAuthenticated()
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed')
     } finally {
@@ -1162,25 +1199,84 @@ function CreativeAuthDialog({
     <div className="social-modal-backdrop" role="presentation">
       <form className="creative-auth-modal" role="dialog" aria-label="Creative Mode login" onSubmit={(event) => void submit(event)}>
         <header>
-          <h3>{mode === 'login' ? 'Log in' : 'Create account'}</h3>
+          <h3>{mode === 'login' ? 'Log in' : mode === 'register' ? 'Create account' : 'Verify email'}</h3>
           <button type="button" onClick={onClose} disabled={loading}>Close</button>
         </header>
-        <p>Creative Mode saves private graph copies under your profile.</p>
+        <p>Creative Mode saves private graph copies under your verified profile.</p>
         {error && <div className="social-forum-error">{error}</div>}
-        <label>
-          Username
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          />
-        </label>
-        <button type="submit" disabled={loading}>{mode === 'login' ? 'Log in' : 'Create account'}</button>
+        {mode === 'login' && (
+          <>
+            <label>
+              Username or email
+              <input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" />
+            </label>
+            <label>
+              Password
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+          </>
+        )}
+        {mode === 'register' && (
+          <>
+            <label>
+              Username
+              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+            </label>
+            <label>
+              Email
+              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" />
+            </label>
+            <label>
+              Password
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+          </>
+        )}
+        {mode === 'verify' && (
+          <>
+            <label>
+              Verification code
+              <input value={verificationCode} onChange={(e) => setVerificationCode(e.target.value)} autoComplete="one-time-code" />
+            </label>
+            <div className="social-auth-dev-inbox">
+              <button type="button" onClick={() => void loadDevInbox()}>Refresh dev inbox</button>
+              <button
+                type="button"
+                onClick={() => {
+                  void resendVerificationEmail()
+                    .then(() => loadDevInbox())
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not resend verification'))
+                }}
+              >
+                Resend
+              </button>
+              {devMessages.map((message) => (
+                <button
+                  type="button"
+                  key={message.id}
+                  className="social-auth-dev-message"
+                  onClick={() => {
+                    if (message.code) setVerificationCode(message.code)
+                  }}
+                >
+                  <strong>{message.username}</strong>
+                  {message.code && <code>{message.code}</code>}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <button type="submit" disabled={loading}>{mode === 'login' ? 'Log in' : mode === 'register' ? 'Create account' : 'Verify email'}</button>
         <button
           type="button"
           className="creative-auth-switch"

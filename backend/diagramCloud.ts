@@ -1,5 +1,5 @@
-import { createHash, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
@@ -65,15 +65,22 @@ interface DiagramDb {
   proposals: GraphProposal[]
   users: StoredUser[]
   sessions: StoredSession[]
+  emailVerifications: StoredEmailVerification[]
+  verificationMessages: StoredVerificationMessage[]
+  loginAttempts: StoredLoginAttempt[]
   topicVotes: StoredTopicVote[]
   userPreferences: StoredUserPreference[]
   diagramVisits: StoredDiagramVisit[]
 }
 
 interface DiagramIndex {
+  authSchemaVersion?: number
   diagrams: StoredDiagramSummary[]
   users: StoredUser[]
   sessions: StoredSession[]
+  emailVerifications: StoredEmailVerification[]
+  verificationMessages: StoredVerificationMessage[]
+  loginAttempts: StoredLoginAttempt[]
   userPreferences: StoredUserPreference[]
   diagramVisits: StoredDiagramVisit[]
 }
@@ -103,15 +110,55 @@ interface StoredForumTopic {
 interface StoredUser {
   id: string
   username: string
+  usernameKey: string
+  email: string
+  emailKey: string
+  emailVerifiedAt?: string
   passwordSalt: string
   passwordHash: string
   createdAt: string
+  updatedAt: string
+  passwordChangedAt: string
 }
 
 interface StoredSession {
-  token: string
+  tokenHash: string
   userId: string
+  csrfToken: string
   createdAt: string
+  lastSeenAt: string
+  expiresAt: string
+}
+
+interface StoredEmailVerification {
+  id: string
+  userId: string
+  emailKey: string
+  codeHash: string
+  createdAt: string
+  expiresAt: string
+  usedAt?: string
+}
+
+interface StoredVerificationMessage {
+  id: string
+  userId: string
+  username: string
+  to: string
+  subject: string
+  body: string
+  code?: string
+  verificationId?: string
+  provider: 'dev' | 'external'
+  createdAt: string
+  expiresAt?: string
+}
+
+interface StoredLoginAttempt {
+  key: string
+  count: number
+  firstAt: string
+  lastAt: string
 }
 
 interface StoredTopicVote {
@@ -152,6 +199,12 @@ const LEGACY_BACKUP_FILE = 'diagrams.legacy.json'
 const INDEX_FILE = 'index.json'
 const DIAGRAMS_DIR = 'diagrams'
 const MAX_BODY_BYTES = 40 * 1024 * 1024
+const AUTH_SCHEMA_VERSION = 2
+const SESSION_COOKIE = 'omnigram_session'
+const SESSION_DAYS = 14
+const EMAIL_VERIFICATION_MINUTES = 30
+const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000
+const LOGIN_ATTEMPT_LIMIT = 8
 
 export function diagramCloudPlugin(): Plugin {
   return {
@@ -213,33 +266,51 @@ async function handleAuthRequest(req: IncomingMessage, res: ServerResponse): Pro
   const url = new URL(req.url ?? '/', 'http://omnigram.local')
   const route = url.pathname.replace(/^\/+/, '')
   if (req.method === 'POST' && route === 'register') {
-    const body = await readJsonBody<{ username?: unknown; password?: unknown }>(req)
-    const result = await registerUser(body)
+    const body = await readJsonBody<{ username?: unknown; email?: unknown; password?: unknown }>(req)
+    const result = await registerUser(req, res, body)
     sendJson(res, 201, result)
     return
   }
   if (req.method === 'POST' && route === 'login') {
-    const body = await readJsonBody<{ username?: unknown; password?: unknown }>(req)
-    const result = await loginUser(body)
+    const body = await readJsonBody<{ login?: unknown; username?: unknown; password?: unknown }>(req)
+    const result = await loginUser(req, res, body)
     sendJson(res, 200, result)
     return
   }
   if (req.method === 'GET' && route === 'me') {
     const db = await readDb()
-    const user = authenticatedUser(db, req)
-    if (!user) throw new BadRequestError('Not logged in')
-    sendJson(res, 200, { user: publicUser(db, user) })
+    const account = authenticatedAccount(db, req)
+    const user = account?.user ?? null
+    if (!user) {
+      clearSessionCookie(req, res)
+      sendJson(res, 200, { user: null })
+      return
+    }
+    if (account) touchSession(account.session)
+    await writeDb(db)
+    sendJson(res, 200, { user: publicUser(db, user), csrfToken: account?.session.csrfToken })
     return
   }
   if (req.method === 'GET' && route === 'preferences') {
     const db = await readDb()
-    const user = requireAuthenticatedUser(db, req)
-    sendJson(res, 200, { preferences: preferencesForUser(db, user.id) })
+    const account = authenticatedAccount(db, req)
+    if (!account) {
+      clearSessionCookie(req, res)
+      sendJson(res, 200, { preferences: null })
+      return
+    }
+    touchSession(account.session)
+    await writeDb(db)
+    sendJson(res, 200, {
+      preferences: preferencesForUser(db, account.user.id),
+      csrfToken: account.session.csrfToken,
+    })
     return
   }
   if (req.method === 'PUT' && route === 'preferences') {
     const db = await readDb()
-    const user = requireAuthenticatedUser(db, req)
+    requireCsrf(db, req)
+    const user = requireVerifiedUser(db, req)
     const body = await readJsonBody<{ preferences?: unknown }>(req)
     const preferences = sanitizeUserPreferences(body.preferences)
     const existing = db.userPreferences.find((item) => item.userId === user.id)
@@ -254,10 +325,64 @@ async function handleAuthRequest(req: IncomingMessage, res: ServerResponse): Pro
     sendJson(res, 200, { preferences, user: publicUser(db, user) })
     return
   }
+  if (req.method === 'GET' && route === 'dev-inbox') {
+    const db = await readDb()
+    const messages = listDevVerificationMessages(db, req)
+    sendJson(res, 200, { messages })
+    return
+  }
+  if (req.method === 'POST' && route === 'verify-email') {
+    const db = await readDb()
+    requireCsrf(db, req)
+    const user = requireAuthenticatedUser(db, req)
+    const body = await readJsonBody<{ code?: unknown }>(req)
+    verifyUserEmail(db, user, body.code)
+    await writeDb(db)
+    sendJson(res, 200, { user: publicUser(db, user) })
+    return
+  }
+  if (req.method === 'POST' && route === 'resend-verification') {
+    const db = await readDb()
+    requireCsrf(db, req)
+    const user = requireAuthenticatedUser(db, req)
+    if (user.emailVerifiedAt) {
+      sendJson(res, 200, { user: publicUser(db, user) })
+      return
+    }
+    await createEmailVerificationMessage(db, user)
+    await writeDb(db)
+    sendJson(res, 200, { user: publicUser(db, user) })
+    return
+  }
+  if (req.method === 'POST' && route === 'change-password') {
+    const db = await readDb()
+    const session = requireCsrf(db, req)
+    const user = requireVerifiedUser(db, req)
+    const body = await readJsonBody<{ currentPassword?: unknown; nextPassword?: unknown }>(req)
+    changeUserPassword(db, user, body.currentPassword, body.nextPassword)
+    db.sessions = db.sessions.filter((item) => item.userId !== user.id || item.tokenHash === session.tokenHash)
+    await writeDb(db)
+    sendJson(res, 200, { user: publicUser(db, user) })
+    return
+  }
+  if (req.method === 'POST' && route === 'logout-all') {
+    const db = await readDb()
+    requireCsrf(db, req)
+    const user = requireAuthenticatedUser(db, req)
+    db.sessions = db.sessions.filter((session) => session.userId !== user.id)
+    clearSessionCookie(req, res)
+    await writeDb(db)
+    sendJson(res, 200, { ok: true })
+    return
+  }
   if (req.method === 'POST' && route === 'logout') {
     const db = await readDb()
-    const token = authToken(req)
-    if (token) db.sessions = db.sessions.filter((session) => session.token !== token)
+    const account = authenticatedAccount(db, req)
+    if (account) {
+      requireCsrf(db, req)
+      db.sessions = db.sessions.filter((session) => session.tokenHash !== account.session.tokenHash)
+    }
+    clearSessionCookie(req, res)
     await writeDb(db)
     sendJson(res, 200, { ok: true })
     return
@@ -299,13 +424,16 @@ async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse):
   }
 
   if (req.method === 'POST' && id === '') {
+    const db = await readDb()
+    requireCsrf(db, req)
+    requireVerifiedUser(db, req)
     const body = await readJsonBody<{ title?: unknown; topic?: unknown; description?: unknown }>(req)
     const title = typeof body.title === 'string' && body.title.trim().length > 0
       ? body.title.trim()
       : 'Untitled diagram'
     const topic = typeof body.topic === 'string' ? body.topic.trim() : undefined
     const description = typeof body.description === 'string' ? body.description.trim() : undefined
-    const diagram = await createDiagram(title, {
+    const diagram = await createDiagram(db, title, {
       ...(topic ? { topic } : {}),
       ...(description ? { description } : {}),
     })
@@ -320,10 +448,13 @@ async function handleDiagramsRequest(req: IncomingMessage, res: ServerResponse):
   }
 
   if (req.method === 'PUT' && id !== '') {
+    const db = await readDb()
+    requireCsrf(db, req)
+    requireVerifiedUser(db, req)
     const body = await readJsonBody<{ title?: unknown; bundleBase64?: unknown }>(req)
     const title = typeof body.title === 'string' ? body.title.trim() : undefined
     const bundleBase64 = typeof body.bundleBase64 === 'string' ? body.bundleBase64 : undefined
-    const diagram = await updateDiagram(id, { title, bundleBase64 })
+    const diagram = await updateDiagram(db, id, { title, bundleBase64 })
     sendJson(res, 200, withoutBundle(diagram))
     return
   }
@@ -343,12 +474,16 @@ async function handleCreativeDiagramsRequest(req: IncomingMessage, res: ServerRe
     return
   }
   if (segments.length === 1 && req.method === 'PUT') {
+    const db = await readDb()
+    requireCsrf(db, req)
     const body = await readJsonBody<{ title?: unknown; bundleBase64?: unknown }>(req)
-    sendJson(res, 200, await updateCreativeDiagram(req, segments[0], body))
+    sendJson(res, 200, await updateCreativeDiagram(db, req, segments[0], body))
     return
   }
   if (segments.length === 1 && req.method === 'DELETE') {
-    await deleteCreativeDiagram(req, segments[0])
+    const db = await readDb()
+    requireCsrf(db, req)
+    await deleteCreativeDiagram(db, req, segments[0])
     sendJson(res, 200, { ok: true })
     return
   }
@@ -366,8 +501,10 @@ async function handleCreativeCopiesRequest(
     return
   }
   if (req.method === 'POST') {
+    const db = await readDb()
+    requireCsrf(db, req)
     const body = await readJsonBody<{ title?: unknown; bundleBase64?: unknown }>(req)
-    sendJson(res, 201, await createCreativeCopy(req, sourceDiagramId, body))
+    sendJson(res, 201, await createCreativeCopy(db, req, sourceDiagramId, body))
     return
   }
   sendJson(res, 405, { error: 'Method not allowed' })
@@ -445,7 +582,7 @@ async function handleForumRequest(
 
   if (resource === 'proposals' && segments.length === 4 && req.method === 'PUT') {
     const body = await readJsonBody<{ status?: unknown; blockedReason?: unknown }>(req)
-    const proposal = await updateProposalStatus(diagramId, segments[3], body)
+    const proposal = await updateProposalStatus(req, diagramId, segments[3], body)
     sendJson(res, 200, proposal)
     return
   }
@@ -528,10 +665,10 @@ async function listDiagramSuggestions(req: IncomingMessage): Promise<DiagramSugg
 }
 
 async function createDiagram(
+  db: DiagramDb,
   title: string,
   metadata: { topic?: string; description?: string } = {},
 ): Promise<StoredDiagram> {
-  const db = await readDb()
   const now = new Date().toISOString()
   const diagram: StoredDiagram = {
     id: randomUUID(),
@@ -562,8 +699,11 @@ async function getDiagram(req: IncomingMessage, id: string): Promise<StoredDiagr
   return diagram
 }
 
-async function updateDiagram(id: string, patch: { title?: string; bundleBase64?: string }): Promise<StoredDiagram> {
-  const db = await readDb()
+async function updateDiagram(
+  db: DiagramDb,
+  id: string,
+  patch: { title?: string; bundleBase64?: string },
+): Promise<StoredDiagram> {
   const diagram = ensurePublicDiagram(db, id)
   if (patch.title && patch.title.length > 0) diagram.title = patch.title
   if (patch.bundleBase64 !== undefined) {
@@ -668,7 +808,8 @@ async function createForumTopic(
 ): Promise<ForumTopic> {
   const db = await readDb()
   const diagram = ensurePublicDiagram(db, diagramId)
-  const user = requireAuthenticatedUser(db, req)
+  requireCsrf(db, req)
+  const user = requireVerifiedUser(db, req)
   const title = cleanRequired(body.title, 'Topic title')
   const description = cleanRequired(body.description, 'Topic description')
   const now = new Date().toISOString()
@@ -757,7 +898,8 @@ async function createForumComment(
 ): Promise<ForumComment> {
   const db = await readDb()
   ensurePublicDiagram(db, diagramId)
-  const user = requireAuthenticatedUser(db, req)
+  requireCsrf(db, req)
+  const user = requireVerifiedUser(db, req)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
   const now = new Date().toISOString()
@@ -786,7 +928,8 @@ async function updateForumTopic(
 ): Promise<ForumTopic> {
   const db = await readDb()
   ensurePublicDiagram(db, diagramId)
-  const user = requireAuthenticatedUser(db, req)
+  requireCsrf(db, req)
+  const user = requireVerifiedUser(db, req)
   refreshProposalStatuses(db, diagramId)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
@@ -805,7 +948,8 @@ async function deleteForumTopic(
 ): Promise<void> {
   const db = await readDb()
   ensurePublicDiagram(db, diagramId)
-  const user = requireAuthenticatedUser(db, req)
+  requireCsrf(db, req)
+  const user = requireVerifiedUser(db, req)
   refreshProposalStatuses(db, diagramId)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
@@ -843,7 +987,8 @@ async function voteForumTopic(
 ): Promise<ForumTopic> {
   const db = await readDb()
   ensurePublicDiagram(db, diagramId)
-  const user = requireAuthenticatedUser(db, req)
+  requireCsrf(db, req)
+  const user = requireVerifiedUser(db, req)
   const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
   if (!topic) throw new NotFoundError('Forum topic not found')
   if (topic.author.toLowerCase() === user.username.toLowerCase()) {
@@ -957,12 +1102,15 @@ async function listActiveProposals(diagramId: string): Promise<GraphProposal[]> 
 }
 
 async function updateProposalStatus(
+  req: IncomingMessage,
   diagramId: string,
   proposalId: string,
   body: { status?: unknown; blockedReason?: unknown },
 ): Promise<GraphProposal> {
   const db = await readDb()
   ensurePublicDiagram(db, diagramId)
+  requireCsrf(db, req)
+  requireVerifiedUser(db, req)
   const proposal = db.proposals.find((item) => item.diagramId === diagramId && item.id === proposalId)
   if (!proposal) throw new NotFoundError('Proposal not found')
   const status = normalizeProposalStatus(body.status)
@@ -1009,7 +1157,7 @@ function creativeSummary(db: DiagramDb, diagram: StoredDiagram): CreativeDiagram
 
 async function listCreativeDiagrams(req: IncomingMessage): Promise<CreativeDiagramSummary[]> {
   const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+  const user = requireVerifiedUser(db, req)
   return db.diagrams
     .filter((diagram) => diagram.visibility === 'private' && diagram.ownerUserId === user.id)
     .map((diagram) => creativeSummary(db, diagram))
@@ -1021,7 +1169,7 @@ async function listCreativeCopies(
   sourceDiagramId: string,
 ): Promise<CreativeDiagramSummary[]> {
   const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+  const user = requireVerifiedUser(db, req)
   ensurePublicDiagram(db, sourceDiagramId)
   return db.diagrams
     .filter((diagram) =>
@@ -1034,12 +1182,12 @@ async function listCreativeCopies(
 }
 
 async function createCreativeCopy(
+  db: DiagramDb,
   req: IncomingMessage,
   sourceDiagramId: string,
   body: { title?: unknown; bundleBase64?: unknown },
 ): Promise<CreativeDiagramSummary> {
-  const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+  const user = requireVerifiedUser(db, req)
   const source = ensurePublicDiagram(db, sourceDiagramId)
   const title = typeof body.title === 'string' && body.title.trim()
     ? body.title.trim()
@@ -1075,7 +1223,7 @@ async function getCreativeDiagram(
   id: string,
 ): Promise<CreativeDiagramDetail> {
   const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+  const user = requireVerifiedUser(db, req)
   const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
   diagram.visits += 1
   diagram.updatedAt = new Date().toISOString()
@@ -1096,12 +1244,12 @@ async function getCreativeDiagram(
 }
 
 async function updateCreativeDiagram(
+  db: DiagramDb,
   req: IncomingMessage,
   id: string,
   patch: { title?: unknown; bundleBase64?: unknown; sourceContentHash?: unknown; sourceBaseBundleBase64?: unknown },
 ): Promise<CreativeDiagramSummary> {
-  const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+  const user = requireVerifiedUser(db, req)
   const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
   if (typeof patch.title === 'string' && patch.title.trim()) diagram.title = patch.title.trim()
   if (typeof patch.bundleBase64 === 'string') {
@@ -1118,9 +1266,8 @@ async function updateCreativeDiagram(
   return creativeSummary(db, diagram)
 }
 
-async function deleteCreativeDiagram(req: IncomingMessage, id: string): Promise<void> {
-  const db = await readDb()
-  const user = requireAuthenticatedUser(db, req)
+async function deleteCreativeDiagram(db: DiagramDb, req: IncomingMessage, id: string): Promise<void> {
+  const user = requireVerifiedUser(db, req)
   ensureOwnedCreativeDiagram(db, id, user.id)
   db.diagrams = db.diagrams.filter((diagram) => diagram.id !== id)
   db.topics = db.topics.filter((topic) => topic.diagramId !== id)
@@ -1234,6 +1381,9 @@ async function readDb(): Promise<DiagramDb> {
   const db = emptyDb()
   db.users = index.users
   db.sessions = index.sessions
+  db.emailVerifications = index.emailVerifications
+  db.verificationMessages = index.verificationMessages
+  db.loginAttempts = index.loginAttempts
   db.userPreferences = index.userPreferences
   db.diagramVisits = index.diagramVisits
   for (const summary of index.diagrams) {
@@ -1267,10 +1417,18 @@ async function readIndex(): Promise<DiagramIndex> {
     const raw = await readFile(indexPath(), 'utf8')
     if (raw.trim().length === 0) return emptyIndex()
     const parsed = JSON.parse(raw) as Partial<DiagramIndex>
+    if (parsed.authSchemaVersion !== AUTH_SCHEMA_VERSION) {
+      await resetSocialDataForAuthUpgrade(parsed)
+      return await readIndex()
+    }
     return {
+      authSchemaVersion: AUTH_SCHEMA_VERSION,
       diagrams: Array.isArray(parsed.diagrams) ? parsed.diagrams : [],
       users: Array.isArray(parsed.users) ? parsed.users : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      emailVerifications: Array.isArray(parsed.emailVerifications) ? parsed.emailVerifications : [],
+      verificationMessages: Array.isArray(parsed.verificationMessages) ? parsed.verificationMessages : [],
+      loginAttempts: Array.isArray(parsed.loginAttempts) ? parsed.loginAttempts : [],
       userPreferences: Array.isArray(parsed.userPreferences) ? parsed.userPreferences : [],
       diagramVisits: Array.isArray(parsed.diagramVisits) ? parsed.diagramVisits : [],
     }
@@ -1308,6 +1466,9 @@ async function writeSplitDb(db: DiagramDb): Promise<void> {
   const index = emptyIndex()
   index.users = db.users
   index.sessions = db.sessions
+  index.emailVerifications = db.emailVerifications
+  index.verificationMessages = db.verificationMessages
+  index.loginAttempts = db.loginAttempts
   index.userPreferences = db.userPreferences
   index.diagramVisits = db.diagramVisits
   for (const diagram of db.diagrams) {
@@ -1356,6 +1517,59 @@ async function migrateLegacyDbIfNeeded(): Promise<void> {
   }
 }
 
+async function resetSocialDataForAuthUpgrade(parsedIndex: Partial<DiagramIndex>): Promise<void> {
+  await mkdir(diagramDirPath(), { recursive: true })
+  const diagrams = Array.isArray(parsedIndex.diagrams) ? parsedIndex.diagrams : []
+  const publicDiagrams = diagrams.filter((diagram) => diagram.visibility !== 'private')
+  const publicIds = new Set(publicDiagrams.map((diagram) => diagram.id))
+  for (const summary of diagrams) {
+    if (!summary.id || publicIds.has(summary.id)) continue
+    await unlinkDiagramFileIfPresent(summary.id)
+  }
+  for (const summary of publicDiagrams) {
+    const file = await readDiagramFile(summary.id)
+    const diagram = file?.diagram ?? { ...summary }
+    const nodeLabels = file?.nodeLabels ?? diagram.nodeLabels ?? summary.nodeLabels ?? []
+    const publicDiagram: StoredDiagram = {
+      ...summary,
+      ...diagram,
+      visibility: diagram.visibility === 'private' ? 'public' : diagram.visibility,
+      nodeLabels,
+      contentHash: diagram.contentHash ?? contentHashForBundleBase64(diagram.bundleBase64),
+    }
+    const cleanFile: StoredDiagramFile = {
+      diagram: publicDiagram,
+      topics: [],
+      comments: [],
+      proposals: [],
+      topicVotes: [],
+      nodeLabels,
+    }
+    await writeJsonAtomic(diagramFilePath(summary.id), cleanFile)
+  }
+  await removeUnknownDiagramFiles(publicIds)
+  const nextIndex = emptyIndex()
+  nextIndex.diagrams = publicDiagrams.map((diagram) => ({
+    ...diagram,
+    visibility: diagram.visibility === 'private' ? 'public' : diagram.visibility,
+  }))
+  await writeJsonAtomic(indexPath(), nextIndex)
+}
+
+async function removeUnknownDiagramFiles(keepIds: ReadonlySet<string>): Promise<void> {
+  try {
+    const files = await readdir(diagramDirPath())
+    await Promise.all(files
+      .filter((file) => file.endsWith('.json'))
+      .map(async (file) => {
+        const id = file.slice(0, -'.json'.length)
+        if (!keepIds.has(id)) await unlinkDiagramFileIfPresent(id)
+      }))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+}
+
 function normalizeLegacyDb(parsed: Partial<DiagramDb>): DiagramDb {
   return {
     diagrams: Array.isArray(parsed.diagrams) ? parsed.diagrams : [],
@@ -1364,6 +1578,9 @@ function normalizeLegacyDb(parsed: Partial<DiagramDb>): DiagramDb {
     proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
     users: Array.isArray(parsed.users) ? parsed.users : [],
     sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    emailVerifications: Array.isArray(parsed.emailVerifications) ? parsed.emailVerifications : [],
+    verificationMessages: Array.isArray(parsed.verificationMessages) ? parsed.verificationMessages : [],
+    loginAttempts: Array.isArray(parsed.loginAttempts) ? parsed.loginAttempts : [],
     topicVotes: Array.isArray(parsed.topicVotes) ? parsed.topicVotes : [],
     userPreferences: Array.isArray(parsed.userPreferences) ? parsed.userPreferences : [],
     diagramVisits: Array.isArray(parsed.diagramVisits) ? parsed.diagramVisits : [],
@@ -1409,9 +1626,13 @@ function diagramFilePath(id: string): string {
 
 function emptyIndex(): DiagramIndex {
   return {
+    authSchemaVersion: AUTH_SCHEMA_VERSION,
     diagrams: [],
     users: [],
     sessions: [],
+    emailVerifications: [],
+    verificationMessages: [],
+    loginAttempts: [],
     userPreferences: [],
     diagramVisits: [],
   }
@@ -1425,77 +1646,147 @@ function emptyDb(): DiagramDb {
     proposals: [],
     users: [],
     sessions: [],
+    emailVerifications: [],
+    verificationMessages: [],
+    loginAttempts: [],
     topicVotes: [],
     userPreferences: [],
     diagramVisits: [],
   }
 }
 
-async function registerUser(body: { username?: unknown; password?: unknown }) {
+async function registerUser(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: { username?: unknown; email?: unknown; password?: unknown },
+) {
   const db = await readDb()
   const username = cleanUsername(body.username)
+  const email = cleanEmail(body.email)
   const password = cleanPassword(body.password)
-  if (db.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+  const usernameKey = userKey(username)
+  const emailKey = email.toLowerCase()
+  if (db.users.some((user) => normalizedUsernameKey(user) === usernameKey)) {
     throw new BadRequestError('Username is already taken')
+  }
+  if (db.users.some((user) => normalizedEmailKey(user) === emailKey)) {
+    throw new BadRequestError('Email is already registered')
   }
   const now = new Date().toISOString()
   const salt = randomUUID()
   const user: StoredUser = {
     id: randomUUID(),
     username,
+    usernameKey,
+    email,
+    emailKey,
     passwordSalt: salt,
     passwordHash: hashPassword(password, salt),
     createdAt: now,
+    updatedAt: now,
+    passwordChangedAt: now,
   }
   db.users.push(user)
-  const session = createSession(user)
+  await createEmailVerificationMessage(db, user)
+  const { session, token } = createSession(user)
   db.sessions.push(session)
+  setSessionCookie(req, res, token, session.expiresAt)
   await writeDb(db)
-  return { user: publicUser(db, user), token: session.token }
+  return { user: publicUser(db, user), csrfToken: session.csrfToken }
 }
 
-async function loginUser(body: { username?: unknown; password?: unknown }) {
+async function loginUser(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: { login?: unknown; username?: unknown; password?: unknown },
+) {
   const db = await readDb()
-  const username = cleanUsername(body.username)
+  const login = cleanLogin(body.login ?? body.username)
   const password = cleanPassword(body.password)
-  const user = db.users.find((item) => item.username.toLowerCase() === username.toLowerCase())
-  if (!user || !passwordMatches(password, user)) throw new BadRequestError('Invalid username or password')
-  const session = createSession(user)
+  checkLoginThrottle(db, login, req)
+  const lookup = login.toLowerCase()
+  const user = db.users.find((item) =>
+    normalizedUsernameKey(item) === userKey(login) ||
+    normalizedEmailKey(item) === lookup
+  )
+  if (!user || !passwordMatches(password, user)) {
+    await writeDb(db)
+    throw new BadRequestError('Invalid username or password')
+  }
+  clearLoginAttempts(db, login, req)
+  const { session, token } = createSession(user)
   db.sessions.push(session)
+  setSessionCookie(req, res, token, session.expiresAt)
   await writeDb(db)
-  return { user: publicUser(db, user), token: session.token }
+  return { user: publicUser(db, user), csrfToken: session.csrfToken }
 }
 
-function createSession(user: StoredUser): StoredSession {
-  return { token: randomUUID(), userId: user.id, createdAt: new Date().toISOString() }
+function createSession(user: StoredUser): { session: StoredSession; token: string } {
+  const token = randomToken()
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  return {
+    token,
+    session: {
+      tokenHash: hashToken(token),
+      userId: user.id,
+      csrfToken: randomToken(24),
+      createdAt: now.toISOString(),
+      lastSeenAt: now.toISOString(),
+      expiresAt,
+    },
+  }
+}
+
+function authenticatedAccount(db: DiagramDb, req: IncomingMessage): { user: StoredUser; session: StoredSession } | null {
+  const token = sessionToken(req)
+  if (!token) return null
+  const tokenHash = hashToken(token)
+  const session = db.sessions.find((item) => item.tokenHash === tokenHash)
+  if (!session) return null
+  if (Date.parse(session.expiresAt) <= Date.now()) return null
+  const user = db.users.find((item) => item.id === session.userId)
+  return user ? { user, session } : null
 }
 
 function authenticatedUser(db: DiagramDb, req: IncomingMessage): StoredUser | null {
-  const token = authToken(req)
-  if (!token) return null
-  const session = db.sessions.find((item) => item.token === token)
-  if (!session) return null
-  return db.users.find((item) => item.id === session.userId) ?? null
+  return authenticatedAccount(db, req)?.user ?? null
 }
 
 function requireAuthenticatedUser(db: DiagramDb, req: IncomingMessage): StoredUser {
-  const user = authenticatedUser(db, req)
+  const account = authenticatedAccount(db, req)
+  const user = account?.user ?? null
   if (!user) throw new BadRequestError('Login required')
   return user
 }
 
-function authToken(req: IncomingMessage): string | null {
-  const direct = req.headers['x-omnigram-session']
-  if (typeof direct === 'string' && direct.trim()) return direct.trim()
-  const auth = req.headers.authorization
-  if (typeof auth === 'string' && auth.startsWith('Bearer ')) return auth.slice('Bearer '.length).trim() || null
-  return null
+function requireVerifiedUser(db: DiagramDb, req: IncomingMessage): StoredUser {
+  const user = requireAuthenticatedUser(db, req)
+  if (!user.emailVerifiedAt) throw new BadRequestError('Verify your email to continue')
+  return user
+}
+
+function requireCsrf(db: DiagramDb, req: IncomingMessage): StoredSession {
+  const account = authenticatedAccount(db, req)
+  if (!account) throw new BadRequestError('Login required')
+  const header = req.headers['x-omnigram-csrf']
+  const value = Array.isArray(header) ? header[0] : header
+  if (!value || value !== account.session.csrfToken) throw new BadRequestError('Invalid CSRF token')
+  touchSession(account.session)
+  return account.session
+}
+
+function sessionToken(req: IncomingMessage): string | null {
+  const cookie = parseCookieHeader(req.headers.cookie ?? '')[SESSION_COOKIE]
+  return cookie?.trim() || null
 }
 
 function publicUser(db: DiagramDb, user: StoredUser) {
   return {
     id: user.id,
     username: user.username,
+    email: user.email,
+    emailVerified: Boolean(user.emailVerifiedAt),
     reputation: reputationForUser(db, user),
     preferences: preferencesForUser(db, user.id),
   }
@@ -1511,10 +1802,24 @@ function cleanUsername(value: unknown): string {
 }
 
 function cleanPassword(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 6) {
-    throw new BadRequestError('Password must be at least 6 characters')
+  if (typeof value !== 'string' || value.length < 8) {
+    throw new BadRequestError('Password must be at least 8 characters')
   }
   return value
+}
+
+function cleanEmail(value: unknown): string {
+  if (typeof value !== 'string') throw new BadRequestError('Email is required')
+  const trimmed = value.trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed) || trimmed.length > 254) {
+    throw new BadRequestError('Enter a valid email address')
+  }
+  return trimmed
+}
+
+function cleanLogin(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) throw new BadRequestError('Username or email is required')
+  return value.trim()
 }
 
 function hashPassword(password: string, salt: string): string {
@@ -1525,6 +1830,249 @@ function passwordMatches(password: string, user: StoredUser): boolean {
   const actual = Buffer.from(hashPassword(password, user.passwordSalt), 'hex')
   const expected = Buffer.from(user.passwordHash, 'hex')
   return actual.length === expected.length && timingSafeEqual(actual, expected)
+}
+
+function randomToken(bytes = 32): string {
+  return randomBytes(bytes).toString('base64url')
+}
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function userKey(username: string): string {
+  return username.trim().toLowerCase()
+}
+
+function normalizedUsernameKey(user: StoredUser): string {
+  return user.usernameKey ?? userKey(user.username)
+}
+
+function normalizedEmailKey(user: StoredUser): string {
+  return user.emailKey ?? user.email?.trim().toLowerCase() ?? ''
+}
+
+function touchSession(session: StoredSession): void {
+  session.lastSeenAt = new Date().toISOString()
+}
+
+function parseCookieHeader(header: string): Record<string, string> {
+  const cookies: Record<string, string> = {}
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=')
+    if (index < 0) continue
+    const key = part.slice(0, index).trim()
+    const value = part.slice(index + 1).trim()
+    if (!key) continue
+    cookies[key] = decodeURIComponent(value)
+  }
+  return cookies
+}
+
+function setSessionCookie(req: IncomingMessage, res: ServerResponse, token: string, expiresAt: string): void {
+  const maxAge = Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000))
+  appendSetCookie(res, [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAge}`,
+    cookieSecurePart(req),
+  ].filter(Boolean).join('; '))
+}
+
+function clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
+  appendSetCookie(res, [
+    `${SESSION_COOKIE}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+    cookieSecurePart(req),
+  ].filter(Boolean).join('; '))
+}
+
+function appendSetCookie(res: ServerResponse, cookie: string): void {
+  const existing = res.getHeader('Set-Cookie')
+  if (!existing) {
+    res.setHeader('Set-Cookie', cookie)
+  } else if (Array.isArray(existing)) {
+    res.setHeader('Set-Cookie', [...existing, cookie])
+  } else {
+    res.setHeader('Set-Cookie', [String(existing), cookie])
+  }
+}
+
+function cookieSecurePart(req: IncomingMessage): string {
+  const forwardedProto = req.headers['x-forwarded-proto']
+  if (process.env.OMNIGRAM_COOKIE_SECURE === '1') return 'Secure'
+  if (typeof forwardedProto === 'string' && forwardedProto.split(',')[0]?.trim() === 'https') return 'Secure'
+  return ''
+}
+
+async function createEmailVerificationMessage(db: DiagramDb, user: StoredUser): Promise<void> {
+  const now = new Date()
+  const code = randomDigits(6)
+  const verification: StoredEmailVerification = {
+    id: randomUUID(),
+    userId: user.id,
+    emailKey: normalizedEmailKey(user),
+    codeHash: hashToken(code),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + EMAIL_VERIFICATION_MINUTES * 60 * 1000).toISOString(),
+  }
+  db.emailVerifications = db.emailVerifications.filter((item) => item.userId !== user.id || item.usedAt)
+  db.emailVerifications.push(verification)
+  await sendVerificationEmail(db, user, verification, code)
+}
+
+function verifyUserEmail(db: DiagramDb, user: StoredUser, value: unknown): void {
+  if (user.emailVerifiedAt) return
+  if (typeof value !== 'string' || !value.trim()) throw new BadRequestError('Verification code is required')
+  const codeHash = hashToken(value.trim())
+  const verification = db.emailVerifications
+    .filter((item) =>
+      item.userId === user.id &&
+      item.emailKey === normalizedEmailKey(user) &&
+      !item.usedAt &&
+      Date.parse(item.expiresAt) > Date.now()
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  if (!verification || verification.codeHash !== codeHash) throw new BadRequestError('Invalid verification code')
+  const now = new Date().toISOString()
+  verification.usedAt = now
+  user.emailVerifiedAt = now
+  user.updatedAt = now
+}
+
+function changeUserPassword(
+  db: DiagramDb,
+  user: StoredUser,
+  currentPasswordValue: unknown,
+  nextPasswordValue: unknown,
+): void {
+  const currentPassword = cleanPassword(currentPasswordValue)
+  const nextPassword = cleanPassword(nextPasswordValue)
+  if (!passwordMatches(currentPassword, user)) throw new BadRequestError('Current password is incorrect')
+  const salt = randomUUID()
+  const now = new Date().toISOString()
+  user.passwordSalt = salt
+  user.passwordHash = hashPassword(nextPassword, salt)
+  user.passwordChangedAt = now
+  user.updatedAt = now
+  db.emailVerifications = db.emailVerifications.filter((item) => item.userId !== user.id || item.usedAt)
+}
+
+function randomDigits(length: number): string {
+  const max = 10 ** length
+  return String(randomBytes(4).readUInt32BE(0) % max).padStart(length, '0')
+}
+
+async function sendVerificationEmail(
+  db: DiagramDb,
+  user: StoredUser,
+  verification: StoredEmailVerification,
+  code: string,
+): Promise<void> {
+  const provider = mailProviderKind()
+  const appUrl = process.env.OMNIGRAM_PUBLIC_APP_URL ?? 'http://localhost:5173'
+  const verifyUrl = `${appUrl.replace(/\/+$/, '')}/?verify=${encodeURIComponent(code)}`
+  const subject = 'Verify your Omnigram account'
+  const body = `Hi ${user.username},\n\nYour Omnigram verification code is ${code}.\n\nVerification link: ${verifyUrl}\n\nThis code expires in ${EMAIL_VERIFICATION_MINUTES} minutes.`
+  if (provider === 'external') {
+    await sendExternalMail(user.email, subject, body)
+  }
+  db.verificationMessages.push({
+    id: randomUUID(),
+    userId: user.id,
+    username: user.username,
+    to: user.email,
+    subject,
+    body,
+    ...(provider === 'dev' ? { code } : {}),
+    verificationId: verification.id,
+    provider,
+    createdAt: verification.createdAt,
+    expiresAt: verification.expiresAt,
+  })
+  if (db.verificationMessages.length > 100) {
+    db.verificationMessages = db.verificationMessages
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 100)
+  }
+}
+
+function mailProviderKind(): 'dev' | 'external' {
+  return process.env.OMNIGRAM_MAIL_PROVIDER === 'external' ? 'external' : 'dev'
+}
+
+async function sendExternalMail(to: string, subject: string, body: string): Promise<void> {
+  const apiUrl = process.env.OMNIGRAM_MAIL_API_URL
+  const apiKey = process.env.OMNIGRAM_MAIL_API_KEY
+  const from = process.env.OMNIGRAM_MAIL_FROM
+  if (!apiUrl || !apiKey || !from) {
+    throw new BadRequestError('External mail provider is not configured')
+  }
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ from, to, subject, text: body }),
+  })
+  if (!res.ok) throw new BadRequestError(`External mail provider failed (${res.status})`)
+}
+
+function listDevVerificationMessages(db: DiagramDb, req: IncomingMessage): StoredVerificationMessage[] {
+  const account = authenticatedAccount(db, req)
+  if (!account || account.user.emailVerifiedAt) return []
+  const nowMs = Date.now()
+  const activeVerificationIds = new Set(db.emailVerifications
+    .filter((verification) =>
+      verification.userId === account.user.id &&
+      !verification.usedAt &&
+      Date.parse(verification.expiresAt) > nowMs
+    )
+    .map((verification) => verification.id))
+  return db.verificationMessages
+    .filter((message) =>
+      message.provider === 'dev' &&
+      message.userId === account.user.id &&
+      Boolean(message.verificationId && activeVerificationIds.has(message.verificationId))
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 20)
+}
+
+function checkLoginThrottle(db: DiagramDb, login: string, req: IncomingMessage): void {
+  const key = loginAttemptKey(login, req)
+  const nowMs = Date.now()
+  db.loginAttempts = db.loginAttempts.filter((attempt) => nowMs - Date.parse(attempt.firstAt) <= LOGIN_ATTEMPT_WINDOW_MS)
+  const attempt = db.loginAttempts.find((item) => item.key === key)
+  if (attempt && attempt.count >= LOGIN_ATTEMPT_LIMIT) throw new BadRequestError('Too many login attempts. Try again shortly.')
+  const now = new Date().toISOString()
+  if (attempt) {
+    attempt.count += 1
+    attempt.lastAt = now
+  } else {
+    db.loginAttempts.push({ key, count: 1, firstAt: now, lastAt: now })
+  }
+}
+
+function clearLoginAttempts(db: DiagramDb, login: string, req: IncomingMessage): void {
+  const key = loginAttemptKey(login, req)
+  db.loginAttempts = db.loginAttempts.filter((attempt) => attempt.key !== key)
+}
+
+function loginAttemptKey(login: string, req: IncomingMessage): string {
+  return `${login.trim().toLowerCase()}@${clientAddress(req)}`
+}
+
+function clientAddress(req: IncomingMessage): string {
+  const forwardedFor = req.headers['x-forwarded-for']
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) return forwardedFor.split(',')[0]?.trim() ?? 'unknown'
+  return req.socket.remoteAddress ?? 'unknown'
 }
 
 function ensureDiagram(db: DiagramDb, id: string): StoredDiagram {

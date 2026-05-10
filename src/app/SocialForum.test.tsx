@@ -13,7 +13,7 @@ beforeEach(() => {
       removeItem: (key: string) => storage.delete(key),
     },
   })
-  window.localStorage.setItem('omnigram-social-session', 'test-token')
+  window.localStorage.setItem('omnigram-social-csrf', 'csrf-test')
   const model = { id: 'root', name: 'social test', nodes: new Map(), edges: new Map() }
   useOmniStore.setState({
     model,
@@ -34,7 +34,17 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input.toString()
     if (url.includes('/api/auth/me')) {
-      return jsonResponse({ user: { id: 'u1', username: 'Ada' } })
+      return jsonResponse({
+        user: {
+          id: 'u1',
+          username: 'Ada',
+          email: 'ada@example.test',
+          emailVerified: true,
+          reputation: 0,
+          preferences: {},
+        },
+        csrfToken: 'csrf-test',
+      })
     }
     if (url.includes('/forums/proposals')) {
       return jsonResponse({ proposals: [] })

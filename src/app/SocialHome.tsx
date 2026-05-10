@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
 import type { CreativeDiagramSummary, DiagramSuggestion, DiagramSummary, AuthUser } from '../social/cloudClient'
-import { createCloudDiagram, getCurrentAccount, listCreativeDiagrams, listDiagramSuggestions, searchCloudDiagrams } from '../social/cloudClient'
+import { createCloudDiagram, getCurrentAccount, listCreativeDiagrams, listDiagramSuggestions, logoutAccount, searchCloudDiagrams } from '../social/cloudClient'
+import { AuthModal } from './SocialForum'
 
 interface SocialHomeProps {
   onOpenDiagram: (diagram: DiagramSummary) => Promise<void>
@@ -24,6 +25,7 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
   const [setupTitle, setSetupTitle] = useState('')
   const [setupTopic, setSetupTopic] = useState('')
   const [setupDescription, setSetupDescription] = useState('')
+  const [authOpen, setAuthOpen] = useState(false)
   const newTitle = useMemo(() => query.trim(), [query])
   const hasExactTitle = useMemo(
     () => results.some((diagram) => normalizeTitle(diagram.title) === normalizeTitle(newTitle)),
@@ -66,7 +68,7 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
         setCurrentUser(account)
         const suggestionItems = await listDiagramSuggestions()
         if (!cancelled) setSuggestions(suggestionItems)
-        if (!account) {
+        if (!account || !account.emailVerified) {
           setCreativeGraphs([])
           return
         }
@@ -119,6 +121,10 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
   }
 
   const openSetup = () => {
+    if (!currentUser || !currentUser.emailVerified) {
+      setAuthOpen(true)
+      return
+    }
     setSetupTitle(newTitle)
     setSetupTopic(`${newTitle} forum`)
     setSetupDescription('')
@@ -157,6 +163,31 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
           <div>
             <h1 style={titleStyle}>Omnigram</h1>
             <p style={subtitleStyle}>Search diagrams by title or start a new shared graph.</p>
+          </div>
+          <div style={homeAccountStyle}>
+            {currentUser ? (
+              <>
+                <span style={homeAccountNameStyle}>
+                  {currentUser.username}{currentUser.emailVerified ? '' : ' · unverified'}
+                </span>
+                {!currentUser.emailVerified && (
+                  <button type="button" onClick={() => setAuthOpen(true)} style={homeAccountButtonStyle}>Verify</button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void logoutAccount().then(() => setCurrentUser(null))
+                  }}
+                  style={homeAccountButtonStyle}
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={() => setAuthOpen(true)} style={homeAccountButtonStyle}>
+                Log in
+              </button>
+            )}
           </div>
         </div>
 
@@ -232,12 +263,13 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
             <h2 style={sectionTitleStyle}>Your Creative Graphs</h2>
             {creativeLoading && <span style={mutedStyle}>Loading...</span>}
           </div>
-          {!currentUser && <div style={creativeEmptyStyle}>Log in from a graph to keep private creative copies here.</div>}
+          {!currentUser && <div style={creativeEmptyStyle}>Log in to keep private creative copies here.</div>}
+          {currentUser && !currentUser.emailVerified && <div style={creativeEmptyStyle}>Verify your email to use Creative Mode copies.</div>}
           {currentUser && creativeError && <div style={errorStyle}>{creativeError}</div>}
-          {currentUser && !creativeError && creativeGraphs.length === 0 && (
+          {currentUser && currentUser.emailVerified && !creativeError && creativeGraphs.length === 0 && (
             <div style={creativeEmptyStyle}>Private Creative Mode copies will appear here.</div>
           )}
-          {currentUser && creativeGraphs.length > 0 && (
+          {currentUser && currentUser.emailVerified && creativeGraphs.length > 0 && (
             <div style={creativeListStyle}>
               {creativeGraphs.map((graph) => (
                 <button
@@ -308,6 +340,16 @@ export function SocialHome({ onOpenDiagram, onOpenCreativeDiagram }: SocialHomeP
             </button>
           </form>
         </div>
+      )}
+      {authOpen && (
+        <AuthModal
+          currentUser={currentUser}
+          onClose={() => setAuthOpen(false)}
+          onAuthed={(user) => {
+            setCurrentUser(user)
+            if (user.emailVerified) setAuthOpen(false)
+          }}
+        />
       )}
     </main>
   )
@@ -389,6 +431,29 @@ const brandMarkStyle: CSSProperties = {
   background: '#365f8f',
   color: '#fff',
   font: '700 24px system-ui, sans-serif',
+}
+
+const homeAccountStyle: CSSProperties = {
+  marginLeft: 'auto',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+}
+
+const homeAccountNameStyle: CSSProperties = {
+  color: '#365f8f',
+  font: '700 13px system-ui, sans-serif',
+}
+
+const homeAccountButtonStyle: CSSProperties = {
+  minHeight: 34,
+  border: '1px solid #b9cde2',
+  borderRadius: 7,
+  background: '#f8fbff',
+  color: '#21486f',
+  padding: '7px 11px',
+  font: '800 13px system-ui, sans-serif',
+  cursor: 'pointer',
 }
 
 const titleStyle: CSSProperties = {

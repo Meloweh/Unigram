@@ -26,12 +26,22 @@ beforeEach(() => {
 
 describe('OmnigramApp creative mode rail', () => {
   it('opens a creative copy chooser for logged-in users', async () => {
-    window.localStorage.setItem('omnigram-social-session', 'test-token')
+    window.localStorage.setItem('omnigram-social-csrf', 'csrf-test')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString()
       if (url.includes('/api/auth/preferences')) return jsonResponse({ preferences: {} })
       if (url.includes('/api/auth/me')) {
-        return jsonResponse({ user: { id: 'u1', username: 'Ada', reputation: 0, preferences: {} } })
+        return jsonResponse({
+          user: {
+            id: 'u1',
+            username: 'Ada',
+            email: 'ada@example.test',
+            emailVerified: true,
+            reputation: 0,
+            preferences: {},
+          },
+          csrfToken: 'csrf-test',
+        })
       }
       if (url.includes('/api/diagrams/d1/creative-copies')) {
         return jsonResponse({

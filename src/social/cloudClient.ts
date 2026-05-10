@@ -12,7 +12,7 @@ import type {
   TopicVoteValue,
 } from './forumTypes'
 
-const SESSION_KEY = 'omnigram-social-session'
+const CSRF_KEY = 'omnigram-social-csrf'
 
 export interface DiagramSummary {
   id: string
@@ -58,84 +58,149 @@ export interface CreativeDiagramDetail extends CreativeDiagramSummary {
 export interface AuthUser {
   id: string
   username: string
+  email: string
+  emailVerified: boolean
   reputation: number
   preferences: SocialUserPreferences
 }
 
 export interface AuthResult {
   user: AuthUser
-  token: string
+  csrfToken: string
 }
 
-export function storedAuthToken(): string {
+export interface DevVerificationMessage {
+  id: string
+  userId: string
+  username: string
+  to: string
+  subject: string
+  body: string
+  code?: string
+  createdAt: string
+  expiresAt?: string
+}
+
+export class AuthRequiredError extends Error {
+  constructor(message = 'Login required') {
+    super(message)
+    this.name = 'AuthRequiredError'
+  }
+}
+
+function storedCsrfToken(): string {
   try {
-    return window.localStorage.getItem(SESSION_KEY) ?? ''
+    return window.localStorage.getItem(CSRF_KEY) ?? ''
   } catch {
     return ''
   }
 }
 
-export function storeAuthToken(token: string): void {
+function storeCsrfToken(token: string): void {
   try {
-    window.localStorage.setItem(SESSION_KEY, token)
+    if (window.localStorage.getItem(CSRF_KEY) === token) return
+    window.localStorage.setItem(CSRF_KEY, token)
     window.dispatchEvent(new CustomEvent('omnigram-auth-changed'))
   } catch {
     /* localStorage can be unavailable */
   }
 }
 
-export function clearAuthToken(): void {
+function clearCsrfToken(): void {
   try {
-    window.localStorage.removeItem(SESSION_KEY)
+    if (!window.localStorage.getItem(CSRF_KEY)) return
+    window.localStorage.removeItem(CSRF_KEY)
     window.dispatchEvent(new CustomEvent('omnigram-auth-changed'))
   } catch {
     /* localStorage can be unavailable */
   }
 }
 
-export async function registerAccount(username: string, password: string): Promise<AuthResult> {
-  return authPost('/api/auth/register', { username, password })
+export async function registerAccount(username: string, email: string, password: string): Promise<AuthResult> {
+  return authPost('/api/auth/register', { username, email, password })
 }
 
-export async function loginAccount(username: string, password: string): Promise<AuthResult> {
-  return authPost('/api/auth/login', { username, password })
+export async function loginAccount(login: string, password: string): Promise<AuthResult> {
+  return authPost('/api/auth/login', { login, password })
 }
 
 export async function getCurrentAccount(): Promise<AuthUser | null> {
-  const token = storedAuthToken()
-  if (!token) return null
-  const res = await fetch('/api/auth/me', { headers: authHeaders() })
+  const res = await fetch('/api/auth/me')
   if (!res.ok) {
-    clearAuthToken()
+    clearCsrfToken()
     return null
   }
-  const body = await res.json() as { user?: AuthUser }
+  const body = await res.json() as { user?: AuthUser; csrfToken?: string }
+  if (body.csrfToken) storeCsrfToken(body.csrfToken)
   return body.user ?? null
 }
 
 export async function logoutAccount(): Promise<void> {
-  const token = storedAuthToken()
-  if (token) {
-    await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }).catch(() => undefined)
-  }
-  clearAuthToken()
+  await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() }).catch(() => undefined)
+  clearCsrfToken()
+}
+
+export async function logoutAllAccounts(): Promise<void> {
+  await fetch('/api/auth/logout-all', { method: 'POST', headers: authHeaders() })
+  clearCsrfToken()
+}
+
+export async function verifyEmail(code: string): Promise<AuthUser> {
+  const res = await fetch('/api/auth/verify-email', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ code }),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Email verification failed (${res.status})`)
+  const body = await res.json() as { user?: AuthUser }
+  if (!body.user) throw new Error('Email verification failed')
+  window.dispatchEvent(new CustomEvent('omnigram-auth-changed'))
+  return body.user
+}
+
+export async function resendVerificationEmail(): Promise<AuthUser> {
+  const res = await fetch('/api/auth/resend-verification', {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Verification resend failed (${res.status})`)
+  const body = await res.json() as { user?: AuthUser }
+  if (!body.user) throw new Error('Verification resend failed')
+  return body.user
+}
+
+export async function changePassword(currentPassword: string, nextPassword: string): Promise<AuthUser> {
+  const res = await fetch('/api/auth/change-password', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ currentPassword, nextPassword }),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Password change failed (${res.status})`)
+  const body = await res.json() as { user?: AuthUser }
+  if (!body.user) throw new Error('Password change failed')
+  return body.user
+}
+
+export async function listDevVerificationMessages(): Promise<DevVerificationMessage[]> {
+  const res = await fetch('/api/auth/dev-inbox')
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Dev inbox failed (${res.status})`)
+  const body = await res.json() as { messages?: DevVerificationMessage[] }
+  return Array.isArray(body.messages) ? body.messages : []
 }
 
 export async function getUserPreferences(): Promise<SocialUserPreferences | null> {
-  const token = storedAuthToken()
-  if (!token) return null
   const res = await fetch('/api/auth/preferences', { headers: authHeaders() })
   if (!res.ok) {
     if (res.status === 400 || res.status === 401 || res.status === 404) return null
     throw new Error(`Preferences load failed (${res.status})`)
   }
-  const body = await res.json() as { preferences?: SocialUserPreferences }
+  const body = await res.json() as { preferences?: SocialUserPreferences | null; csrfToken?: string }
+  if (body.csrfToken) storeCsrfToken(body.csrfToken)
   return body.preferences ?? null
 }
 
 export async function saveUserPreferences(preferences: SocialUserPreferences): Promise<SocialUserPreferences> {
-  const token = storedAuthToken()
-  if (!token) throw new Error('Login required')
+  if (!storedCsrfToken()) return preferences
   const res = await fetch('/api/auth/preferences', {
     method: 'PUT',
     headers: { 'content-type': 'application/json', ...authHeaders() },
@@ -146,7 +211,7 @@ export async function saveUserPreferences(preferences: SocialUserPreferences): P
   return body.preferences ?? {}
 }
 
-async function authPost(url: string, body: { username: string; password: string }): Promise<AuthResult> {
+async function authPost(url: string, body: { username?: string; email?: string; login?: string; password: string }): Promise<AuthResult> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -154,13 +219,13 @@ async function authPost(url: string, body: { username: string; password: string 
   })
   if (!res.ok) throw new Error((await errorMessage(res)) || `Authentication failed (${res.status})`)
   const result = await res.json() as AuthResult
-  storeAuthToken(result.token)
+  storeCsrfToken(result.csrfToken)
   return result
 }
 
 function authHeaders(): HeadersInit {
-  const token = storedAuthToken()
-  return token ? { 'x-omnigram-session': token } : {}
+  const token = storedCsrfToken()
+  return token ? { 'x-omnigram-csrf': token } : {}
 }
 
 async function errorMessage(res: Response): Promise<string> {
@@ -213,10 +278,10 @@ export async function createCloudDiagram(input: string | DiagramCreateInput): Pr
   const payload = typeof input === 'string' ? { title: input } : input
   const res = await fetch('/api/diagrams', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload),
   })
-  if (!res.ok) throw new Error(`Diagram creation failed (${res.status})`)
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Diagram creation failed (${res.status})`)
   return await res.json() as DiagramSummary
 }
 
@@ -230,12 +295,13 @@ export async function saveCloudDiagram(
   id: string,
   payload: { title: string; bundleBase64: string },
 ): Promise<DiagramSummary> {
+  if (!storedCsrfToken()) throw new AuthRequiredError()
   const res = await fetch(`/api/diagrams/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload),
   })
-  if (!res.ok) throw new Error(`Diagram save failed (${res.status})`)
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Diagram save failed (${res.status})`)
   return await res.json() as DiagramSummary
 }
 
@@ -413,7 +479,7 @@ export async function markProposalStatus(
     `/api/diagrams/${encodeURIComponent(diagramId)}/forums/proposals/${encodeURIComponent(proposalId)}`,
     {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ status, blockedReason }),
     },
   )

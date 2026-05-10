@@ -21,16 +21,22 @@ import {
   listActiveProposals,
   listForumTopics,
   listSocialScores,
+  listDevVerificationMessages,
   loginAccount,
   logoutAccount,
+  logoutAllAccounts,
   markProposalStatus,
   registerAccount,
+  resendVerificationEmail,
   saveCloudDiagram,
+  verifyEmail,
   voteForumTopic,
   updateForumTopic,
   deleteForumTopic,
+  changePassword,
   blobToBase64,
   type AuthUser,
+  type DevVerificationMessage,
 } from '../social/cloudClient'
 import {
   diagramForumRef,
@@ -455,7 +461,21 @@ export function SocialForumLayer({
                         {accountMenuOpen && (
                           <div className="social-account-popover" role="menu">
                             <p>{currentUser.username}</p>
-                            <small>{currentUser.reputation} reputation</small>
+                            <small>
+                              {currentUser.reputation} reputation · {currentUser.emailVerified ? 'verified' : 'email unverified'}
+                            </small>
+                            {!currentUser.emailVerified && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setAuthOpen(true)
+                                  setAccountMenuOpen(false)
+                                }}
+                              >
+                                Verify email
+                              </button>
+                            )}
                             <button
                               type="button"
                               role="menuitem"
@@ -580,12 +600,17 @@ export function SocialForumLayer({
       )}
       {authOpen && (
         <AuthModal
+          currentUser={currentUser}
           onClose={() => {
             postAfterAuthRef.current = false
             setAuthOpen(false)
           }}
           onAuthed={(user) => {
             setCurrentUser(user)
+            if (!user.emailVerified) {
+              setAuthOpen(true)
+              return
+            }
             setAuthOpen(false)
             if (postAfterAuthRef.current) {
               postAfterAuthRef.current = false
@@ -597,6 +622,7 @@ export function SocialForumLayer({
       {profileSettingsOpen && currentUser && (
         <ProfileSettingsModal
           user={currentUser}
+          onUserChanged={setCurrentUser}
           onClose={() => setProfileSettingsOpen(false)}
         />
       )}
@@ -1421,6 +1447,10 @@ function PostModal({
       setError('Log in before posting')
       return
     }
+    if (!currentUser.emailVerified) {
+      setError('Verify your email before posting')
+      return
+    }
     try {
       const plannedSteps = chainSteps.length > 0 ? chainSteps : []
       if ((activeAction === 'commit-transform' || plannedSteps.some((step) => step.action === 'commit-transform')) && hasActiveTransformProposal) {
@@ -1641,34 +1671,57 @@ function PostModal({
   )
 }
 
-function AuthModal({
+export function AuthModal({
+  currentUser,
   onClose,
   onAuthed,
 }: {
+  currentUser: AuthUser | null
   onClose: () => void
   onAuthed: (user: AuthUser) => void
 }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [mode, setMode] = useState<'login' | 'register' | 'verify'>(() => currentUser && !currentUser.emailVerified ? 'verify' : 'login')
+  const [login, setLogin] = useState('')
   const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [devMessages, setDevMessages] = useState<DevVerificationMessage[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const loadDevInbox = async () => {
+    setError(null)
+    try {
+      setDevMessages(await listDevVerificationMessages())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load dev inbox')
+    }
+  }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setError(null)
-    const validation = validateAuthInput(mode, username, password)
+    const validation = validateAuthInput(mode, mode === 'login' ? login : username, email, password, verificationCode)
     if (validation) {
       setError(validation)
       return
     }
     setBusy(true)
     try {
-      const cleanUsername = username.trim()
-      const result = mode === 'login'
-        ? await loginAccount(cleanUsername, password)
-        : await registerAccount(cleanUsername, password)
-      onAuthed(result.user)
+      if (mode === 'verify') {
+        const user = await verifyEmail(verificationCode)
+        onAuthed(user)
+      } else {
+        const result = mode === 'login'
+          ? await loginAccount(login.trim(), password)
+          : await registerAccount(username.trim(), email.trim(), password)
+        onAuthed(result.user)
+        if (!result.user.emailVerified) {
+          setMode('verify')
+          await loadDevInbox()
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed')
     } finally {
@@ -1680,7 +1733,7 @@ function AuthModal({
     <div className="social-modal-backdrop" role="presentation">
       <form className="social-auth-modal" onSubmit={(e) => void submit(e)} aria-label="Account login">
         <header>
-          <h3>{mode === 'login' ? 'Log in' : 'Create account'}</h3>
+          <h3>{mode === 'login' ? 'Log in' : mode === 'register' ? 'Create account' : 'Verify email'}</h3>
           <button type="button" onClick={onClose} aria-label="Close account dialog">Close</button>
         </header>
         <div className="social-auth-tabs" role="tablist" aria-label="Account mode">
@@ -1704,32 +1757,121 @@ function AuthModal({
           >
             Register
           </button>
+          {(currentUser || mode === 'verify') && (
+            <button
+              type="button"
+              className={mode === 'verify' ? 'active' : ''}
+              onClick={() => {
+                setMode('verify')
+                setError(null)
+                void loadDevInbox()
+              }}
+            >
+              Verify
+            </button>
+          )}
         </div>
-        <label>
-          Username
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-          />
-        </label>
-        <label>
-          Password
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          />
-        </label>
+        {mode === 'login' && (
+          <>
+            <label>
+              Username or email
+              <input
+                value={login}
+                onChange={(e) => setLogin(e.target.value)}
+                autoComplete="username"
+              />
+            </label>
+            <label>
+              Password
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                autoComplete="current-password"
+              />
+            </label>
+          </>
+        )}
         {mode === 'register' && (
-          <p className="social-auth-hint">Usernames use 3-24 letters, numbers, underscores, or dashes. Passwords need at least 6 characters.</p>
+          <>
+            <label>
+              Username
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+              />
+            </label>
+            <label>
+              Email
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                autoComplete="email"
+              />
+            </label>
+            <label>
+              Password
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                autoComplete="new-password"
+              />
+            </label>
+            <p className="social-auth-hint">Usernames use 3-24 letters, numbers, underscores, or dashes. Passwords need at least 8 characters.</p>
+          </>
+        )}
+        {mode === 'verify' && (
+          <>
+            <p className="social-auth-hint">
+              Enter the verification code sent to your email. In local dev, use the inbox below.
+            </p>
+            <label>
+              Verification code
+              <input
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value)}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+              />
+            </label>
+            <div className="social-auth-dev-inbox">
+              <button type="button" onClick={() => void loadDevInbox()}>Refresh dev inbox</button>
+              <button
+                type="button"
+                onClick={() => {
+                  void resendVerificationEmail()
+                    .then(onAuthed)
+                    .then(() => loadDevInbox())
+                    .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not resend verification'))
+                }}
+              >
+                Resend
+              </button>
+              {devMessages.map((message) => (
+                <button
+                  type="button"
+                  key={message.id}
+                  className="social-auth-dev-message"
+                  onClick={() => {
+                    if (message.code) setVerificationCode(message.code)
+                  }}
+                >
+                  <strong>{message.username}</strong>
+                  <span>{message.to}</span>
+                  {message.code && <code>{message.code}</code>}
+                </button>
+              ))}
+            </div>
+          </>
         )}
         {error && <div className="social-forum-error">{error}</div>}
         <footer>
           <button type="button" onClick={onClose}>Cancel</button>
           <button type="submit" disabled={busy}>
-            {busy ? 'Working...' : mode === 'login' ? 'Log in' : 'Create account'}
+            {busy ? 'Working...' : mode === 'login' ? 'Log in' : mode === 'register' ? 'Create account' : 'Verify email'}
           </button>
         </footer>
       </form>
@@ -1819,11 +1961,35 @@ function ChangeDetailList({
 
 function ProfileSettingsModal({
   user,
+  onUserChanged,
   onClose,
 }: {
   user: AuthUser
+  onUserChanged: (user: AuthUser | null) => void
   onClose: () => void
 }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [nextPassword, setNextPassword] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const submitPassword = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setMessage(null)
+    try {
+      const next = await changePassword(currentPassword, nextPassword)
+      onUserChanged(next)
+      setCurrentPassword('')
+      setNextPassword('')
+      setMessage('Password updated.')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Password update failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="social-modal-backdrop" role="presentation">
       <section className="social-profile-modal" role="dialog" aria-label="Profile settings">
@@ -1833,9 +1999,42 @@ function ProfileSettingsModal({
         </header>
         <div className="social-profile-summary">
           <strong>{user.username}</strong>
+          <span>{user.email} · {user.emailVerified ? 'verified' : 'unverified'}</span>
           <span>{user.reputation} reputation</span>
         </div>
-        <p>Profile appearance and account controls will live here. Theme and background preferences are already saved to this account through Settings.</p>
+        <form onSubmit={(event) => void submitPassword(event)}>
+          <label>
+            Current password
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          <label>
+            New password
+            <input
+              type="password"
+              value={nextPassword}
+              onChange={(event) => setNextPassword(event.target.value)}
+              autoComplete="new-password"
+            />
+          </label>
+          <button type="submit" disabled={busy || !user.emailVerified}>Change password</button>
+        </form>
+        <button
+          type="button"
+          onClick={() => {
+            void logoutAllAccounts().then(() => {
+              onUserChanged(null)
+              onClose()
+            }).catch((err: unknown) => setMessage(err instanceof Error ? err.message : 'Logout failed'))
+          }}
+        >
+          Log out everywhere
+        </button>
+        {message && <div className="social-forum-error">{message}</div>}
       </section>
     </div>
   )
@@ -1993,15 +2192,26 @@ function groupTargetsId(group: ChangeGroup, kind: 'node' | 'edge', id: string): 
   return group.details.some((detail) => detail.target?.kind === kind && detail.target.id === id)
 }
 
-function validateAuthInput(mode: 'login' | 'register', username: string, password: string): string | null {
-  const cleanUsername = username.trim()
-  if (!cleanUsername) return 'Enter a username.'
+function validateAuthInput(
+  mode: 'login' | 'register' | 'verify',
+  usernameOrLogin: string,
+  email: string,
+  password: string,
+  verificationCode: string,
+): string | null {
+  if (mode === 'verify') {
+    if (!verificationCode.trim()) return 'Enter a verification code.'
+    return null
+  }
+  const cleanUsername = usernameOrLogin.trim()
+  if (!cleanUsername) return mode === 'login' ? 'Enter a username or email.' : 'Enter a username.'
   if (!password) return 'Enter a password.'
   if (mode !== 'register') return null
   if (!/^[A-Za-z0-9_-]{3,24}$/.test(cleanUsername)) {
     return 'Use 3-24 letters, numbers, underscores, or dashes for the username.'
   }
-  if (password.length < 6) return 'Use a password with at least 6 characters.'
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Enter a valid email address.'
+  if (password.length < 8) return 'Use a password with at least 8 characters.'
   return null
 }
 

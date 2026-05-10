@@ -20,7 +20,7 @@ import {
   visibleSceneAabb,
 } from './sceneConstants'
 import { Quadtree, type Aabb } from '../spatial/quadtree'
-import { DEFAULT_GRID, DEFAULT_NODE, type Connection, type Model, type ModelNode } from '../model/types'
+import { DEFAULT_EDGE, DEFAULT_GRID, DEFAULT_NODE, type Connection, type Model, type ModelNode } from '../model/types'
 import { useOmniStore } from '../model/store'
 import { drawArrowHead, EdgePool, type EdgeRevealGap } from './EdgePool'
 import { NodePool, type Lod } from './NodePool'
@@ -1960,13 +1960,15 @@ export class SceneRenderer {
       if (proposal.status !== 'pending' && proposal.status !== 'accepted') continue
       const accepted = proposal.status === 'accepted'
       const steps = proposalSteps(proposal.payload)
+      const projectedNodes = new Map(this.model.nodes)
+      const projectedEdges = new Map(this.model.edges)
       for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
         const step = steps[stepIndex]
         const stepSuffix = steps.length === 1 ? proposal.id : `${proposal.id}_${stepIndex + 1}`
         switch (step.action) {
         case 'add-node': {
           const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
-          const existing = this.model.nodes.get(nodeId)
+          const existing = projectedNodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
             ...(step.node ?? {}),
             id: nodeId,
@@ -1979,15 +1981,16 @@ export class SceneRenderer {
             cellColor: step.node?.cellColor ?? DEFAULT_NODE.cellColor,
             membraneColor: step.node?.membraneColor ?? DEFAULT_NODE.membraneColor,
           }
+          projectedNodes.set(nodeId, ghost)
           this.drawProposalNodeGhost(g, ghost, accepted, step.action)
           labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-node-edge': {
-          const source = this.model.nodes.get(step.sourceNodeId)
+          const source = projectedNodes.get(step.sourceNodeId)
           if (!source) break
           const nodeId = step.nodeId ?? proposalCreatedNodeId(stepSuffix)
-          const existing = this.model.nodes.get(nodeId)
+          const existing = projectedNodes.get(nodeId)
           const ghost: ModelNode = existing ?? {
             ...(step.node ?? {}),
             id: nodeId,
@@ -2000,15 +2003,36 @@ export class SceneRenderer {
             cellColor: step.node?.cellColor ?? DEFAULT_NODE.cellColor,
             membraneColor: step.node?.membraneColor ?? DEFAULT_NODE.membraneColor,
           }
+          projectedNodes.set(nodeId, ghost)
+          projectedEdges.set(step.edgeId ?? proposalCreatedEdgeId(stepSuffix), {
+            ...DEFAULT_EDGE,
+            ...(step.edge ?? {}),
+            id: step.edgeId ?? proposalCreatedEdgeId(stepSuffix),
+            from: source.id,
+            to: ghost.id,
+          })
           this.drawProposalConnectionGhost(g, source, ghost, accepted, step.action)
           this.drawProposalNodeGhost(g, ghost, accepted, step.action)
           labelIndex = this.drawProposalNodeLabel(ghost, accepted, labelIndex)
           break
         }
         case 'add-edge': {
-          const source = this.model.nodes.get(step.sourceNodeId)
-          const target = this.model.nodes.get(step.targetNodeId)
-          if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, step.action)
+          const source = projectedNodes.get(step.sourceNodeId)
+          const target = projectedNodes.get(step.targetNodeId)
+          if (source && target) {
+            const edgeId = step.edgeId ?? proposalCreatedEdgeId(stepSuffix)
+            projectedEdges.set(edgeId, {
+              ...DEFAULT_EDGE,
+              ...(step.edge ?? {}),
+              ...(step.style ?? {}),
+              id: edgeId,
+              from: source.id,
+              to: target.id,
+              label: step.edge?.label ?? step.label ?? '',
+              references: step.edge?.references ?? step.references,
+            })
+            this.drawProposalConnectionGhost(g, source, target, accepted, step.action)
+          }
           break
         }
         case 'add-rmm':
@@ -2016,35 +2040,65 @@ export class SceneRenderer {
         case 'update-node-settings':
         case 'update-node-media':
         case 'update-flow-effects': {
-          const node = this.model.nodes.get(step.nodeId)
+          const node = projectedNodes.get(step.nodeId)
           if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
           break
         }
-        case 'remove-node':
+        case 'remove-node': {
+          const node = projectedNodes.get(step.nodeId)
+          if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
+          projectedNodes.delete(step.nodeId)
+          for (const edge of [...projectedEdges.values()]) {
+            if (edge.from === step.nodeId || edge.to === step.nodeId) projectedEdges.delete(edge.id)
+          }
+          break
+        }
         case 'rename-node': {
-          const node = this.model.nodes.get(step.nodeId)
-          if (node) this.drawProposalNodeConstruction(g, node, accepted, step.action)
+          const node = projectedNodes.get(step.nodeId)
+          if (node) {
+            this.drawProposalNodeConstruction(g, node, accepted, step.action)
+            projectedNodes.set(node.id, { ...node, label: step.nextLabel })
+          }
           break
         }
-        case 'remove-edge':
+        case 'remove-edge': {
+          const edge = projectedEdges.get(step.edgeId)
+          if (edge) this.drawProposalEdgeConstruction(g, edge, accepted, step.action, projectedNodes)
+          projectedEdges.delete(step.edgeId)
+          break
+        }
         case 'rename-edge':
         case 'add-reference':
         case 'modify-references':
         case 'update-edge-settings':
         case 'rewire-edge': {
-          const edge = this.model.edges.get(step.edgeId)
+          const edge = projectedEdges.get(step.edgeId)
           if (!edge) break
-          this.drawProposalEdgeConstruction(g, edge, accepted, step.action)
+          this.drawProposalEdgeConstruction(g, edge, accepted, step.action, projectedNodes)
           if (step.action === 'rewire-edge') {
-            const source = this.model.nodes.get(edge.from)
-            const target = this.model.nodes.get(step.nextTargetNodeId)
+            const source = projectedNodes.get(edge.from)
+            const target = projectedNodes.get(step.nextTargetNodeId)
             if (source && target) this.drawProposalConnectionGhost(g, source, target, accepted, step.action)
+            if (target) projectedEdges.set(edge.id, { ...edge, to: target.id })
+          } else if (step.action === 'rename-edge') {
+            projectedEdges.set(edge.id, { ...edge, label: step.nextLabel })
+          } else if (step.action === 'add-reference') {
+            projectedEdges.set(edge.id, { ...edge, references: [...(edge.references ?? []), step.reference] })
+          } else if (step.action === 'modify-references') {
+            projectedEdges.set(edge.id, { ...edge, references: step.references })
+          } else if (step.action === 'update-edge-settings') {
+            projectedEdges.set(edge.id, { ...edge, ...edgePatchAfter(step.after), id: edge.id, from: edge.from, to: edge.to })
           }
           break
         }
-        case 'commit-transform':
+        case 'commit-transform': {
           this.drawTransformPreview(g, step.transforms)
+          for (const transform of step.transforms) {
+            const node = projectedNodes.get(transform.nodeId)
+            if (node) projectedNodes.set(node.id, { ...node, ...transform.to })
+          }
           break
+        }
         }
       }
     }
@@ -2506,9 +2560,10 @@ export class SceneRenderer {
     edge: Connection,
     accepted: boolean,
     action: GraphProposalAction,
+    nodes: ReadonlyMap<string, ModelNode> = this.model.nodes,
   ): void {
-    const source = this.model.nodes.get(edge.from)
-    const target = this.model.nodes.get(edge.to)
+    const source = nodes.get(edge.from)
+    const target = nodes.get(edge.to)
     if (!source || !target) return
     const endpoints = this.edgeEndpointPixels(source, target)
     if (!endpoints) return
@@ -3651,6 +3706,10 @@ function proposalCreatedNodeId(proposalId: string): string {
   return `proposal_${proposalId.replace(/[^a-z0-9_-]+/gi, '_')}_node`
 }
 
+function proposalCreatedEdgeId(proposalId: string): string {
+  return `proposal_${proposalId.replace(/[^a-z0-9_-]+/gi, '_')}_edge`
+}
+
 function proposalIconKind(action: GraphProposalAction): 'plus' | 'minus' | 'x' | 'rename' | 'rewire' {
   switch (action) {
     case 'add-node':
@@ -3973,6 +4032,12 @@ function expandAabb(aabb: SceneAabb, pad: number): SceneAabb {
     maxX: aabb.maxX + pad,
     maxY: aabb.maxY + pad,
   }
+}
+
+function edgePatchAfter(
+  patch: Partial<{ [K in keyof Connection]: Connection[K] | null }>,
+): Partial<Connection> {
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined && value !== null)) as Partial<Connection>
 }
 
 /**
