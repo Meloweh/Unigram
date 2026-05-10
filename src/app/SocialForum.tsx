@@ -839,9 +839,7 @@ function TopicList({
           <button type="button" className="social-topic-main" onClick={() => onOpen(topic)}>
             <span className="social-topic-head">
               <span>{topic.proposal ? proposalActionLabel(topic.proposal) : 'Discussion'}</span>
-              {topic.proposal && isConcludedProposal(topic.proposal) && (
-                <i className="social-concluded-badge">Concluded</i>
-              )}
+              {topic.proposal && <ProposalStatusBadge proposal={topic.proposal} />}
               <b>{topic.proposal ? `${Math.round(topic.agreementRatio * 100)}% agreement` : `${topic.commentCount} comments`}</b>
             </span>
             <span className="social-topic-content">
@@ -1010,9 +1008,7 @@ function ThreadView({
         {thread.topic.proposal && (
           <div className="social-thread-topic-head">
             <span>{proposalActionLabel(thread.topic.proposal)}</span>
-            {isConcludedProposal(thread.topic.proposal) && (
-              <i className="social-concluded-badge">Concluded</i>
-            )}
+            <ProposalStatusBadge proposal={thread.topic.proposal} />
             <b>{Math.round(thread.topic.agreementRatio * 100)}% agreement</b>
           </div>
         )}
@@ -2563,8 +2559,27 @@ function proposalActionIcon(action: GraphProposalAction): string {
   }
 }
 
-function isConcludedProposal(proposal: GraphProposal): boolean {
-  return proposal.status === 'applied' || proposal.status === 'blocked' || proposal.status === 'stale'
+function ProposalStatusBadge({ proposal }: { proposal: GraphProposal }) {
+  const status = proposalDisplayStatus(proposal)
+  return (
+    <i className={`social-proposal-status-badge ${status.className}`}>
+      {status.label}
+    </i>
+  )
+}
+
+function proposalDisplayStatus(proposal: GraphProposal): { label: 'Pending' | 'Accepted' | 'Rejected'; className: string } {
+  switch (proposal.status) {
+    case 'accepted':
+    case 'applied':
+      return { label: 'Accepted', className: 'accepted' }
+    case 'stale':
+    case 'blocked':
+      return { label: 'Rejected', className: 'rejected' }
+    case 'pending':
+    default:
+      return { label: 'Pending', className: 'pending' }
+  }
 }
 
 function isActiveTransformProposal(proposal: GraphProposal): boolean {

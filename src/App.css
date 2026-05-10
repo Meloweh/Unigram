@@ -2968,6 +2968,8 @@
   --social-accent-soft: var(--ug-accent-bg);
   --social-positive: var(--ug-success);
   --social-positive-bg: var(--ug-accent-bg);
+  --social-negative: var(--ug-danger);
+  --social-negative-bg: var(--ug-danger-bg);
   --social-shadow: var(--ug-shadow);
 }
 
@@ -2984,6 +2986,7 @@
   --social-accent: #2b6574;
   --social-accent-soft: rgba(47, 143, 155, 0.13);
   --social-positive-bg: rgba(39, 129, 90, 0.12);
+  --social-negative-bg: rgba(194, 65, 60, 0.1);
 }
 
 [data-theme='light-dark-varied'] .social-forum-curtain {
@@ -3068,6 +3071,8 @@
   --social-accent-soft: rgba(155, 208, 199, 0.13);
   --social-positive: #74d995;
   --social-positive-bg: rgba(116, 217, 149, 0.13);
+  --social-negative: #f28b8f;
+  --social-negative-bg: rgba(240, 113, 120, 0.13);
   --social-shadow: rgba(0, 0, 0, 0.34);
 }
 
@@ -3123,7 +3128,7 @@
 [data-theme='forum-contrast'] .social-topic-head span,
 [data-theme='forum-contrast'] .social-thread-topic-head span,
 [data-theme='forum-contrast'] .social-node-recognition-pill,
-[data-theme='forum-contrast'] .social-concluded-badge {
+[data-theme='forum-contrast'] .social-proposal-status-badge {
   border-color: #536a80;
   background: rgba(155, 208, 199, 0.12);
   color: #c7eee6;
@@ -3809,7 +3814,7 @@
   font: 900 13px system-ui, sans-serif;
 }
 
-.social-concluded-badge {
+.social-proposal-status-badge {
   grid-column: 2;
   justify-self: center;
   flex: 0 0 auto;
@@ -3825,6 +3830,24 @@
   padding: 5px 10px;
   font: 900 12px system-ui, sans-serif;
   font-style: normal;
+}
+
+.social-proposal-status-badge.pending {
+  border-color: color-mix(in srgb, var(--social-accent) 42%, var(--social-border));
+  background: var(--social-accent-soft);
+  color: var(--social-accent);
+}
+
+.social-proposal-status-badge.accepted {
+  border-color: color-mix(in srgb, var(--social-positive) 42%, var(--social-border));
+  background: var(--social-positive-bg);
+  color: var(--social-positive);
+}
+
+.social-proposal-status-badge.rejected {
+  border-color: color-mix(in srgb, var(--social-negative) 36%, var(--social-border));
+  background: var(--social-negative-bg);
+  color: var(--social-negative);
 }
 
 .social-topic-content {
@@ -4811,7 +4834,7 @@
     align-self: flex-start;
   }
 
-  .social-concluded-badge {
+  .social-proposal-status-badge {
     grid-column: 1;
     justify-self: start;
   }
