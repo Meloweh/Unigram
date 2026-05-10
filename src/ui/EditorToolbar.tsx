@@ -18,6 +18,12 @@ import type { SceneRenderer } from '../scene/SceneRenderer'
 interface EditorToolbarProps {
   renderer: SceneRenderer | null
   onHome?: () => void
+  onApplyToMainGraph?: () => void
+  applyToMainDisabled?: boolean
+  applyToMainTitle?: string
+  onPullMerge?: () => void
+  pullMergeDisabled?: boolean
+  pullMergeTitle?: string
 }
 
 /**
@@ -39,7 +45,16 @@ function resolvePlayRoot(s: ReturnType<typeof useOmniStore.getState>): string | 
   return [...nodes.keys()][0]
 }
 
-export function EditorToolbar({ renderer, onHome }: EditorToolbarProps) {
+export function EditorToolbar({
+  renderer,
+  onHome,
+  onApplyToMainGraph,
+  applyToMainDisabled,
+  applyToMainTitle,
+  onPullMerge,
+  pullMergeDisabled,
+  pullMergeTitle,
+}: EditorToolbarProps) {
   // Re-render on store rev / selection changes to refresh enabled states.
   useSyncExternalStore(
     useOmniStore.subscribe,
@@ -169,6 +184,25 @@ export function EditorToolbar({ renderer, onHome }: EditorToolbarProps) {
       >
         🪢 Untangle
       </ToolbarButton>
+      {(onApplyToMainGraph || onPullMerge) && <Separator />}
+      {onApplyToMainGraph && (
+        <ToolbarButton
+          onClick={onApplyToMainGraph}
+          disabled={applyToMainDisabled}
+          title={applyToMainTitle ?? 'Create a main graph proposal from this creative copy'}
+        >
+          Apply to main graph
+        </ToolbarButton>
+      )}
+      {onPullMerge && (
+        <ToolbarButton
+          onClick={onPullMerge}
+          disabled={pullMergeDisabled}
+          title={pullMergeTitle ?? 'Pull public graph changes into this creative copy'}
+        >
+          Pull & Merge
+        </ToolbarButton>
+      )}
     </div>
   )
 }

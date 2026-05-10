@@ -41,6 +41,8 @@ export interface ProjectSnapshot {
   models: Map<string, Model>
 }
 
+const BUNDLE_FILE_DATE = new Date(0)
+
 /** Serialize the project to a `.unigram` zip blob. */
 export async function exportBundle(snapshot: ProjectSnapshot): Promise<Blob> {
   const zip = new JSZip()
@@ -66,7 +68,7 @@ export async function exportBundle(snapshot: ProjectSnapshot): Promise<Blob> {
       ...(m.extra ? { extra: m.extra } : {}),
     }
   }
-  zip.file('project.json', JSON.stringify(file, null, 2))
+  zip.file('project.json', JSON.stringify(file, null, 2), { date: BUNDLE_FILE_DATE })
   return zip.generateAsync({ type: 'blob' })
 }
 
@@ -147,7 +149,7 @@ async function writeMediaAsset(
   if (cached) return cached
   const ext = extensionFor(fileName, blob.type)
   const path = `media/${safePathPart(fallbackName)}${ext}`
-  zip.file(path, blob)
+  zip.file(path, blob, { date: BUNDLE_FILE_DATE })
   mediaAssets.set(src, path)
   return path
 }

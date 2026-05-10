@@ -83,14 +83,18 @@ export function projectWithoutPublicGraphDrafts(snapshot: Project): Project {
 
 export function getPublicGraphDraftSteps(snapshot: Project): GraphProposalStep[] {
   if (!baseline) return []
-  const before = baseline.models.get(baseline.rootModelId)
-  const after = snapshot.models.get(snapshot.rootModelId)
-  if (!before || !after) return []
-  return diffModelToSteps(before, after, baseline.models, snapshot.models)
+  return diffProjectsToProposalSteps(baseline, snapshot)
 }
 
 export function getPublicGraphDraftCount(snapshot: Project): number {
   return getPublicGraphDraftSteps(snapshot).length
+}
+
+export function diffProjectsToProposalSteps(beforeProject: Project, afterProject: Project): GraphProposalStep[] {
+  const before = beforeProject.models.get(beforeProject.rootModelId)
+  const after = afterProject.models.get(afterProject.rootModelId)
+  if (!before || !after) return []
+  return diffModelToSteps(before, after, beforeProject.models, afterProject.models)
 }
 
 function diffModelToSteps(

@@ -11,7 +11,7 @@ import {
 import { SceneRenderer } from '../scene/SceneRenderer'
 import { clientToScene, SCENE_H, SCENE_W, type CameraTransform, type ViewportSize } from '../scene/sceneConstants'
 import { useOmniStore } from '../model/store'
-import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type ConnectionReference, type Model, type ModelNode } from '../model/types'
+import { DEFAULT_EDGE, DEFAULT_NODE, type Connection, type ConnectionReference, type Model, type ModelNode, type Project } from '../model/types'
 import { resolvePalette, type ThemeMode } from '../theme/themes'
 import {
   addForumComment,
@@ -25,7 +25,11 @@ import {
   logoutAccount,
   markProposalStatus,
   registerAccount,
+  saveCloudDiagram,
   voteForumTopic,
+  updateForumTopic,
+  deleteForumTopic,
+  blobToBase64,
   type AuthUser,
 } from '../social/cloudClient'
 import {
@@ -64,6 +68,8 @@ import {
 } from '../social/publicGraphDraft'
 import { EffectGraphDiffPreview } from '../social/EffectGraphDiffPreview'
 import { changeGroupsForSteps, type ChangeDetail, type ChangeGroup, type FlowPreviewData } from '../social/proposalDisplay'
+import { clearActiveProposalLocks, setActiveProposalLocks } from '../social/activeProposalLocks'
+import { exportBundle } from '../model/projectBundle'
 
 interface SocialForumLayerProps {
   diagramId?: string
@@ -216,9 +222,13 @@ export function SocialForumLayer({
 
   useEffect(() => {
     if (!renderer) return
-    renderer.setGraphProposals([])
-    return () => renderer.setGraphProposals([])
-  }, [renderer])
+    renderer.setGraphProposals(proposals)
+    setActiveProposalLocks(proposals, model)
+    return () => {
+      renderer.setGraphProposals([])
+      clearActiveProposalLocks()
+    }
+  }, [renderer, proposals, model])
 
   useEffect(() => {
     void refreshSocialScores()
@@ -235,18 +245,25 @@ export function SocialForumLayer({
       if (proposal.status !== 'accepted' || applyingRef.current.has(proposal.id)) continue
       applyingRef.current.add(proposal.id)
       void (async () => {
-        const hadPublicDrafts = getPublicGraphDraftCount(currentProjectSnapshot()) > 0
-        const baselineBeforeApply = hadPublicDrafts ? restorePublicGraphBaseline() : null
-        const result = applyAcceptedProposal(proposal)
-        if (result.status === 'applied') {
-          if (hadPublicDrafts && baselineBeforeApply) {
-            const nextBaseline = previewProjectForProposal(baselineBeforeApply, proposal)
-            if (nextBaseline) capturePublicGraphBaseline(nextBaseline)
-          } else {
-            capturePublicGraphBaseline(currentProjectSnapshot())
-          }
-        }
         try {
+          const hadPublicDrafts = getPublicGraphDraftCount(currentProjectSnapshot()) > 0
+          const baselineBeforeApply = hadPublicDrafts ? restorePublicGraphBaseline() : null
+          const result = applyAcceptedProposal(proposal)
+          if (result.status === 'applied') {
+            if (hadPublicDrafts && baselineBeforeApply) {
+              const nextBaseline = previewProjectForProposal(baselineBeforeApply, proposal)
+              if (nextBaseline) {
+                await saveAcceptedProposalSnapshot(diagramId, nextBaseline)
+                capturePublicGraphBaseline(nextBaseline)
+              } else {
+                throw new Error('Accepted proposal could not be projected onto the public baseline')
+              }
+            } else {
+              const nextBaseline = currentProjectSnapshot()
+              await saveAcceptedProposalSnapshot(diagramId, nextBaseline)
+              capturePublicGraphBaseline(nextBaseline)
+            }
+          }
           await markProposalStatus(
             diagramId,
             proposal.id,
@@ -257,7 +274,7 @@ export function SocialForumLayer({
           if (open) await refreshTopics()
           await refreshSocialScores()
         } catch (err) {
-          console.warn('Proposal apply status update failed:', err)
+          console.warn('Proposal apply/save failed:', err)
         } finally {
           applyingRef.current.delete(proposal.id)
         }
@@ -394,6 +411,17 @@ export function SocialForumLayer({
                     await refreshSocialScores()
                   }}
                   onPreview={(proposal) => setProposalPreview(proposal)}
+                  onUpdated={(topic) => {
+                    setThread((current) => current ? { ...current, topic } : current)
+                    setTopics((current) => current.map((item) => item.id === topic.id ? topic : item))
+                  }}
+                  onDeleted={(topic) => {
+                    setThreadId(null)
+                    setThread(null)
+                    setTopics((current) => current.filter((item) => item.id !== topic.id))
+                    void refreshProposals()
+                    void refreshSocialScores()
+                  }}
                 />
               </>
             ) : (
@@ -494,6 +522,7 @@ export function SocialForumLayer({
                   </div>
                   {error && <div className="social-forum-error">{error}</div>}
                   <TopicList
+                    diagramId={diagramId}
                     topics={topics}
                     loading={loading}
                     currentUser={currentUser}
@@ -504,6 +533,18 @@ export function SocialForumLayer({
                       await refreshSocialScores()
                     }}
                     onOpen={(topic) => setThreadId(topic.id)}
+                    onUpdated={(topic) => {
+                      setTopics((current) => current.map((item) => item.id === topic.id ? topic : item))
+                    }}
+                    onDeleted={(topic) => {
+                      setTopics((current) => current.filter((item) => item.id !== topic.id))
+                      if (threadId === topic.id) {
+                        setThreadId(null)
+                        setThread(null)
+                      }
+                      void refreshProposals()
+                      void refreshSocialScores()
+                    }}
                   />
                 </main>
               </>
@@ -816,19 +857,25 @@ function NodeSuggestInput({
 }
 
 function TopicList({
+  diagramId,
   topics,
   loading,
   currentUser,
   onLoginRequired,
   onVote,
   onOpen,
+  onUpdated,
+  onDeleted,
 }: {
+  diagramId: string
   topics: ForumTopic[]
   loading: boolean
   currentUser: AuthUser | null
   onLoginRequired: () => void
   onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
   onOpen: (topic: ForumTopic) => void
+  onUpdated: (topic: ForumTopic) => void
+  onDeleted: (topic: ForumTopic) => void
 }) {
   if (loading) return <div className="social-forum-empty">Loading forum...</div>
   if (topics.length === 0) return <div className="social-forum-empty">No posts yet.</div>
@@ -854,6 +901,13 @@ function TopicList({
             onLoginRequired={onLoginRequired}
             onVote={onVote}
             variant="thread"
+          />
+          <TopicAuthorControls
+            diagramId={diagramId}
+            topic={topic}
+            currentUser={currentUser}
+            onUpdated={onUpdated}
+            onDeleted={onDeleted}
           />
         </article>
       ))}
@@ -914,6 +968,86 @@ function TopicVoteControls({
   )
 }
 
+function TopicAuthorControls({
+  diagramId,
+  topic,
+  currentUser,
+  onUpdated,
+  onDeleted,
+}: {
+  diagramId: string
+  topic: ForumTopic
+  currentUser: AuthUser | null
+  onUpdated: (topic: ForumTopic) => void
+  onDeleted: (topic: ForumTopic) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(topic.title)
+  const [description, setDescription] = useState(topic.description)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const canMutate = canCurrentUserMutateTopic(topic, currentUser)
+  useEffect(() => {
+    if (!editing) {
+      setTitle(topic.title)
+      setDescription(topic.description)
+    }
+  }, [editing, topic.title, topic.description])
+  if (!canMutate) return null
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      const next = await updateForumTopic(diagramId, topic.id, { title, description })
+      setEditing(false)
+      onUpdated(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Post update failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async () => {
+    if (!window.confirm('Delete this post?')) return
+    setBusy(true)
+    setError(null)
+    try {
+      await deleteForumTopic(diagramId, topic.id)
+      onDeleted(topic)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Post deletion failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="social-topic-author-controls" onClick={(event) => event.stopPropagation()}>
+      {editing ? (
+        <form onSubmit={(event) => void save(event)}>
+          <input aria-label="Post title" value={title} onChange={(event) => setTitle(event.target.value)} />
+          <textarea aria-label="Post description" value={description} onChange={(event) => setDescription(event.target.value)} />
+          <span>
+            <button type="submit" disabled={busy}>Save</button>
+            <button type="button" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+          </span>
+        </form>
+      ) : (
+        <span>
+          <button type="button" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
+          <button type="button" disabled={busy} onClick={() => void remove()}>Delete</button>
+        </span>
+      )}
+      {error && <small className="social-forum-error">{error}</small>}
+    </div>
+  )
+}
+
+function canCurrentUserMutateTopic(topic: ForumTopic, currentUser: AuthUser | null): boolean {
+  if (!currentUser || topic.author.toLowerCase() !== currentUser.username.toLowerCase()) return false
+  return !topic.proposal || topic.proposal.status === 'pending'
+}
+
 function ThreadView({
   diagramId,
   thread,
@@ -923,6 +1057,8 @@ function ThreadView({
   onChanged,
   onVote,
   onPreview,
+  onUpdated,
+  onDeleted,
 }: {
   diagramId: string
   thread: ForumThread
@@ -932,6 +1068,8 @@ function ThreadView({
   onChanged: () => Promise<void>
   onVote: (topic: ForumTopic, vote: TopicVoteValue | null) => Promise<void>
   onPreview: (proposal: GraphProposal) => void
+  onUpdated: (topic: ForumTopic) => void
+  onDeleted: (topic: ForumTopic) => void
 }) {
   const [replyTo, setReplyTo] = useState<ForumComment | null>(null)
   const commentsByParent = useMemo(() => {
@@ -1004,6 +1142,13 @@ function ThreadView({
               Preview
             </button>
           )}
+          <TopicAuthorControls
+            diagramId={diagramId}
+            topic={thread.topic}
+            currentUser={currentUser}
+            onUpdated={onUpdated}
+            onDeleted={onDeleted}
+          />
         </div>
         {thread.topic.proposal && (
           <div className="social-thread-topic-head">
@@ -2025,6 +2170,15 @@ function pickEntityPatch<T extends object>(entity: T, keys: readonly (keyof T)[]
 function restoreGraphDraftBaseline(): void {
   const baseline = restorePublicGraphBaseline()
   if (baseline) useOmniStore.getState().loadProject(baseline)
+}
+
+async function saveAcceptedProposalSnapshot(diagramId: string, snapshot: Project): Promise<void> {
+  const model = snapshot.models.get(snapshot.rootModelId)
+  const bundleBase64 = await blobToBase64(await exportBundle(snapshot))
+  await saveCloudDiagram(diagramId, {
+    title: model?.name || 'Untitled diagram',
+    bundleBase64,
+  })
 }
 
 function currentProjectSnapshot() {

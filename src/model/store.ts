@@ -31,6 +31,10 @@ import {
   isHandoffReady,
   type HybridZoomSnapshot,
 } from '../zoom/hybridZoom'
+import {
+  isEdgeLockedByActiveProposal,
+  isNodeLockedByActiveProposal,
+} from '../social/activeProposalLocks'
 
 let idCounter = 0
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(idCounter++).toString(36)}`
@@ -408,14 +412,21 @@ export const useOmniStore = create<Store>((set, get) => ({
     const { model } = get()
     const tx: Patch[] = []
     const idSet = new Set(ids)
+    const removableIds = new Set<string>()
     for (const id of idSet) {
+      if (isNodeLockedByActiveProposal(id)) continue
+      const hasLockedIncidentEdge = [...model.edges.values()].some((edge) =>
+        (edge.from === id || edge.to === id) && isEdgeLockedByActiveProposal(edge.id)
+      )
+      if (hasLockedIncidentEdge) continue
       const node = model.nodes.get(id)
       if (!node) continue
+      removableIds.add(id)
       tx.push({ kind: 'node', op: 'remove', node })
     }
     // Cascade: remove edges touching any removed node.
     for (const edge of model.edges.values()) {
-      if (idSet.has(edge.from) || idSet.has(edge.to)) {
+      if (!isEdgeLockedByActiveProposal(edge.id) && (removableIds.has(edge.from) || removableIds.has(edge.to))) {
         tx.push({ kind: 'edge', op: 'remove', edge })
       }
     }
@@ -447,6 +458,7 @@ export const useOmniStore = create<Store>((set, get) => ({
     const { model } = get()
     const tx: Patch[] = []
     for (const u of updates) {
+      if (isNodeLockedByActiveProposal(u.id)) continue
       const before = model.nodes.get(u.id)
       if (!before) continue
       if (before.x === u.x && before.y === u.y) continue
@@ -462,6 +474,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   },
 
   updateNode(id, patch) {
+    if (isNodeLockedByActiveProposal(id)) return
     const before = get().model.nodes.get(id)
     if (!before) return
     const after = { ...before, ...patch, id }
@@ -472,6 +485,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   },
 
   updateEdge(id, patch) {
+    if (isEdgeLockedByActiveProposal(id)) return
     const before = get().model.edges.get(id)
     if (!before) return
     const after: Connection = { ...before, ...patch, id, from: before.from, to: before.to }
@@ -480,6 +494,7 @@ export const useOmniStore = create<Store>((set, get) => ({
 
   addEdge(from, to, partial) {
     if (from === to) return null
+    if (isNodeLockedByActiveProposal(from) || isNodeLockedByActiveProposal(to)) return null
     const { model } = get()
     if (!model.nodes.has(from) || !model.nodes.has(to)) return null
     const id = partial?.id ?? newId('e')
@@ -493,6 +508,7 @@ export const useOmniStore = create<Store>((set, get) => ({
     const tx: Patch[] = []
     const idSet = new Set(ids)
     for (const id of idSet) {
+      if (isEdgeLockedByActiveProposal(id)) continue
       const edge = model.edges.get(id)
       if (edge) tx.push({ kind: 'edge', op: 'remove', edge })
     }
@@ -511,10 +527,10 @@ export const useOmniStore = create<Store>((set, get) => ({
     set((s) => {
       const nodes = s.model.nodes
       const edges = s.model.edges
-      for (const p of patches) applyPatch(p, nodes, edges)
+      const models = new Map(s.models)
+      for (const p of patches) applyPatch(p, nodes, edges, models)
       s.undoStack.push(patches)
       const model = { ...s.model }
-      const models = new Map(s.models)
       models.set(model.id, model)
       return { model, models, rev: s.rev + 1 }
     })
@@ -595,6 +611,7 @@ export const useOmniStore = create<Store>((set, get) => ({
     const tx: Patch[] = []
     const hostUpdates = new Map<string, { before: ModelNode; after: ModelNode }>()
     for (const b of baselines) {
+      if (isNodeLockedByActiveProposal(b.id)) continue
       const cur = model.nodes.get(b.id)
       if (!cur) continue
       if (cur.x === b.x && cur.y === b.y) continue
@@ -633,6 +650,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   },
 
   commitGeometry(baseline) {
+    if (isNodeLockedByActiveProposal(baseline.id)) return
     const cur = get().model.nodes.get(baseline.id)
     if (!cur) return
     if (
@@ -659,6 +677,7 @@ export const useOmniStore = create<Store>((set, get) => ({
   },
 
   commitCosmeticTip(baseline) {
+    if (isNodeLockedByActiveProposal(baseline.id)) return
     const cur = get().model.nodes.get(baseline.id)
     if (!cur) return
     if (
@@ -689,9 +708,9 @@ export const useOmniStore = create<Store>((set, get) => ({
     set((s) => {
       const nodes = s.model.nodes
       const edges = s.model.edges
-      for (const p of inverted) applyPatch(p, nodes, edges)
-      const model = { ...s.model }
       const models = new Map(s.models)
+      for (const p of inverted) applyPatch(p, nodes, edges, models)
+      const model = { ...s.model }
       models.set(model.id, model)
       return { model, models, rev: s.rev + 1 }
     })
@@ -703,9 +722,9 @@ export const useOmniStore = create<Store>((set, get) => ({
     set((s) => {
       const nodes = s.model.nodes
       const edges = s.model.edges
-      for (const p of tx) applyPatch(p, nodes, edges)
-      const model = { ...s.model }
       const models = new Map(s.models)
+      for (const p of tx) applyPatch(p, nodes, edges, models)
+      const model = { ...s.model }
       models.set(model.id, model)
       return { model, models, rev: s.rev + 1 }
     })

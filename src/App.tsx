@@ -14,6 +14,7 @@ import {
   type DiagramSummary,
 } from './social/cloudClient'
 import { clearSocialEdgeDrafts } from './social/graphDraft'
+import { clearActiveProposalLocks } from './social/activeProposalLocks'
 import { capturePublicGraphBaseline } from './social/publicGraphDraft'
 import { captureTransformBaseline } from './social/transformDraft'
 import './App.css'
@@ -21,7 +22,16 @@ import './App.css'
 type Route =
   | { kind: 'home' }
   | { kind: 'diagram'; id: string; title: string; topic?: string; description?: string }
-  | { kind: 'creative'; id: string; title: string; sourceDiagramId: string; sourceTitle?: string }
+  | {
+    kind: 'creative'
+    id: string
+    title: string
+    sourceDiagramId: string
+    sourceTitle?: string
+    sourceContentHash?: string
+    sourceCurrentContentHash?: string
+    sourceBaseBundleBase64?: string
+  }
 
 function App() {
   const [route, setRoute] = useState<Route>({ kind: 'home' })
@@ -55,6 +65,7 @@ function App() {
     const snapshot = await snapshotFromDetail(detail)
     useOmniStore.getState().loadProject(snapshot)
     clearSocialEdgeDrafts()
+    clearActiveProposalLocks()
     captureTransformBaseline(snapshot)
     centerCameraOnOldestNode(snapshot)
     setRoute({
@@ -63,6 +74,9 @@ function App() {
       title: detail.title,
       sourceDiagramId: detail.sourceDiagramId,
       sourceTitle: detail.sourceTitle,
+      sourceContentHash: detail.sourceContentHash,
+      sourceCurrentContentHash: detail.sourceCurrentContentHash,
+      sourceBaseBundleBase64: detail.sourceBaseBundleBase64,
     })
   }, [])
 
@@ -75,7 +89,11 @@ function App() {
       <OmnigramApp
         mode="creative"
         creativeDiagramId={route.id}
+        sourceDiagramId={route.sourceDiagramId}
         sourceDiagramTitle={route.sourceTitle}
+        creativeSourceContentHash={route.sourceContentHash}
+        creativeSourceCurrentContentHash={route.sourceCurrentContentHash}
+        creativeSourceBaseBundleBase64={route.sourceBaseBundleBase64}
         onHome={() => setRoute({ kind: 'home' })}
         onViewGraph={() => openPublicById(route.sourceDiagramId)}
         chrome={{ sidebars: true, devPanel: false, fps: true, toolbar: true }}

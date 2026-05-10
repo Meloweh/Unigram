@@ -6,7 +6,7 @@
  * Camera state is intentionally NOT modeled here (per spec §4.7).
  */
 
-import type { Connection, ModelNode } from './types'
+import type { Connection, Model, ModelNode } from './types'
 
 export type Patch =
   | { kind: 'node'; op: 'add'; node: ModelNode }
@@ -15,21 +15,30 @@ export type Patch =
   | { kind: 'edge'; op: 'add'; edge: Connection }
   | { kind: 'edge'; op: 'remove'; edge: Connection }
   | { kind: 'edge'; op: 'update'; id: string; before: Connection; after: Connection }
+  | { kind: 'model'; op: 'add'; model: Model }
+  | { kind: 'model'; op: 'remove'; model: Model }
+  | { kind: 'model'; op: 'update'; id: string; before: Model; after: Model }
 
 export function invertPatch(p: Patch): Patch {
   switch (p.op) {
     case 'add':
       return p.kind === 'node'
         ? { kind: 'node', op: 'remove', node: p.node }
-        : { kind: 'edge', op: 'remove', edge: p.edge }
+        : p.kind === 'edge'
+          ? { kind: 'edge', op: 'remove', edge: p.edge }
+          : { kind: 'model', op: 'remove', model: p.model }
     case 'remove':
       return p.kind === 'node'
         ? { kind: 'node', op: 'add', node: p.node }
-        : { kind: 'edge', op: 'add', edge: p.edge }
+        : p.kind === 'edge'
+          ? { kind: 'edge', op: 'add', edge: p.edge }
+          : { kind: 'model', op: 'add', model: p.model }
     case 'update':
       return p.kind === 'node'
         ? { kind: 'node', op: 'update', id: p.id, before: p.after, after: p.before }
-        : { kind: 'edge', op: 'update', id: p.id, before: p.after, after: p.before }
+        : p.kind === 'edge'
+          ? { kind: 'edge', op: 'update', id: p.id, before: p.after, after: p.before }
+          : { kind: 'model', op: 'update', id: p.id, before: p.after, after: p.before }
   }
 }
 
@@ -38,19 +47,23 @@ export function applyPatch(
   patch: Patch,
   nodes: Map<string, ModelNode>,
   edges: Map<string, Connection>,
+  models?: Map<string, Model>,
 ): void {
   switch (patch.op) {
     case 'add':
       if (patch.kind === 'node') nodes.set(patch.node.id, patch.node)
-      else edges.set(patch.edge.id, patch.edge)
+      else if (patch.kind === 'edge') edges.set(patch.edge.id, patch.edge)
+      else models?.set(patch.model.id, patch.model)
       return
     case 'remove':
       if (patch.kind === 'node') nodes.delete(patch.node.id)
-      else edges.delete(patch.edge.id)
+      else if (patch.kind === 'edge') edges.delete(patch.edge.id)
+      else models?.delete(patch.model.id)
       return
     case 'update':
       if (patch.kind === 'node') nodes.set(patch.id, patch.after)
-      else edges.set(patch.id, patch.after)
+      else if (patch.kind === 'edge') edges.set(patch.id, patch.after)
+      else models?.set(patch.id, patch.after)
       return
   }
 }

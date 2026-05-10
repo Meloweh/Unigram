@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useOmniStore } from './store'
+import { clearActiveProposalLocks, setActiveProposalLocks } from '../social/activeProposalLocks'
+import type { GraphProposal, GraphProposalPayload } from '../social/forumTypes'
 
 beforeEach(() => {
   const model = { id: 'root', name: 'test', nodes: new Map(), edges: new Map() }
@@ -16,6 +18,7 @@ beforeEach(() => {
     pickMode: null,
   })
   useOmniStore.getState().undoStack.clear()
+  clearActiveProposalLocks()
 })
 
 describe('store', () => {
@@ -52,6 +55,20 @@ describe('store', () => {
     expect(useOmniStore.getState().model.edges.size).toBe(1)
     useOmniStore.getState().removeNodes([a])
     expect(useOmniStore.getState().model.edges.size).toBe(0)
+  })
+
+  it('does not delete nodes when that would cascade-remove a locked proposal edge', () => {
+    const a = useOmniStore.getState().addNode({ id: 'a', x: 0, y: 0 })
+    const b = useOmniStore.getState().addNode({ id: 'b', x: 50, y: 50 })
+    const edge = useOmniStore.getState().addEdge(a, b)!
+    setActiveProposalLocks([
+      proposal('edge-lock', { action: 'rename-edge', edgeId: edge, nextLabel: 'locked' }),
+    ], useOmniStore.getState().model)
+
+    useOmniStore.getState().removeNodes([a])
+
+    expect(useOmniStore.getState().model.nodes.has(a)).toBe(true)
+    expect(useOmniStore.getState().model.edges.has(edge)).toBe(true)
   })
 
   it('rejects self-edges and edges to missing nodes', () => {
@@ -321,3 +338,16 @@ describe('store', () => {
     expect(useOmniStore.getState().model.grid?.appearance).toBe('tile')
   })
 })
+
+function proposal(id: string, payload: GraphProposalPayload): GraphProposal {
+  return {
+    id,
+    diagramId: 'diagram',
+    topicId: `topic-${id}`,
+    action: payload.action,
+    payload,
+    status: 'pending',
+    createdAt: new Date(0).toISOString(),
+    expiresAt: new Date(1).toISOString(),
+  }
+}

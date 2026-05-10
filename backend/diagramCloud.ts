@@ -1,5 +1,5 @@
 import { createHash, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
@@ -8,7 +8,6 @@ import type { ConnectionReference, Connection, CrossEffectLink, ExternalMpdLink,
 import {
   computeAgreementRatio,
   parseForumRef,
-  proposalContainsAction,
   proposalSteps,
   resolveExpiredProposalStatus,
   type ForumComment,
@@ -26,6 +25,7 @@ import {
   type TopicVoteValue,
   type VoteStance,
 } from '../src/social/forumTypes'
+import { footprintsOverlap, proposalFootprint } from '../src/social/proposalFootprint'
 
 export interface StoredDiagram {
   id: string
@@ -39,8 +39,23 @@ export interface StoredDiagram {
   updatedAt: string
   visits: number
   popularity: number
+  contentHash?: string
+  sourceContentHash?: string
+  sourceBaseBundleBase64?: string
   bundleBase64?: string
   nodeLabels?: string[]
+}
+
+type StoredDiagramSummary = Omit<StoredDiagram, 'bundleBase64' | 'sourceBaseBundleBase64'>
+type CreativeDiagramSummary = StoredDiagramSummary & {
+  sourceTitle?: string
+  sourceCurrentContentHash?: string
+  sourceIsCurrent: boolean
+}
+type CreativeDiagramDetail = StoredDiagram & {
+  sourceTitle?: string
+  sourceCurrentContentHash?: string
+  sourceIsCurrent: boolean
 }
 
 interface DiagramDb {
@@ -56,7 +71,7 @@ interface DiagramDb {
 }
 
 interface DiagramIndex {
-  diagrams: Array<Omit<StoredDiagram, 'bundleBase64'>>
+  diagrams: StoredDiagramSummary[]
   users: StoredUser[]
   sessions: StoredSession[]
   userPreferences: StoredUserPreference[]
@@ -332,6 +347,11 @@ async function handleCreativeDiagramsRequest(req: IncomingMessage, res: ServerRe
     sendJson(res, 200, await updateCreativeDiagram(req, segments[0], body))
     return
   }
+  if (segments.length === 1 && req.method === 'DELETE') {
+    await deleteCreativeDiagram(req, segments[0])
+    sendJson(res, 200, { ok: true })
+    return
+  }
   sendJson(res, 405, { error: 'Method not allowed' })
 }
 
@@ -381,6 +401,19 @@ async function handleForumRequest(
   if (resource === 'topics' && segments.length === 4 && req.method === 'GET') {
     const thread = await getForumThread(req, diagramId, segments[3])
     sendJson(res, 200, thread)
+    return
+  }
+
+  if (resource === 'topics' && segments.length === 4 && req.method === 'PATCH') {
+    const body = await readJsonBody<{ title?: unknown; description?: unknown }>(req)
+    const topic = await updateForumTopic(req, diagramId, segments[3], body)
+    sendJson(res, 200, topic)
+    return
+  }
+
+  if (resource === 'topics' && segments.length === 4 && req.method === 'DELETE') {
+    await deleteForumTopic(req, diagramId, segments[3])
+    sendJson(res, 200, { ok: true })
     return
   }
 
@@ -509,6 +542,7 @@ async function createDiagram(
     updatedAt: now,
     visits: 0,
     popularity: 0,
+    contentHash: contentHashForBundleBase64(undefined),
     nodeLabels: [],
   }
   db.diagrams.push(diagram)
@@ -534,6 +568,7 @@ async function updateDiagram(id: string, patch: { title?: string; bundleBase64?:
   if (patch.title && patch.title.length > 0) diagram.title = patch.title
   if (patch.bundleBase64 !== undefined) {
     diagram.bundleBase64 = await normalizeBundleBase64Media(patch.bundleBase64)
+    diagram.contentHash = contentHashForBundleBase64(diagram.bundleBase64)
     diagram.nodeLabels = await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
   }
   diagram.updatedAt = new Date().toISOString()
@@ -639,9 +674,10 @@ async function createForumTopic(
   const now = new Date().toISOString()
   const proposalPayload = body.proposal ? sanitizeProposalPayload(body.proposal) : null
   const statusChanged = refreshProposalStatuses(db, diagramId)
-  if (proposalPayload && proposalContainsAction(proposalPayload, 'commit-transform') && hasActiveTransformProposal(db, diagramId)) {
+  const overlapReason = proposalPayload ? await activeProposalConflictReason(db, diagram, proposalPayload) : null
+  if (overlapReason) {
     if (statusChanged) await writeDb(db)
-    throw new BadRequestError('Only one active layout change proposal is allowed per diagram')
+    throw new BadRequestError(overlapReason)
   }
   const proposalId = proposalPayload ? randomUUID() : undefined
   const forumRef = sanitizeForumRef(body.forumRef ?? 'diagram')
@@ -675,12 +711,23 @@ async function createForumTopic(
   return summarizeTopic(db, topic, user)
 }
 
-function hasActiveTransformProposal(db: DiagramDb, diagramId: string): boolean {
-  return db.proposals.some((proposal) =>
-    proposal.diagramId === diagramId &&
-    proposalContainsAction(proposal.payload, 'commit-transform') &&
-    (proposal.status === 'pending' || proposal.status === 'accepted')
-  )
+async function activeProposalConflictReason(
+  db: DiagramDb,
+  diagram: StoredDiagram,
+  payload: GraphProposalPayload,
+): Promise<string | null> {
+  const model = await rootModelFromBundleBase64(diagram.bundleBase64)
+  const proposed = proposalFootprint(payload, model)
+  for (const proposal of db.proposals) {
+    if (
+      proposal.diagramId !== diagram.id ||
+      (proposal.status !== 'pending' && proposal.status !== 'accepted')
+    ) continue
+    if (footprintsOverlap(proposed, proposalFootprint(proposal.payload, model, proposal.id))) {
+      return 'Another active proposal already touches these graph changes.'
+    }
+  }
+  return null
 }
 
 async function getForumThread(req: IncomingMessage, diagramId: string, topicId: string): Promise<ForumThread> {
@@ -729,6 +776,63 @@ async function createForumComment(
   refreshProposalStatuses(db, diagramId)
   await writeDb(db)
   return comment
+}
+
+async function updateForumTopic(
+  req: IncomingMessage,
+  diagramId: string,
+  topicId: string,
+  body: { title?: unknown; description?: unknown },
+): Promise<ForumTopic> {
+  const db = await readDb()
+  ensurePublicDiagram(db, diagramId)
+  const user = requireAuthenticatedUser(db, req)
+  refreshProposalStatuses(db, diagramId)
+  const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
+  if (!topic) throw new NotFoundError('Forum topic not found')
+  ensureTopicAuthorCanMutate(db, topic, user, 'edit')
+  topic.title = cleanRequired(body.title, 'Topic title')
+  topic.description = cleanRequired(body.description, 'Topic description')
+  topic.updatedAt = new Date().toISOString()
+  await writeDb(db)
+  return summarizeTopic(db, topic, user)
+}
+
+async function deleteForumTopic(
+  req: IncomingMessage,
+  diagramId: string,
+  topicId: string,
+): Promise<void> {
+  const db = await readDb()
+  ensurePublicDiagram(db, diagramId)
+  const user = requireAuthenticatedUser(db, req)
+  refreshProposalStatuses(db, diagramId)
+  const topic = db.topics.find((item) => item.diagramId === diagramId && item.id === topicId)
+  if (!topic) throw new NotFoundError('Forum topic not found')
+  ensureTopicAuthorCanMutate(db, topic, user, 'delete')
+  db.topics = db.topics.filter((item) => !(item.diagramId === diagramId && item.id === topicId))
+  db.comments = db.comments.filter((item) => !(item.diagramId === diagramId && item.topicId === topicId))
+  db.topicVotes = db.topicVotes.filter((item) => !(item.diagramId === diagramId && item.topicId === topicId))
+  if (topic.proposalId) {
+    db.proposals = db.proposals.filter((item) => !(item.diagramId === diagramId && item.id === topic.proposalId))
+  }
+  await writeDb(db)
+}
+
+function ensureTopicAuthorCanMutate(
+  db: DiagramDb,
+  topic: StoredForumTopic,
+  user: StoredUser,
+  action: 'edit' | 'delete',
+): void {
+  if (topic.author.toLowerCase() !== user.username.toLowerCase()) {
+    throw new BadRequestError(`Only the post author can ${action} this post`)
+  }
+  if (!topic.proposalId) return
+  const proposal = db.proposals.find((item) => item.id === topic.proposalId)
+  if (proposal && proposal.status !== 'pending') {
+    throw new BadRequestError('Proposal posts can only be changed while pending')
+  }
 }
 
 async function voteForumTopic(
@@ -878,9 +982,10 @@ async function updateProposalStatus(
   return proposal
 }
 
-function withoutBundle(diagram: StoredDiagram): Omit<StoredDiagram, 'bundleBase64'> {
-  const { bundleBase64, ...summary } = diagram
+function withoutBundle(diagram: StoredDiagram): StoredDiagramSummary {
+  const { bundleBase64, sourceBaseBundleBase64, ...summary } = diagram
   void bundleBase64
+  void sourceBaseBundleBase64
   return summary
 }
 
@@ -888,17 +993,21 @@ function isPublicDiagram(diagram: StoredDiagram): boolean {
   return diagram.visibility !== 'private'
 }
 
-function creativeSummary(db: DiagramDb, diagram: StoredDiagram): Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string } {
-  const sourceTitle = diagram.sourceDiagramId
-    ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)?.title
+function creativeSummary(db: DiagramDb, diagram: StoredDiagram): CreativeDiagramSummary {
+  const source = diagram.sourceDiagramId
+    ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)
     : undefined
+  const sourceTitle = source?.title
+  const sourceCurrentContentHash = source?.contentHash ?? contentHashForBundleBase64(source?.bundleBase64)
   return {
     ...withoutBundle(diagram),
     ...(sourceTitle ? { sourceTitle } : {}),
+    ...(sourceCurrentContentHash ? { sourceCurrentContentHash } : {}),
+    sourceIsCurrent: (diagram.sourceContentHash ?? '') === sourceCurrentContentHash,
   }
 }
 
-async function listCreativeDiagrams(req: IncomingMessage): Promise<Array<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }>> {
+async function listCreativeDiagrams(req: IncomingMessage): Promise<CreativeDiagramSummary[]> {
   const db = await readDb()
   const user = requireAuthenticatedUser(db, req)
   return db.diagrams
@@ -910,7 +1019,7 @@ async function listCreativeDiagrams(req: IncomingMessage): Promise<Array<Omit<St
 async function listCreativeCopies(
   req: IncomingMessage,
   sourceDiagramId: string,
-): Promise<Array<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }>> {
+): Promise<CreativeDiagramSummary[]> {
   const db = await readDb()
   const user = requireAuthenticatedUser(db, req)
   ensurePublicDiagram(db, sourceDiagramId)
@@ -928,7 +1037,7 @@ async function createCreativeCopy(
   req: IncomingMessage,
   sourceDiagramId: string,
   body: { title?: unknown; bundleBase64?: unknown },
-): Promise<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }> {
+): Promise<CreativeDiagramSummary> {
   const db = await readDb()
   const user = requireAuthenticatedUser(db, req)
   const source = ensurePublicDiagram(db, sourceDiagramId)
@@ -937,6 +1046,8 @@ async function createCreativeCopy(
     : `${source.title} creative copy`
   const bundleBase64 = typeof body.bundleBase64 === 'string' ? body.bundleBase64 : source.bundleBase64
   const normalizedBundleBase64 = bundleBase64 ? await normalizeBundleBase64Media(bundleBase64) : undefined
+  const sourceBaseBundleBase64 = source.bundleBase64
+  const sourceContentHash = source.contentHash ?? contentHashForBundleBase64(source.bundleBase64)
   const now = new Date().toISOString()
   const diagram: StoredDiagram = {
     id: randomUUID(),
@@ -944,10 +1055,13 @@ async function createCreativeCopy(
     visibility: 'private',
     ownerUserId: user.id,
     sourceDiagramId: source.id,
+    sourceContentHash,
+    ...(sourceBaseBundleBase64 ? { sourceBaseBundleBase64 } : {}),
     createdAt: now,
     updatedAt: now,
     visits: 0,
     popularity: 0,
+    contentHash: contentHashForBundleBase64(normalizedBundleBase64),
     nodeLabels: normalizedBundleBase64 ? await extractRootNodeLabelsFromBundleBase64(normalizedBundleBase64) : [],
     ...(normalizedBundleBase64 ? { bundleBase64: normalizedBundleBase64 } : {}),
   }
@@ -959,7 +1073,7 @@ async function createCreativeCopy(
 async function getCreativeDiagram(
   req: IncomingMessage,
   id: string,
-): Promise<StoredDiagram & { sourceTitle?: string }> {
+): Promise<CreativeDiagramDetail> {
   const db = await readDb()
   const user = requireAuthenticatedUser(db, req)
   const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
@@ -969,28 +1083,53 @@ async function getCreativeDiagram(
   const sourceTitle = diagram.sourceDiagramId
     ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)?.title
     : undefined
+  const source = diagram.sourceDiagramId
+    ? db.diagrams.find((item) => item.id === diagram.sourceDiagramId)
+    : undefined
+  const sourceCurrentContentHash = source?.contentHash ?? contentHashForBundleBase64(source?.bundleBase64)
   return {
     ...diagram,
     ...(sourceTitle ? { sourceTitle } : {}),
+    ...(sourceCurrentContentHash ? { sourceCurrentContentHash } : {}),
+    sourceIsCurrent: (diagram.sourceContentHash ?? '') === sourceCurrentContentHash,
   }
 }
 
 async function updateCreativeDiagram(
   req: IncomingMessage,
   id: string,
-  patch: { title?: unknown; bundleBase64?: unknown },
-): Promise<Omit<StoredDiagram, 'bundleBase64'> & { sourceTitle?: string }> {
+  patch: { title?: unknown; bundleBase64?: unknown; sourceContentHash?: unknown; sourceBaseBundleBase64?: unknown },
+): Promise<CreativeDiagramSummary> {
   const db = await readDb()
   const user = requireAuthenticatedUser(db, req)
   const diagram = ensureOwnedCreativeDiagram(db, id, user.id)
   if (typeof patch.title === 'string' && patch.title.trim()) diagram.title = patch.title.trim()
   if (typeof patch.bundleBase64 === 'string') {
     diagram.bundleBase64 = await normalizeBundleBase64Media(patch.bundleBase64)
+    diagram.contentHash = contentHashForBundleBase64(diagram.bundleBase64)
     diagram.nodeLabels = await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+  }
+  if (typeof patch.sourceContentHash === 'string') diagram.sourceContentHash = patch.sourceContentHash
+  if (typeof patch.sourceBaseBundleBase64 === 'string') {
+    diagram.sourceBaseBundleBase64 = await normalizeBundleBase64Media(patch.sourceBaseBundleBase64)
   }
   diagram.updatedAt = new Date().toISOString()
   await writeDb(db)
   return creativeSummary(db, diagram)
+}
+
+async function deleteCreativeDiagram(req: IncomingMessage, id: string): Promise<void> {
+  const db = await readDb()
+  const user = requireAuthenticatedUser(db, req)
+  ensureOwnedCreativeDiagram(db, id, user.id)
+  db.diagrams = db.diagrams.filter((diagram) => diagram.id !== id)
+  db.topics = db.topics.filter((topic) => topic.diagramId !== id)
+  db.comments = db.comments.filter((comment) => comment.diagramId !== id)
+  db.proposals = db.proposals.filter((proposal) => proposal.diagramId !== id)
+  db.topicVotes = db.topicVotes.filter((vote) => vote.diagramId !== id)
+  db.diagramVisits = db.diagramVisits.filter((visit) => visit.diagramId !== id)
+  await writeDb(db)
+  await unlinkDiagramFileIfPresent(id)
 }
 
 async function normalizeBundleBase64Media(bundleBase64: string): Promise<string> {
@@ -1032,6 +1171,35 @@ async function normalizeBundleBase64Media(bundleBase64: string): Promise<string>
   zip.file('project.json', JSON.stringify(project, null, 2))
   const normalized = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
   return normalized.toString('base64')
+}
+
+function contentHashForBundleBase64(bundleBase64: string | undefined): string {
+  return createHash('sha256').update(bundleBase64 ?? '').digest('hex')
+}
+
+async function rootModelFromBundleBase64(
+  bundleBase64: string | undefined,
+): Promise<{ edges: Map<string, Connection> } | undefined> {
+  if (!bundleBase64?.trim()) return undefined
+  const zip = await JSZip.loadAsync(Buffer.from(bundleBase64, 'base64')).catch(() => null)
+  const entry = zip?.file('project.json')
+  if (!entry) return undefined
+  try {
+    const project = JSON.parse(await entry.async('string')) as {
+      rootModelId?: string
+      models?: Record<string, { id?: string; edges?: Connection[] }>
+    }
+    const models = project.models ?? {}
+    const rootModelId = project.rootModelId ?? Object.keys(models)[0]
+    const root = rootModelId ? models[rootModelId] : undefined
+    const edges = new Map<string, Connection>()
+    for (const edge of root?.edges ?? []) {
+      if (typeof edge?.id === 'string') edges.set(edge.id, edge)
+    }
+    return { edges }
+  } catch {
+    return undefined
+  }
 }
 
 async function extractRootNodeLabelsFromBundleBase64(bundleBase64: string | undefined): Promise<string[]> {
@@ -1144,7 +1312,11 @@ async function writeSplitDb(db: DiagramDb): Promise<void> {
   index.diagramVisits = db.diagramVisits
   for (const diagram of db.diagrams) {
     const nodeLabels = diagram.nodeLabels ?? await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
-    const diagramWithLabels: StoredDiagram = { ...diagram, nodeLabels }
+    const diagramWithLabels: StoredDiagram = {
+      ...diagram,
+      contentHash: diagram.contentHash ?? contentHashForBundleBase64(diagram.bundleBase64),
+      nodeLabels,
+    }
     index.diagrams.push(withoutBundle(diagramWithLabels))
     const file: StoredDiagramFile = {
       diagram: diagramWithLabels,
@@ -1159,6 +1331,14 @@ async function writeSplitDb(db: DiagramDb): Promise<void> {
   await writeJsonAtomic(indexPath(), index)
 }
 
+async function unlinkDiagramFileIfPresent(id: string): Promise<void> {
+  try {
+    await unlink(diagramFilePath(id))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+}
+
 async function migrateLegacyDbIfNeeded(): Promise<void> {
   if (await fileExists(indexPath())) return
   const legacyPath = dbPath()
@@ -1167,6 +1347,7 @@ async function migrateLegacyDbIfNeeded(): Promise<void> {
   const parsed = raw.trim().length === 0 ? emptyDb() : normalizeLegacyDb(JSON.parse(raw) as Partial<DiagramDb>)
   for (const diagram of parsed.diagrams) {
     diagram.nodeLabels = diagram.nodeLabels ?? await extractRootNodeLabelsFromBundleBase64(diagram.bundleBase64)
+    diagram.contentHash = diagram.contentHash ?? contentHashForBundleBase64(diagram.bundleBase64)
   }
   await writeSplitDb(parsed)
   const backupPath = join(process.cwd(), DB_DIR, LEGACY_BACKUP_FILE)

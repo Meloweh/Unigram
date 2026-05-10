@@ -20,6 +20,7 @@ import type { ResizeHandleDir, SceneRenderer } from '../scene/SceneRenderer'
 import { useOmniStore } from '../model/store'
 import { registerSocialEdgeDraft } from '../social/graphDraft'
 import { markTransformDraftTouched } from '../social/transformDraft'
+import { isNodeLockedByActiveProposal } from '../social/activeProposalLocks'
 
 interface ActiveDrag {
   kind: 'pan' | 'node' | 'connect' | 'box' | 'tip' | 'resize'
@@ -127,7 +128,7 @@ export class PointerController {
 
     if (resizeHit) {
       const node = useOmniStore.getState().model.nodes.get(resizeHit.id)
-      if (!node || node.locked) return
+      if (!node || node.locked || isNodeLockedByActiveProposal(node.id)) return
       this.active = {
         kind: 'resize',
         pointerId: e.pointerId,
@@ -143,7 +144,7 @@ export class PointerController {
 
     if (tipHitId) {
       const node = useOmniStore.getState().model.nodes.get(tipHitId)
-      if (!node || node.locked) return
+      if (!node || node.locked || isNodeLockedByActiveProposal(node.id)) return
       this.active = {
         kind: 'tip',
         pointerId: e.pointerId,
@@ -157,6 +158,7 @@ export class PointerController {
     }
 
     if (isRight && hitId) {
+      if (isNodeLockedByActiveProposal(hitId)) return
       // Begin connection draft.
       this.active = {
         kind: 'connect',
@@ -229,9 +231,9 @@ export class PointerController {
       if (sel.size > 1 && sel.has(hitId)) {
         for (const id of sel) {
           const n = useOmniStore.getState().model.nodes.get(id)
-          if (n && !n.locked) baselines.push({ id, x: n.x, y: n.y })
+          if (n && !n.locked && !isNodeLockedByActiveProposal(n.id)) baselines.push({ id, x: n.x, y: n.y })
         }
-      } else if (!node.locked) {
+      } else if (!node.locked && !isNodeLockedByActiveProposal(node.id)) {
         baselines.push({ id: hitId, x: node.x, y: node.y })
       }
       if (baselines.length === 0) {
@@ -459,7 +461,7 @@ export class PointerController {
       this.renderer.setConnectGhost(null, null)
       const drop = this.toScene(e)
       const targetId = this.renderer.pickNode(drop.x, drop.y)
-      if (targetId && targetId !== a.nodeId) {
+      if (targetId && targetId !== a.nodeId && !isNodeLockedByActiveProposal(targetId)) {
         const kind = useOmniStore.getState().defaultConnectionKind
         const edgeId = useOmniStore.getState().addEdge(
           a.nodeId,

@@ -27,6 +27,7 @@ export interface DiagramSummary {
   updatedAt: string
   visits: number
   popularity: number
+  contentHash?: string
 }
 
 export interface DiagramDetail extends DiagramSummary {
@@ -44,10 +45,14 @@ export interface CreativeDiagramSummary extends DiagramSummary {
   visibility: 'private'
   ownerUserId: string
   sourceDiagramId: string
+  sourceContentHash?: string
+  sourceCurrentContentHash?: string
+  sourceIsCurrent?: boolean
 }
 
 export interface CreativeDiagramDetail extends CreativeDiagramSummary {
   bundleBase64?: string
+  sourceBaseBundleBase64?: string
 }
 
 export interface AuthUser {
@@ -272,7 +277,7 @@ export async function getCreativeDiagram(id: string): Promise<CreativeDiagramDet
 
 export async function saveCreativeDiagram(
   id: string,
-  payload: { title: string; bundleBase64: string },
+  payload: { title: string; bundleBase64: string; sourceContentHash?: string; sourceBaseBundleBase64?: string },
 ): Promise<CreativeDiagramSummary> {
   const res = await fetch(`/api/creative-diagrams/${encodeURIComponent(id)}`, {
     method: 'PUT',
@@ -281,6 +286,14 @@ export async function saveCreativeDiagram(
   })
   if (!res.ok) throw new Error((await errorMessage(res)) || `Creative graph save failed (${res.status})`)
   return await res.json() as CreativeDiagramSummary
+}
+
+export async function deleteCreativeDiagram(id: string): Promise<void> {
+  const res = await fetch(`/api/creative-diagrams/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Creative graph removal failed (${res.status})`)
 }
 
 export async function listForumTopics(diagramId: string, forumRef: ForumRef): Promise<ForumTopic[]> {
@@ -302,8 +315,30 @@ export async function createForumTopic(
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(input),
   })
-  if (!res.ok) throw new Error(`Forum post failed (${res.status})`)
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Forum post failed (${res.status})`)
   return await res.json() as ForumTopic
+}
+
+export async function updateForumTopic(
+  diagramId: string,
+  topicId: string,
+  input: { title: string; description: string },
+): Promise<ForumTopic> {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics/${encodeURIComponent(topicId)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Forum post update failed (${res.status})`)
+  return await res.json() as ForumTopic
+}
+
+export async function deleteForumTopic(diagramId: string, topicId: string): Promise<void> {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(diagramId)}/forums/topics/${encodeURIComponent(topicId)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error((await errorMessage(res)) || `Forum post deletion failed (${res.status})`)
 }
 
 export async function getForumThread(diagramId: string, topicId: string): Promise<ForumThread> {
