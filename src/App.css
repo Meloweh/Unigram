@@ -4374,7 +4374,13 @@
 }
 
 .social-transform-preview-render {
+  position: relative;
   min-height: 0;
+  overflow: hidden;
+}
+
+.social-transform-preview-render canvas {
+  display: block;
 }
 
 .social-transform-preview-body {

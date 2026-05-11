@@ -76,6 +76,7 @@ import { EffectGraphDiffPreview } from '../social/EffectGraphDiffPreview'
 import { changeGroupsForSteps, type ChangeDetail, type ChangeGroup, type FlowPreviewData } from '../social/proposalDisplay'
 import { clearActiveProposalLocks, setActiveProposalLocks } from '../social/activeProposalLocks'
 import { exportBundle } from '../model/projectBundle'
+import { RichNodeOverlay } from '../ui/RichNodeOverlay'
 
 interface SocialForumLayerProps {
   diagramId?: string
@@ -2053,6 +2054,7 @@ function ProposalPreviewOverlay({
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const rendererRef = useRef<SceneRenderer | null>(null)
+  const [previewRenderer, setPreviewRenderer] = useState<SceneRenderer | null>(null)
   const steps = useMemo(() => proposalSteps(proposal.payload), [proposal.payload])
   const transforms = useMemo(() => steps.flatMap((step) => step.action === 'commit-transform' ? step.transforms : []), [steps])
   const previewModel = useMemo(
@@ -2073,6 +2075,7 @@ function ProposalPreviewOverlay({
     let disposed = false
     const renderer = new SceneRenderer({ preview: true, forceFullLod: true, socialDecorations: false })
     rendererRef.current = renderer
+    setPreviewRenderer(renderer)
     void renderer.init(host).then(() => {
       if (disposed) {
         renderer.destroy()
@@ -2094,6 +2097,7 @@ function ProposalPreviewOverlay({
     return () => {
       disposed = true
       rendererRef.current = null
+      setPreviewRenderer(null)
       renderer.destroy()
     }
   }, [previewModel, proposal, themeMode, transforms])
@@ -2132,7 +2136,9 @@ function ProposalPreviewOverlay({
         </div>
       </header>
       <div className="social-transform-preview-body">
-        <div ref={hostRef} className="social-transform-preview-render" onPointerDown={handlePreviewPointerDown} />
+        <div ref={hostRef} className="social-transform-preview-render" onPointerDown={handlePreviewPointerDown}>
+          <RichNodeOverlay renderer={previewRenderer} />
+        </div>
         <aside className="social-transform-preview-inspector" aria-label="Change inspector">
           <h4>Changes</h4>
           <ol>

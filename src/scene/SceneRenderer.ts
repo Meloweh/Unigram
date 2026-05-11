@@ -1289,7 +1289,8 @@ export class SceneRenderer {
    * per graph entity.
    */
   getRichOverlayTargets(max = 10): RichOverlayTarget[] {
-    if (!this.app || max <= 0 || this.effectiveScale < LOD_FULL) return []
+    if (!this.app || max <= 0) return []
+    if (!this.options.forceFullLod && this.effectiveScale < LOD_FULL) return []
     const out: RichOverlayTarget[] = []
     const push = (id: string) => {
       if (out.length >= max) return
